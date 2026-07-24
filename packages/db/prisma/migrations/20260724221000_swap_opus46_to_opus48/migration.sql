@@ -15,4 +15,13 @@ ON CONFLICT ("modelId") DO UPDATE SET
   "isActive"    = EXCLUDED."isActive",
   "updatedAt"   = now();
 
+-- If an admin had pinned 4.6 as the platform default, carry that onto 4.8 so the
+-- DELETE below doesn't silently unset the org's default reviewer.
+UPDATE "available_models" SET "isPlatformDefault" = true, "updatedAt" = now()
+WHERE "modelId" = 'claude-opus-4-8'
+  AND EXISTS (
+    SELECT 1 FROM "available_models"
+    WHERE "modelId" = 'claude-opus-4-6-20250619' AND "isPlatformDefault" = true
+  );
+
 DELETE FROM "available_models" WHERE "modelId" = 'claude-opus-4-6-20250619';
