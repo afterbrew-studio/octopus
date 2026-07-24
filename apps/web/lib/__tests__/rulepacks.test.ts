@@ -64,3 +64,17 @@ describe("rulepack rule completeness", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 });
+
+describe("selectRulePacks — deleted files", () => {
+  it("does not misattribute deleted-file lines to the previous file", () => {
+    // A TS file heavily modified, then a Python file DELETED (+++ /dev/null).
+    // The deleted Python '-' lines must not count toward TypeScript.
+    const tsDiff = `diff --git a/app.ts b/app.ts\n--- a/app.ts\n+++ b/app.ts\n@@ -1,0 +1,3 @@\n+const a = 1;\n+const b = 2;\n+const c = 3;\n`;
+    const deletedPy = `diff --git a/old.py b/old.py\ndeleted file mode 100644\n--- a/old.py\n+++ /dev/null\n@@ -1,50 +0,0 @@\n${Array.from({ length: 50 }, (_, i) => `-line ${i}`).join("\n")}\n`;
+    const out = selectRulePacks(tsDiff + deletedPy);
+    expect(out).toContain("TypeScript");
+    // Python file was deleted (new side /dev/null) → no Python pack, and its 50
+    // deleted lines were NOT added to TypeScript's count.
+    expect(out).not.toContain("Python rulepack");
+  });
+});

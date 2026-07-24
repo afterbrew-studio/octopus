@@ -101,7 +101,7 @@ export function parseFindingsFromJson(reviewBody: string): InlineFinding[] | nul
       startLine: item.startLine,
       endLine: typeof item.endLine === "number" ? item.endLine : item.startLine,
       category: item.category ?? "",
-      cwe: typeof item.cwe === "string" && item.cwe.trim() ? item.cwe.trim() : undefined,
+      ...(typeof item.cwe === "string" && item.cwe.trim() ? { cwe: item.cwe.trim() } : {}),
       description: item.description,
       suggestion: item.suggestion ?? "",
       confidence:

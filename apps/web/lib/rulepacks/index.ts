@@ -27,10 +27,16 @@ function parseFileStats(diff: string): FileStat[] {
   const stats: FileStat[] = [];
   let current: FileStat | null = null;
   for (const line of diff.split("\n")) {
-    const fileMatch = line.match(/^\+\+\+ b\/(.+)$/);
-    if (fileMatch) {
-      current = { path: fileMatch[1], changedLines: 0 };
-      stats.push(current);
+    if (line.startsWith("+++ ")) {
+      const fileMatch = line.match(/^\+\+\+ b\/(.+)$/);
+      if (fileMatch) {
+        current = { path: fileMatch[1], changedLines: 0 };
+        stats.push(current);
+      } else {
+        // Deleted file (`+++ /dev/null`) or unrecognized header — stop
+        // attributing subsequent -lines to the previous file.
+        current = null;
+      }
       continue;
     }
     if (!current) continue;
