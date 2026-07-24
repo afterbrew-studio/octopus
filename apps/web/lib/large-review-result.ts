@@ -11,8 +11,14 @@ import { findingSignature, mergeFindingsBySignature, inheritReviewIssueTriage } 
 import {
   buildLowSeveritySummary,
   stripDetailedFindings,
-  countFindings,
+  filterByConfidence,
+  resolveConfidenceThreshold,
+  sortAndCapFindings,
+  parseReviewConfig,
+  mergeReviewConfigs,
+  MAX_FINDINGS_PER_REVIEW,
   shouldFailReviewCheck,
+  type ReviewConfig,
 } from "@/lib/review-helpers";
 import { eventBus } from "@/lib/events";
 
@@ -111,11 +117,33 @@ export async function handleLargeReviewResult(
 
   const reviewBody = data.reviewBody;
 
-  // 1. Parse findings out of the markdown
-  const findings = parseFindings(reviewBody);
-  const findingsCount = countFindings(reviewBody);
+  // 1. Parse findings out of the markdown, then apply the SAME per-category
+  // confidence filter + severity cap as the standard path (#652) so the largest,
+  // most bug-prone PRs no longer get raw model output straight to comments.
+  // (Diff-dependent validateFindings + semantic suppression require the diff,
+  // which this job payload doesn't carry — tracked as a follow-up.)
+  // Resolve the repo/org-configured threshold + max via the same 3-tier merge as
+  // the standard path so the two never diverge on configuration.
+  let systemConfig: ReviewConfig = {};
+  try {
+    const sysRow = await prisma.systemConfig.findUnique({ where: { id: "singleton" } });
+    if (sysRow) systemConfig = parseReviewConfig(sysRow.defaultReviewConfig);
+  } catch {
+    // SystemConfig unavailable — fall back to org/repo config only.
+  }
+  const reviewConfig = mergeReviewConfigs(
+    systemConfig,
+    parseReviewConfig(org.defaultReviewConfig),
+    parseReviewConfig(repo.reviewConfig),
+  );
+  const parsedFindings = parseFindings(reviewBody);
+  const { kept: findings, truncatedCount } = sortAndCapFindings(
+    filterByConfidence(parsedFindings, resolveConfidenceThreshold(reviewConfig)),
+    reviewConfig.maxFindings ?? MAX_FINDINGS_PER_REVIEW,
+  );
+  const findingsCount = findings.length;
   console.log(
-    `[large-review-result] PR #${pr.number}: ${reviewBody.length} chars, ${findings.length} findings parsed`,
+    `[large-review-result] PR #${pr.number}: ${reviewBody.length} chars, ${parsedFindings.length} parsed → ${findings.length} after confidence filter${truncatedCount ? ` (capped ${truncatedCount})` : ""}`,
   );
 
   // 2. Update placeholder comment with main body (findings JSON stripped — they go inline/summary)

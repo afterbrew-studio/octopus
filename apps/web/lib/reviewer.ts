@@ -73,9 +73,10 @@ import {
   formatPastReviews,
   formatPrIntent,
   buildRetrievalQuery,
+  filterByConfidence,
+  resolveConfidenceThreshold,
 } from "@/lib/review-helpers";
 import type { ReviewConfig } from "@/lib/review-helpers";
-import { getCategoryConfidenceThreshold } from "@/lib/review-categories";
 import {
   gatherCrossFileContext,
   gatherVerificationContext,
@@ -1934,21 +1935,14 @@ Rules:
     // Filter out findings below confidence threshold (per-category: high-risk
     // categories like Security/Bug get a relaxed threshold so genuine issues
     // are not silently dropped — see review-categories.ts).
-    const confidenceThreshold =
-      typeof reviewConfig.confidenceThreshold === "number"
-        ? reviewConfig.confidenceThreshold
-        : reviewConfig.confidenceThreshold === "HIGH"
-          ? 85
-          : 70;
+    const confidenceThreshold = resolveConfidenceThreshold(reviewConfig);
     // #647: run confidence filter, category filter, suppression AND validation on
     // the FULL parsed union — not just the inline subset — so the summary table
     // and persisted DB rows carry post-validation confidence and never show a
     // finding the validator/threshold would drop. Inline vs summary is derived
     // from this single validated set further below.
     const beforeConfidence = allParsedFindings.length;
-    allParsedFindings = allParsedFindings.filter(
-      (f) => f.confidence >= getCategoryConfidenceThreshold(f.category, confidenceThreshold),
-    );
+    allParsedFindings = filterByConfidence(allParsedFindings, confidenceThreshold);
     if (beforeConfidence !== allParsedFindings.length) {
       console.log(`[reviewer] Filtered out ${beforeConfidence - allParsedFindings.length} findings below per-category confidence threshold (base ${confidenceThreshold})`);
     }
