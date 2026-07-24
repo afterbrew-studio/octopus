@@ -77,6 +77,7 @@ import {
   resolveConfidenceThreshold,
 } from "@/lib/review-helpers";
 import { selectRulePacks } from "@/lib/rulepacks";
+import { toolPrePassEnabled, runSemgrepPrePass, formatToolFindings } from "@/lib/deterministic-tools";
 import type { ReviewConfig } from "@/lib/review-helpers";
 import {
   gatherCrossFileContext,
@@ -1348,7 +1349,35 @@ export async function processReview(pullRequestId: string): Promise<void> {
     // Over-fetch from Qdrant, then rerank with Cohere (same composed query).
     const rerankQuery = searchText;
 
-    const [rawCodeChunks, rawKnowledgeChunks, alwaysIncludeKnowledge, rawPastReviews, prBody] = await Promise.all([
+    // Deterministic tool pre-pass (#643): opt-in per repo, no-op without the
+    // semgrep binary. Fetches the changed files' new content and runs a curated
+    // OFFLINE semgrep ruleset, returning a ground-truth findings block for the
+    // prompt. Best-effort — any failure yields "" and the LLM review proceeds.
+    const runToolPrePass = async (): Promise<string> => {
+      if (!toolPrePassEnabled(reviewConfig)) return "";
+      try {
+        const ref = pr.headSha ?? repo.defaultBranch ?? "main";
+        const fetchContent = (p: string): Promise<string> =>
+          isGitHub
+            ? ghGetFileContent(installationId!, owner, repoName, ref, p).then((c) => c ?? "")
+            : isGitlab
+              ? gitlab.getFileContent(org.id, projectPath, ref, p)
+              : bitbucket.getFileContent(org.id, owner, repoName, ref, p);
+        const paths = [...diffFiles].slice(0, 200);
+        const files = (
+          await Promise.all(paths.map(async (p) => ({ path: p, content: await fetchContent(p).catch(() => "") })))
+        ).filter((f) => f.content);
+        const rulesPath = path.join(process.cwd(), "prompts", "semgrep-rules.yaml");
+        const findings = await runSemgrepPrePass(files, rulesPath);
+        if (findings.length) console.log(`[reviewer] Tool pre-pass: ${findings.length} semgrep finding(s)`);
+        return formatToolFindings(findings);
+      } catch (err) {
+        console.warn("[reviewer] Tool pre-pass failed, continuing:", err);
+        return "";
+      }
+    };
+
+    const [rawCodeChunks, rawKnowledgeChunks, alwaysIncludeKnowledge, rawPastReviews, prBody, toolFindingsBlock] = await Promise.all([
       searchSimilarChunks(repo.id, queryVector, 50, rerankQuery),
       searchKnowledgeChunks(org.id, queryVector, 25, rerankQuery).catch(() => [] as { title: string; text: string; score: number }[]),
       getAlwaysIncludeKnowledge(org.id).catch(() => []),
@@ -1358,6 +1387,10 @@ export async function processReview(pullRequestId: string): Promise<void> {
       // PR description — gives the reviewer the change's intent. Runs in
       // parallel; best-effort (empty on failure).
       providerGetPrBody(pr.number),
+      // Deterministic tool pre-pass (#643) — opt-in per repo, default off, and a
+      // no-op unless the semgrep binary is present. Runs in parallel with
+      // retrieval so it adds no latency on the critical path.
+      runToolPrePass(),
     ]);
 
     const [contextChunks, similarityKnowledgeChunks] = await Promise.all([
@@ -1714,6 +1747,7 @@ export async function processReview(pullRequestId: string): Promise<void> {
       PAST_REVIEWS_CONTEXT: pastReviewsContext,
       PR_INTENT: prIntent,
       PATTERN_RULES: patternRules,
+      TOOL_FINDINGS: toolFindingsBlock,
       PR_NUMBER: String(pr.number),
       USER_INSTRUCTION: userInstruction,
       PROVIDER: isGitHub ? "GitHub" : isBitbucket ? "Bitbucket" : isGitlab ? "GitLab" : repo.provider,
