@@ -3,10 +3,12 @@
 -- (no manual seed / SSH). isPlatformDefault stays false — the default reviewer is
 -- unchanged. On conflict, refresh pricing/label/active but never clobber an
 -- admin's isPlatformDefault or sortOrder choice.
+-- sortOrder is -1 (not 0): already-populated DBs occupy 0..N, so a negative slot
+-- sorts Opus 5 first without colliding with an existing row.
 INSERT INTO "available_models"
   ("id","modelId","displayName","provider","category","inputPrice","outputPrice","isActive","isPlatformDefault","sortOrder","createdAt","updatedAt")
 VALUES
-  ('seed_claude_opus_5','claude-opus-5','Claude Opus 5','anthropic','llm',5,25,true,false,0,now(),now())
+  ('seed_claude_opus_5','claude-opus-5','Claude Opus 5','anthropic','llm',5,25,true,false,-1,now(),now())
 ON CONFLICT ("modelId") DO UPDATE SET
   "displayName" = EXCLUDED."displayName",
   "provider"    = EXCLUDED."provider",
