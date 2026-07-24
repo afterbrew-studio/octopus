@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { parseSemgrepJson, type PrePassFile, type ToolFinding } from "./deterministic-tools-parse";
 
-export { toolPrePassEnabled, formatToolFindings, type ToolFinding, type PrePassFile } from "./deterministic-tools-parse";
+export { toolPrePassEnabled, formatToolFindings, filterToChangedLines, type ToolFinding, type PrePassFile } from "./deterministic-tools-parse";
 
 const execFileAsync = promisify(execFile);
 
@@ -31,12 +31,17 @@ const DEFAULT_TIMEOUT_MS = 45_000;
 const MAX_STDOUT_BYTES = 5_000_000; // 5MB cap on tool output
 const MAX_FILES = 200; // don't materialize an unbounded number of files
 
+// Minimal env for EVERY semgrep invocation (version probe + scan): never inherit
+// the process env, so no secrets reach the subprocess. Cast past the app's
+// augmented ProcessEnv type.
+const MINIMAL_ENV = { PATH: process.env.PATH ?? "", HOME: os.tmpdir(), SEMGREP_SEND_METRICS: "off" } as unknown as NodeJS.ProcessEnv;
+
 /** True when `semgrep` is available on PATH. Cached per process. */
 let semgrepAvailable: boolean | null = null;
 async function hasSemgrep(): Promise<boolean> {
   if (semgrepAvailable !== null) return semgrepAvailable;
   try {
-    await execFileAsync("semgrep", ["--version"], { timeout: 5_000 });
+    await execFileAsync("semgrep", ["--version"], { timeout: 5_000, env: MINIMAL_ENV });
     semgrepAvailable = true;
   } catch {
     semgrepAvailable = false;
@@ -85,9 +90,7 @@ export async function runSemgrepPrePass(
       {
         timeout: timeoutMs,
         maxBuffer: MAX_STDOUT_BYTES,
-        // Minimal env by design — do NOT inherit the process env (no secrets
-        // reach the subprocess). Cast past the app's augmented ProcessEnv type.
-        env: { PATH: process.env.PATH ?? "", HOME: os.tmpdir(), SEMGREP_SEND_METRICS: "off" } as unknown as NodeJS.ProcessEnv,
+        env: MINIMAL_ENV,
       },
     );
 

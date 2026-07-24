@@ -53,8 +53,9 @@ describe("sanitizeToolText (prompt-injection defense #643)", () => {
     expect(clean.includes("`")).toBe(false);
     expect(clean.includes("{")).toBe(false);
   });
-  it("caps length", () => {
-    // (uses the import from the block above via dynamic import at call site)
+  it("caps length to the given max", async () => {
+    const { sanitizeToolText } = await import("@/lib/deterministic-tools-parse");
+    expect(sanitizeToolText("x".repeat(500), 80).length).toBeLessThanOrEqual(80);
   });
 });
 
@@ -65,5 +66,20 @@ describe("parseSemgrepJson sanitizes a crafted filename", () => {
     }), "/t/");
     expect(out[0].filePath.includes("\n")).toBe(false);
     expect(out[0].filePath).toContain("evil.ts");
+  });
+});
+
+describe("filterToChangedLines (#643)", () => {
+  it("keeps findings on changed lines, drops findings on untouched code", async () => {
+    const { filterToChangedLines } = await import("@/lib/deterministic-tools-parse");
+    const findings = [
+      { tool: "semgrep", filePath: "a.ts", line: 12, ruleId: "r", severity: "🔴" as const, message: "m" },
+      { tool: "semgrep", filePath: "a.ts", line: 999, ruleId: "r", severity: "🟠" as const, message: "m" },
+      { tool: "semgrep", filePath: "b.ts", line: 3, ruleId: "r", severity: "🟡" as const, message: "m" },
+    ];
+    const changed = new Map([["a.ts", new Set([12, 13])]]);
+    const out = filterToChangedLines(findings, changed);
+    expect(out).toHaveLength(1);
+    expect(out[0].line).toBe(12);
   });
 });

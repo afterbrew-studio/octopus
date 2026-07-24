@@ -77,7 +77,7 @@ import {
   resolveConfidenceThreshold,
 } from "@/lib/review-helpers";
 import { selectRulePacks } from "@/lib/rulepacks";
-import { toolPrePassEnabled, runSemgrepPrePass, formatToolFindings } from "@/lib/deterministic-tools";
+import { toolPrePassEnabled, runSemgrepPrePass, formatToolFindings, filterToChangedLines } from "@/lib/deterministic-tools";
 import type { ReviewConfig } from "@/lib/review-helpers";
 import {
   gatherCrossFileContext,
@@ -1375,8 +1375,11 @@ export async function processReview(pullRequestId: string): Promise<void> {
           for (const f of batch) if (f.content) files.push(f);
         }
         const rulesPath = path.join(process.cwd(), "prompts", "semgrep-rules.yaml");
-        const findings = await runSemgrepPrePass(files, rulesPath);
-        if (findings.length) console.log(`[reviewer] Tool pre-pass: ${findings.length} semgrep finding(s)`);
+        const raw = await runSemgrepPrePass(files, rulesPath);
+        // Scope to lines actually visible in the diff — semgrep scans whole
+        // files, so a finding on unchanged code the PR never touched is dropped.
+        const findings = filterToChangedLines(raw, parseDiffLines(diff));
+        if (findings.length) console.log(`[reviewer] Tool pre-pass: ${findings.length}/${raw.length} semgrep finding(s) on changed lines`);
         return formatToolFindings(findings);
       } catch (err) {
         console.warn("[reviewer] Tool pre-pass failed, continuing:", err);

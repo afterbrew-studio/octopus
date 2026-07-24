@@ -100,3 +100,16 @@ export function formatToolFindings(findings: ToolFinding[]): string {
     .map((f) => `- ${f.severity} [${f.tool}:${f.ruleId}] ${f.filePath}:L${f.line} — ${f.message}`)
     .join("\n");
 }
+
+/**
+ * Keep only findings that land on a line actually visible in the diff (the
+ * change's added/context lines). semgrep scans whole files, so without this a
+ * finding could sit on unchanged code the PR never touched. `changedLines` maps
+ * repo-relative path → set of RIGHT-side line numbers (from parseDiffLines).
+ */
+export function filterToChangedLines(
+  findings: ToolFinding[],
+  changedLines: Map<string, Set<number>>,
+): ToolFinding[] {
+  return findings.filter((f) => changedLines.get(f.filePath)?.has(f.line) ?? false);
+}
