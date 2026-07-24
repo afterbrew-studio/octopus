@@ -10,6 +10,16 @@ const PRICING_CACHE_TTL = 5 * 60 * 1000;
 
 // Fallback pricing for models not yet in DB
 const FALLBACK_PRICING: Record<string, ModelPricing> = {
+  // Claude Fable 5 is the Claude 5 frontier model; offered as the top "max"
+  // review tier (2x Opus 5).
+  "claude-fable-5": { input: 10, output: 50 },
+  // Anthropic's published API id for Opus 5 is undated (no dated canonical id
+  // was released); the key must match the id used in calls for exact-key lookup.
+  "claude-opus-5": { input: 5, output: 25 },
+  // Opus 4.8 is the current Anthropic Opus tier ($5/$25) and replaces Opus 4.6
+  // in the offered catalogue. The dated 4.6 key is retained below so any usage
+  // already logged under it still prices (never silently bills $0).
+  "claude-opus-4-8": { input: 5, output: 25 },
   "claude-opus-4-6-20250619": { input: 15, output: 75 },
   "claude-sonnet-4-6-20250619": { input: 3, output: 15 },
   "claude-sonnet-4-20250514": { input: 3, output: 15 },

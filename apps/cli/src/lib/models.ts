@@ -27,8 +27,10 @@ export type ModelInfo = {
 // FALLBACK_PRICING + seed.ts exactly.
 export const MODELS_BY_PROVIDER: Record<string, ModelInfo[]> = {
   anthropic: [
+    { modelId: "claude-fable-5", displayName: "Claude Fable 5", inputPrice: 10, outputPrice: 50 },
+    { modelId: "claude-opus-5", displayName: "Claude Opus 5", inputPrice: 5, outputPrice: 25 },
     { modelId: "claude-sonnet-4-6-20250619", displayName: "Claude Sonnet 4.6", inputPrice: 3, outputPrice: 15, isDefault: true },
-    { modelId: "claude-opus-4-6-20250619", displayName: "Claude Opus 4.6", inputPrice: 15, outputPrice: 75 },
+    { modelId: "claude-opus-4-8", displayName: "Claude Opus 4.8", inputPrice: 5, outputPrice: 25 },
     { modelId: "claude-haiku-4-5-20251001", displayName: "Claude Haiku 4.5", inputPrice: 1, outputPrice: 5 },
   ],
   openai: [

@@ -711,23 +711,30 @@ async function main() {
   await prisma.availableModel.deleteMany();
   const models = [
     // Anthropic
-    { modelId: "claude-opus-4-6-20250619", displayName: "Claude Opus 4.6", provider: "anthropic", category: "llm", inputPrice: 15, outputPrice: 75, sortOrder: 0 },
-    { modelId: "claude-sonnet-4-6-20250619", displayName: "Claude Sonnet 4.6", provider: "anthropic", category: "llm", inputPrice: 3, outputPrice: 15, sortOrder: 1 },
-    { modelId: "claude-sonnet-4-20250514", displayName: "Claude Sonnet 4", provider: "anthropic", category: "llm", inputPrice: 3, outputPrice: 15, sortOrder: 2 },
-    { modelId: "claude-opus-4-20250514", displayName: "Claude Opus 4", provider: "anthropic", category: "llm", inputPrice: 15, outputPrice: 75, sortOrder: 3 },
-    { modelId: "claude-haiku-4-5-20251001", displayName: "Claude Haiku 4.5", provider: "anthropic", category: "llm", inputPrice: 1, outputPrice: 5, sortOrder: 4 },
+    // Claude 5 frontier model; top opt-in "max" tier. sortOrder -1 pins it above
+    // the 0-indexed list without a duplicate order value.
+    { modelId: "claude-fable-5", displayName: "Claude Fable 5", provider: "anthropic", category: "llm", inputPrice: 10, outputPrice: 50, sortOrder: -1 },
+    // Opus 5 uses Anthropic's published undated API id ("claude-opus-5"); no dated
+    // canonical id was published, and inventing one would fail the API call + the
+    // exact-key pricing lookup in cost.ts. Premium tier — not the platform default.
+    { modelId: "claude-opus-5", displayName: "Claude Opus 5", provider: "anthropic", category: "llm", inputPrice: 5, outputPrice: 25, sortOrder: 0 },
+    { modelId: "claude-opus-4-8", displayName: "Claude Opus 4.8", provider: "anthropic", category: "llm", inputPrice: 5, outputPrice: 25, sortOrder: 1 },
+    { modelId: "claude-sonnet-4-6-20250619", displayName: "Claude Sonnet 4.6", provider: "anthropic", category: "llm", inputPrice: 3, outputPrice: 15, sortOrder: 2 },
+    { modelId: "claude-sonnet-4-20250514", displayName: "Claude Sonnet 4", provider: "anthropic", category: "llm", inputPrice: 3, outputPrice: 15, sortOrder: 3 },
+    { modelId: "claude-opus-4-20250514", displayName: "Claude Opus 4", provider: "anthropic", category: "llm", inputPrice: 15, outputPrice: 75, sortOrder: 4 },
+    { modelId: "claude-haiku-4-5-20251001", displayName: "Claude Haiku 4.5", provider: "anthropic", category: "llm", inputPrice: 1, outputPrice: 5, sortOrder: 5 },
     // Google
-    { modelId: "gemini-2.5-pro", displayName: "Gemini 2.5 Pro", provider: "google", category: "llm", inputPrice: 1.25, outputPrice: 10, sortOrder: 5 },
-    { modelId: "gemini-2.5-flash", displayName: "Gemini 2.5 Flash", provider: "google", category: "llm", inputPrice: 0.15, outputPrice: 0.6, sortOrder: 6 },
+    { modelId: "gemini-2.5-pro", displayName: "Gemini 2.5 Pro", provider: "google", category: "llm", inputPrice: 1.25, outputPrice: 10, sortOrder: 6 },
+    { modelId: "gemini-2.5-flash", displayName: "Gemini 2.5 Flash", provider: "google", category: "llm", inputPrice: 0.15, outputPrice: 0.6, sortOrder: 7 },
     // OpenAI — Codex is the only OpenAI LLM we offer; served via the Responses API.
-    { modelId: "gpt-5.3-codex", displayName: "GPT-5.3 Codex", provider: "openai", category: "llm", inputPrice: 1.75, outputPrice: 14, sortOrder: 7 },
+    { modelId: "gpt-5.3-codex", displayName: "GPT-5.3 Codex", provider: "openai", category: "llm", inputPrice: 1.75, outputPrice: 14, sortOrder: 8 },
     // Claude Code — routed via the "claude-code:" prefix (see ai-router.ts).
     // Billed against the operator's Claude subscription/OAuth, not per token,
     // so the platform price is 0 (metered spend is tracked out-of-band).
-    { modelId: "claude-code:sonnet", displayName: "Claude Code (Sonnet)", provider: "claude-code", category: "llm", inputPrice: 0, outputPrice: 0, sortOrder: 8 },
+    { modelId: "claude-code:sonnet", displayName: "Claude Code (Sonnet)", provider: "claude-code", category: "llm", inputPrice: 0, outputPrice: 0, sortOrder: 9 },
     // OpenRouter — the "openrouter/…"-namespaced id forces OpenRouter routing.
     // Price is an estimate (~$0.10/$0.15 per 1M in/out for Hermes 3 8B).
-    { modelId: "openrouter/nousresearch/hermes-3-llama-3.1-8b", displayName: "Nous Hermes 3 8B (OpenRouter)", provider: "openrouter", category: "llm", inputPrice: 0.1, outputPrice: 0.15, sortOrder: 9 },
+    { modelId: "openrouter/nousresearch/hermes-3-llama-3.1-8b", displayName: "Nous Hermes 3 8B (OpenRouter)", provider: "openrouter", category: "llm", inputPrice: 0.1, outputPrice: 0.15, sortOrder: 10 },
     // Ollama (local — runs on the operator's own machine, zero cost)
     { modelId: "ollama:qwen2.5-coder:32b", displayName: "Qwen 2.5 Coder 32B (Ollama)", provider: "ollama", category: "llm", inputPrice: 0, outputPrice: 0, sortOrder: 20 },
     { modelId: "ollama:llama3.3", displayName: "Llama 3.3 (Ollama)", provider: "ollama", category: "llm", inputPrice: 0, outputPrice: 0, sortOrder: 21 },
