@@ -5,6 +5,7 @@ export const findingSeverity = z.enum(["🔴", "🟠", "🟡", "🔵", "💡"]);
 export const findingSchema = z.object({
   severity: findingSeverity,
   category: z.string().describe("Free-text category, e.g. 'Security', 'Logic Error', 'Race Condition'"),
+  cwe: z.string().optional().describe("CWE id (e.g. 'CWE-89') — set ONLY for a Security finding that maps to a pattern-rule; otherwise omit"),
   title: z.string().describe("Short, specific summary of the issue"),
   filePath: z.string().describe("Relative file path. No backticks, no ':L42' suffix"),
   startLine: z.number().int().describe("First line of the finding. MUST be a line marked '+' in the diff"),

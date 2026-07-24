@@ -259,6 +259,7 @@ Format — wrap ALL findings in this exact structure:
     "startLine": 42,
     "endLine": 58,
     "category": "Security",
+    "cwe": "CWE-89",
     "description": "User input is concatenated directly into the SQL query without parameterization.",
     "suggestion": "db.query('SELECT * FROM users WHERE id = $1', [userId])",
     "confidence": 92,
@@ -517,6 +518,20 @@ CODE QUALITY BUGS:
 - Resource exhaustion (unbounded loops, unlimited file sizes, no pagination)
 - Time-of-check to time-of-use (TOCTOU) bugs
 </security_checklist>
+
+<pattern_rules>
+{{PATTERN_RULES}}
+
+The above are curated, high-signal anti-pattern rules selected for the languages
+in THIS diff (plus an always-on security pack). Each line is `[severity id]
+(CWE, OWASP) title — signal. Fix: … e.g. …`. Actively hunt these patterns in the
+changed code, applying the SAME scope rules as above (report only when the
+pattern is actually present in the diff, never speculatively). When a Security
+finding maps to one of these rules, set the finding's `cwe` field to that rule's
+CWE id (e.g. "CWE-89"); otherwise OMIT `cwe`. Do not invent CWE ids. The
+`severity` shown is a hint — use your judgement for the actual diff.
+If no pattern rules are provided, skip this section.
+</pattern_rules>
 
 {{CONFLICT_DETECTION}}
 </mode>

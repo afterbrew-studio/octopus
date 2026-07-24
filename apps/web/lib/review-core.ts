@@ -27,6 +27,7 @@ import {
   parseFindingsFromMarkdown,
 } from "@/lib/review-dedup";
 import { extractCrossFileQueries, generateVerificationQueries, normalizeScoreDenominators, formatPastReviews, buildRetrievalQuery } from "@/lib/review-helpers";
+import { selectRulePacks } from "@/lib/rulepacks";
 import { gatherCrossFileContext, gatherVerificationContext, validateFindings } from "@/lib/review-validation";
 import { logAiUsage } from "@/lib/ai-usage";
 import { resolveReviewModel } from "@/lib/review-routing";
@@ -357,6 +358,7 @@ export async function generateLocalReview(params: LocalReviewParams): Promise<Lo
     FILE_TREE: fileTreeStr,
     KNOWLEDGE_CONTEXT: knowledgeContext,
     PAST_REVIEWS_CONTEXT: pastReviewsContext,
+    PATTERN_RULES: selectRulePacks(diff),
     // Local/CLI review has no upstream PR metadata to fetch.
     PR_INTENT: "",
     PR_NUMBER: String(params.prNumber ?? 0),
