@@ -76,6 +76,7 @@ import {
   filterByConfidence,
   resolveConfidenceThreshold,
 } from "@/lib/review-helpers";
+import { selectRulePacks } from "@/lib/rulepacks";
 import type { ReviewConfig } from "@/lib/review-helpers";
 import {
   gatherCrossFileContext,
@@ -1398,6 +1399,10 @@ export async function processReview(pullRequestId: string): Promise<void> {
     // creep. Author-controlled → treated as untrusted in the prompt.
     const prIntent = formatPrIntent(pr.title, prBody);
 
+    // Curated anti-pattern rulepacks for the languages in this diff + the
+    // always-on security pack (#649). Deterministic dispatch, no retrieval cost.
+    const patternRules = selectRulePacks(diff);
+
     await emitReviewStatus(org.id, {
       ...baseEvent,
       status: "reviewing",
@@ -1708,6 +1713,7 @@ export async function processReview(pullRequestId: string): Promise<void> {
       KNOWLEDGE_CONTEXT: knowledgeContext,
       PAST_REVIEWS_CONTEXT: pastReviewsContext,
       PR_INTENT: prIntent,
+      PATTERN_RULES: patternRules,
       PR_NUMBER: String(pr.number),
       USER_INSTRUCTION: userInstruction,
       PROVIDER: isGitHub ? "GitHub" : isBitbucket ? "Bitbucket" : isGitlab ? "GitLab" : repo.provider,
