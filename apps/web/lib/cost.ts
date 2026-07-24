@@ -10,6 +10,7 @@ const PRICING_CACHE_TTL = 5 * 60 * 1000;
 
 // Fallback pricing for models not yet in DB
 const FALLBACK_PRICING: Record<string, ModelPricing> = {
+  "claude-opus-5": { input: 5, output: 25 },
   "claude-opus-4-6-20250619": { input: 15, output: 75 },
   "claude-sonnet-4-6-20250619": { input: 3, output: 15 },
   "claude-sonnet-4-20250514": { input: 3, output: 15 },

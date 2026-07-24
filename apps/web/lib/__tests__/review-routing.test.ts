@@ -64,3 +64,10 @@ describe("pricing coverage (never bill $0 on a downshift)", () => {
     expect(fallbackPricedModels()).toContain(MECHANICAL_MODEL);
   });
 });
+
+describe("Opus 5 pricing (#opus-5 launch)", () => {
+  it("claude-opus-5 has fallback pricing so it never bills $0", async () => {
+    const { fallbackPricedModels } = await import("@/lib/cost");
+    expect(fallbackPricedModels()).toContain("claude-opus-5");
+  });
+});
