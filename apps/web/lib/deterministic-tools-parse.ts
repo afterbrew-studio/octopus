@@ -28,6 +28,22 @@ export const SEMGREP_SEVERITY: Record<string, ToolFinding["severity"]> = {
 
 export const MAX_TOOL_FINDINGS = 50;
 
+/**
+ * Sanitize a tool-provided string before it enters the GROUND-TRUTH prompt
+ * block. File paths (and, defensively, messages) originate from the author's
+ * diff, so a crafted filename must not be able to inject instructions: strip
+ * newlines/control chars and prompt-structural characters, collapse whitespace,
+ * and bound the length.
+ */
+export function sanitizeToolText(s: string, maxLen = 200): string {
+  return s
+    .replace(/[\u0000-\u001f\u007f]+/g, " ") // control chars incl. newlines/tabs
+    .replace(/[<>`{}]/g, "") // tag/backtick/brace chars used in prompt structure
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, maxLen);
+}
+
 /** Per-repo opt-in gate. Off unless the repo config explicitly enables it. */
 export function toolPrePassEnabled(reviewConfig: { enableToolPrePass?: boolean }): boolean {
   return reviewConfig.enableToolPrePass === true;
@@ -60,11 +76,14 @@ export function parseSemgrepJson(stdout: string, stripPrefix = ""): ToolFinding[
     const p = stripPrefix && res.path.startsWith(stripPrefix) ? res.path.slice(stripPrefix.length) : res.path;
     findings.push({
       tool: "semgrep",
-      filePath: p,
+      // filePath is author-controlled (a diff filename); sanitize all fields
+      // before they enter the ground-truth prompt block so a crafted filename
+      // can't inject prompt instructions.
+      filePath: sanitizeToolText(p),
       line: res.start.line,
-      ruleId: res.check_id ?? "semgrep",
+      ruleId: sanitizeToolText(res.check_id ?? "semgrep", 80),
       severity: SEMGREP_SEVERITY[(res.extra?.severity ?? "").toUpperCase()] ?? "🟡",
-      message: (res.extra?.message ?? "").trim().slice(0, 500),
+      message: sanitizeToolText(res.extra?.message ?? "", 500),
     });
     if (findings.length >= MAX_TOOL_FINDINGS) break;
   }

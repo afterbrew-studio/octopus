@@ -1364,9 +1364,16 @@ export async function processReview(pullRequestId: string): Promise<void> {
               ? gitlab.getFileContent(org.id, projectPath, ref, p)
               : bitbucket.getFileContent(org.id, owner, repoName, ref, p);
         const paths = [...diffFiles].slice(0, 200);
-        const files = (
-          await Promise.all(paths.map(async (p) => ({ path: p, content: await fetchContent(p).catch(() => "") })))
-        ).filter((f) => f.content);
+        // Bounded concurrency so a large PR can't fire hundreds of parallel
+        // content fetches at the provider API.
+        const files: { path: string; content: string }[] = [];
+        const FETCH_CONCURRENCY = 8;
+        for (let i = 0; i < paths.length; i += FETCH_CONCURRENCY) {
+          const batch = await Promise.all(
+            paths.slice(i, i + FETCH_CONCURRENCY).map(async (p) => ({ path: p, content: await fetchContent(p).catch(() => "") })),
+          );
+          for (const f of batch) if (f.content) files.push(f);
+        }
         const rulesPath = path.join(process.cwd(), "prompts", "semgrep-rules.yaml");
         const findings = await runSemgrepPrePass(files, rulesPath);
         if (findings.length) console.log(`[reviewer] Tool pre-pass: ${findings.length} semgrep finding(s)`);
