@@ -37,5 +37,9 @@ jobs:
         env:
           BLOG_API_TOKEN: ${{ secrets.BLOG_API_TOKEN }}
           OCTOPUS_API_URL: https://octopus-review.ai
+          # Pass dispatch inputs through the environment, never interpolated into
+          # the shell line — `${{ inputs.file }}` inline is a command-injection sink.
+          POST_FILE: ${{ inputs.file }}
+          POST_STATUS: ${{ inputs.status }}
         run: |
-          bun run apps/web/scripts/publish-blog-post.ts "${{ inputs.file }}" --status=${{ inputs.status }}
+          bun run apps/web/scripts/publish-blog-post.ts "$POST_FILE" --status="$POST_STATUS"

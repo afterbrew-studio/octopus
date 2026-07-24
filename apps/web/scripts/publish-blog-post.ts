@@ -106,10 +106,41 @@ async function main() {
     console.error("BLOG_API_TOKEN is required to write.");
     process.exit(1);
   }
+  const headers = { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" };
+
+  // Upsert by slug: a POST with an existing slug 409s, so re-running (e.g. draft
+  // then published, the documented promote flow) must PATCH the existing post
+  // instead. Look across all statuses so a hidden draft is found too.
+  const existingId = payload.slug ? await findPostIdBySlug(API_URL, headers, payload.slug) : null;
+
+  if (existingId) {
+    const res = await fetch(`${API_URL}/api/blog`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({
+        id: existingId,
+        title: payload.title,
+        content,
+        excerpt: payload.excerpt,
+        coverImageUrl: payload.coverImageUrl,
+        tags: payload.tags,
+        category: payload.category,
+        status: payload.status,
+      }),
+    });
+    const t = await res.text();
+    if (!res.ok) {
+      console.error(`PATCH /api/blog failed: ${res.status} ${res.statusText}\n${t}`);
+      process.exit(1);
+    }
+    const updated = JSON.parse(t) as { slug?: string; status?: string };
+    console.log(`✓ updated → ${updated.status ?? payload.status}: ${API_URL}/blog/${updated.slug ?? payload.slug}`);
+    return;
+  }
 
   const res = await fetch(`${API_URL}/api/blog`, {
     method: "POST",
-    headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+    headers,
     body: JSON.stringify(payload),
   });
   const bodyText = await res.text();
@@ -118,10 +149,34 @@ async function main() {
     process.exit(1);
   }
   const created = JSON.parse(bodyText) as { slug?: string; status?: string };
-  console.log(`✓ ${created.status ?? status}: ${API_URL}/blog/${created.slug ?? payload.slug}`);
+  console.log(`✓ created → ${created.status ?? status}: ${API_URL}/blog/${created.slug ?? payload.slug}`);
+}
+
+/** Find a post id by exact slug across all statuses (drafts included); null if none. */
+async function findPostIdBySlug(
+  apiUrl: string,
+  headers: Record<string, string>,
+  slug: string,
+): Promise<string | null> {
+  for (let page = 1; page <= 500; page++) {
+    const res = await fetch(`${apiUrl}/api/blog?limit=50&page=${page}`, { headers });
+    if (!res.ok) throw new Error(`GET /api/blog failed: ${res.status} ${res.statusText}`);
+    const data = (await res.json()) as {
+      posts?: Array<{ id: string; slug: string }>;
+      pagination?: { totalPages?: number };
+    };
+    const hit = data.posts?.find((p) => p.slug === slug);
+    if (hit) return hit.id;
+    const totalPages = Number(data?.pagination?.totalPages);
+    if (!Number.isFinite(totalPages) || page >= totalPages) break;
+  }
+  return null;
 }
 
 // Only run when executed directly (not when imported by the test).
 if (import.meta.main) {
-  main();
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
 }
