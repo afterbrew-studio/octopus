@@ -1,6 +1,7 @@
 import "server-only";
 import Anthropic from "@anthropic-ai/sdk";
 import type { Provider, AiCreateParams, AiResponse } from "./index";
+import { splitSystemForCache } from "./system-cache";
 
 let platformClient: Anthropic | null = null;
 
@@ -60,17 +61,7 @@ export const anthropicProvider: Provider = {
       {
         model: params.model,
         max_tokens: maxTokens,
-        system: params.system
-          ? [
-              {
-                type: "text" as const,
-                text: params.system,
-                ...(params.cacheSystem
-                  ? { cache_control: { type: "ephemeral" as const } }
-                  : {}),
-              },
-            ]
-          : undefined,
+        system: params.system ? splitSystemForCache(params.system, params.cacheSystem) : undefined,
         messages: params.messages.map((m) => ({
           role: m.role,
           content: m.content,
