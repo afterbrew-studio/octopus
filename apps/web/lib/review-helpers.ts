@@ -906,3 +906,14 @@ export function filterByConfidence(findings: InlineFinding[], baseThreshold = 70
     (f) => f.confidence >= getCategoryConfidenceThreshold(f.category, baseThreshold),
   );
 }
+
+/**
+ * Resolve the numeric base confidence threshold from a review config. Shared by
+ * the standard and large-PR paths so both honor the repo/org-configured value
+ * ("HIGH" → 85, an explicit number as-is, else the 70 default). Pure.
+ */
+export function resolveConfidenceThreshold(cfg: { confidenceThreshold?: number | string }): number {
+  if (typeof cfg.confidenceThreshold === "number") return cfg.confidenceThreshold;
+  if (cfg.confidenceThreshold === "HIGH") return 85;
+  return 70;
+}

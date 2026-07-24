@@ -74,6 +74,7 @@ import {
   formatPrIntent,
   buildRetrievalQuery,
   filterByConfidence,
+  resolveConfidenceThreshold,
 } from "@/lib/review-helpers";
 import type { ReviewConfig } from "@/lib/review-helpers";
 import {
@@ -1934,12 +1935,7 @@ Rules:
     // Filter out findings below confidence threshold (per-category: high-risk
     // categories like Security/Bug get a relaxed threshold so genuine issues
     // are not silently dropped — see review-categories.ts).
-    const confidenceThreshold =
-      typeof reviewConfig.confidenceThreshold === "number"
-        ? reviewConfig.confidenceThreshold
-        : reviewConfig.confidenceThreshold === "HIGH"
-          ? 85
-          : 70;
+    const confidenceThreshold = resolveConfidenceThreshold(reviewConfig);
     // #647: run confidence filter, category filter, suppression AND validation on
     // the FULL parsed union — not just the inline subset — so the summary table
     // and persisted DB rows carry post-validation confidence and never show a

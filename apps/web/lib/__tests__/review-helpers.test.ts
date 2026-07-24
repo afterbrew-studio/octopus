@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { formatPastReviews, formatPrIntent, buildRetrievalQuery, cappedConfidence, UNCITED_HIGH_SEV_CAP, filterByConfidence, type PastReviewHit } from "@/lib/review-helpers";
+import { formatPastReviews, formatPrIntent, buildRetrievalQuery, cappedConfidence, UNCITED_HIGH_SEV_CAP, filterByConfidence, resolveConfidenceThreshold, type PastReviewHit } from "@/lib/review-helpers";
 
 describe("formatPastReviews", () => {
   const hit = (o: Partial<PastReviewHit> = {}): PastReviewHit => ({
@@ -148,5 +148,15 @@ describe("filterByConfidence (#652 shared filter)", () => {
     // Security is relaxed below the base 70, so a 60-confidence security finding survives.
     const out = filterByConfidence([f({ category: "Security", confidence: 60 })], 70);
     expect(out).toHaveLength(1);
+  });
+});
+
+describe("resolveConfidenceThreshold (#652)", () => {
+  it("uses an explicit numeric threshold", () => {
+    expect(resolveConfidenceThreshold({ confidenceThreshold: 82 })).toBe(82);
+  });
+  it("maps HIGH to 85 and default to 70", () => {
+    expect(resolveConfidenceThreshold({ confidenceThreshold: "HIGH" })).toBe(85);
+    expect(resolveConfidenceThreshold({})).toBe(70);
   });
 });
