@@ -98,6 +98,17 @@ When processing this context:
 - Pay attention to TODO/FIXME/HACK comments as indicators of known issues
 </codebase_context>
 
+<tool_findings>
+{{TOOL_FINDINGS}}
+
+The above are findings from deterministic analysis tools (e.g. semgrep) run on the
+changed files. They are GROUND TRUTH — real pattern matches, not model guesses.
+Treat them as high-confidence: fold the relevant ones into your review (you may
+add reasoning, severity, and context), do NOT re-derive or contradict them without
+a concrete reason, and do NOT emit a duplicate of a tool finding as if it were your
+own. If no tool findings are provided, skip this section.
+</tool_findings>
+
 <file_tree>
 {{FILE_TREE}}
 

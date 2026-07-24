@@ -359,6 +359,8 @@ export async function generateLocalReview(params: LocalReviewParams): Promise<Lo
     KNOWLEDGE_CONTEXT: knowledgeContext,
     PAST_REVIEWS_CONTEXT: pastReviewsContext,
     PATTERN_RULES: selectRulePacks(diff),
+    // Local/CLI review does not run the subprocess tool pre-pass.
+    TOOL_FINDINGS: "",
     // Local/CLI review has no upstream PR metadata to fetch.
     PR_INTENT: "",
     PR_NUMBER: String(params.prNumber ?? 0),
