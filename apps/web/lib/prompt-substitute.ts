@@ -19,6 +19,8 @@
  * Callers: `lib/reviewer.ts` (canonical PR review) and `lib/review-core.ts`
  * (local-review). Both used the same vulnerable pattern before this helper.
  */
+import { CACHE_BREAKPOINT } from "@/lib/providers/system-cache";
+
 export function substitutePromptVars(
   template: string,
   vars: Record<string, string>,
@@ -26,7 +28,12 @@ export function substitutePromptVars(
   let out = template;
   for (const [name, value] of Object.entries(vars)) {
     const re = new RegExp(`\\{\\{${escapeForRegex(name)}\\}\\}`, "g");
-    out = out.replace(re, () => value);
+    // Strip the cache-breakpoint marker from substituted values so untrusted
+    // content (e.g. USER_INSTRUCTION) can never inject a second marker and shift
+    // where the prompt-cache prefix ends — the marker must come only from the
+    // template. See providers/system-cache.ts (#650).
+    const safe = value.split(CACHE_BREAKPOINT).join("");
+    out = out.replace(re, () => safe);
   }
   return out;
 }
