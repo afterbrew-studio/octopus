@@ -38,3 +38,17 @@ describe("splitSystemForCache (#650)", () => {
     expect(blocks).toHaveLength(1);
   });
 });
+
+describe("splitSystemForCache empty-side guards (#650)", () => {
+  it("never emits an empty prefix block (marker at start → single suffix block)", () => {
+    const blocks = splitSystemForCache(`${CACHE_BREAKPOINT}only volatile`, true);
+    expect(blocks.every((b) => b.text.trim().length > 0)).toBe(true);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].text).toBe("only volatile");
+  });
+  it("never emits an empty suffix block (marker at end → single cached block)", () => {
+    const blocks = splitSystemForCache(`only static${CACHE_BREAKPOINT}`, true);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].cache_control).toEqual({ type: "ephemeral" });
+  });
+});

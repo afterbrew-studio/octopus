@@ -77,6 +77,7 @@ import {
   resolveConfidenceThreshold,
 } from "@/lib/review-helpers";
 import { selectRulePacks } from "@/lib/rulepacks";
+import { toolPrePassEnabled, runSemgrepPrePass, formatToolFindings, filterToChangedLines } from "@/lib/deterministic-tools";
 import type { ReviewConfig } from "@/lib/review-helpers";
 import {
   gatherCrossFileContext,
@@ -1348,7 +1349,45 @@ export async function processReview(pullRequestId: string): Promise<void> {
     // Over-fetch from Qdrant, then rerank with Cohere (same composed query).
     const rerankQuery = searchText;
 
-    const [rawCodeChunks, rawKnowledgeChunks, alwaysIncludeKnowledge, rawPastReviews, prBody] = await Promise.all([
+    // Deterministic tool pre-pass (#643): opt-in per repo, no-op without the
+    // semgrep binary. Fetches the changed files' new content and runs a curated
+    // OFFLINE semgrep ruleset, returning a ground-truth findings block for the
+    // prompt. Best-effort — any failure yields "" and the LLM review proceeds.
+    const runToolPrePass = async (): Promise<string> => {
+      if (!toolPrePassEnabled(reviewConfig)) return "";
+      try {
+        const ref = pr.headSha ?? repo.defaultBranch ?? "main";
+        const fetchContent = (p: string): Promise<string> =>
+          isGitHub
+            ? ghGetFileContent(installationId!, owner, repoName, ref, p).then((c) => c ?? "")
+            : isGitlab
+              ? gitlab.getFileContent(org.id, projectPath, ref, p)
+              : bitbucket.getFileContent(org.id, owner, repoName, ref, p);
+        const paths = [...diffFiles].slice(0, 200);
+        // Bounded concurrency so a large PR can't fire hundreds of parallel
+        // content fetches at the provider API.
+        const files: { path: string; content: string }[] = [];
+        const FETCH_CONCURRENCY = 8;
+        for (let i = 0; i < paths.length; i += FETCH_CONCURRENCY) {
+          const batch = await Promise.all(
+            paths.slice(i, i + FETCH_CONCURRENCY).map(async (p) => ({ path: p, content: await fetchContent(p).catch(() => "") })),
+          );
+          for (const f of batch) if (f.content) files.push(f);
+        }
+        const rulesPath = path.join(process.cwd(), "prompts", "semgrep-rules.yaml");
+        const raw = await runSemgrepPrePass(files, rulesPath);
+        // Scope to lines actually visible in the diff — semgrep scans whole
+        // files, so a finding on unchanged code the PR never touched is dropped.
+        const findings = filterToChangedLines(raw, parseDiffLines(diff));
+        if (findings.length) console.log(`[reviewer] Tool pre-pass: ${findings.length}/${raw.length} semgrep finding(s) on changed lines`);
+        return formatToolFindings(findings);
+      } catch (err) {
+        console.warn("[reviewer] Tool pre-pass failed, continuing:", err);
+        return "";
+      }
+    };
+
+    const [rawCodeChunks, rawKnowledgeChunks, alwaysIncludeKnowledge, rawPastReviews, prBody, toolFindingsBlock] = await Promise.all([
       searchSimilarChunks(repo.id, queryVector, 50, rerankQuery),
       searchKnowledgeChunks(org.id, queryVector, 25, rerankQuery).catch(() => [] as { title: string; text: string; score: number }[]),
       getAlwaysIncludeKnowledge(org.id).catch(() => []),
@@ -1358,6 +1397,10 @@ export async function processReview(pullRequestId: string): Promise<void> {
       // PR description — gives the reviewer the change's intent. Runs in
       // parallel; best-effort (empty on failure).
       providerGetPrBody(pr.number),
+      // Deterministic tool pre-pass (#643) — opt-in per repo, default off, and a
+      // no-op unless the semgrep binary is present. Runs in parallel with
+      // retrieval so it adds no latency on the critical path.
+      runToolPrePass(),
     ]);
 
     const [contextChunks, similarityKnowledgeChunks] = await Promise.all([
@@ -1714,6 +1757,7 @@ export async function processReview(pullRequestId: string): Promise<void> {
       PAST_REVIEWS_CONTEXT: pastReviewsContext,
       PR_INTENT: prIntent,
       PATTERN_RULES: patternRules,
+      TOOL_FINDINGS: toolFindingsBlock,
       PR_NUMBER: String(pr.number),
       USER_INSTRUCTION: userInstruction,
       PROVIDER: isGitHub ? "GitHub" : isBitbucket ? "Bitbucket" : isGitlab ? "GitLab" : repo.provider,

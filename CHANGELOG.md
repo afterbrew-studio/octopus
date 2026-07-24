@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.58] - 2026-07-24
+
+_A major upgrade to review quality — sharper, language-aware reviews with fewer false positives. On by default; no action needed._
+
+### Added
+- Reviews now learn from your team's past reviews of similar code, staying consistent with earlier decisions and no longer re-raising issues you have already settled
+- Reviews now read each pull request's title and description and check the change against it — flagging changes that do not do what they claim, miss a stated requirement, or expand scope unexpectedly
+- Built-in, language-aware rulepacks for TypeScript/JavaScript, Python, Go, Rust, Java, and Ruby, plus an always-on security pack covering the OWASP Top 10 and common CWE weaknesses, so reviews catch idiomatic and security issues rather than only generic ones
+- Security findings now include the relevant CWE identifier where one applies
+
+### Changed
+- More accurate findings with fewer false positives: an adversarial validation step now challenges each finding and keeps only those backed by concrete evidence, and every finding — inline and in the summary — is held to the same standard
+- Smarter context retrieval surfaces the most relevant code from across the entire pull request, not just the first part of large diffs
+- Large pull requests now run through the full review-quality pipeline instead of a lighter path
+- Routine changes (lockfiles, generated files, docs, tiny edits) use a lighter, faster model, and review prompts are cached for quicker repeat reviews on active repositories
+
 ## [1.0.26] - 2026-07-03
 
 ### Changed
