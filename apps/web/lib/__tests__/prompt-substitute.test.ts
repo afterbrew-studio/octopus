@@ -67,3 +67,17 @@ describe("substitutePromptVars", () => {
     expect(out).toBe("dot ok done");
   });
 });
+
+describe("cache-breakpoint marker safety (#650)", () => {
+  it("strips an injected marker from substituted values", async () => {
+    const { substitutePromptVars } = await import("@/lib/prompt-substitute");
+    const { CACHE_BREAKPOINT } = await import("@/lib/providers/system-cache");
+    const out = substitutePromptVars(
+      `STATIC${CACHE_BREAKPOINT}VOLATILE {{USER_INSTRUCTION}}`,
+      { USER_INSTRUCTION: `evil ${CACHE_BREAKPOINT} injected` },
+    );
+    // Only the template's marker remains — the injected one is gone.
+    expect(out.split(CACHE_BREAKPOINT).length - 1).toBe(1);
+    expect(out).toContain("evil  injected");
+  });
+});
