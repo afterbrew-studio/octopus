@@ -711,6 +711,10 @@ async function main() {
   await prisma.availableModel.deleteMany();
   const models = [
     // Anthropic
+    // Opus 5 uses Anthropic's published undated API id ("claude-opus-5"); no dated
+    // canonical id was published, and inventing one would fail the API call + the
+    // exact-key pricing lookup in cost.ts. Premium tier — not the platform default.
+    { modelId: "claude-opus-5", displayName: "Claude Opus 5", provider: "anthropic", category: "llm", inputPrice: 5, outputPrice: 25, sortOrder: 0 },
     { modelId: "claude-opus-4-6-20250619", displayName: "Claude Opus 4.6", provider: "anthropic", category: "llm", inputPrice: 15, outputPrice: 75, sortOrder: 0 },
     { modelId: "claude-sonnet-4-6-20250619", displayName: "Claude Sonnet 4.6", provider: "anthropic", category: "llm", inputPrice: 3, outputPrice: 15, sortOrder: 1 },
     { modelId: "claude-sonnet-4-20250514", displayName: "Claude Sonnet 4", provider: "anthropic", category: "llm", inputPrice: 3, outputPrice: 15, sortOrder: 2 },

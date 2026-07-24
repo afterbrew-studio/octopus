@@ -1,10 +1,14 @@
 /**
- * Seed the Claude Opus 5 review model (#opus-5 launch).
+ * Add the Claude Opus 5 review model to a LIVE database (#opus-5 launch).
  *
- * Opus 5 is offered as the PREMIUM / deep-review tier, not the platform default
- * (the default stays the cheaper Sonnet tier), so isPlatformDefault is false.
- * Pricing matches Anthropic's list ($5 / $25 per 1M) and mirrors the fallback in
- * lib/cost.ts. Idempotent — safe to re-run.
+ * The canonical model list lives in packages/db/prisma/seed.ts (which Opus 5 is
+ * now part of), but that seed does a destructive availableModel.deleteMany()
+ * reseed — unsafe against a populated prod DB. This is the idempotent upsert to
+ * apply just this one row to an already-seeded database without wiping the rest.
+ *
+ * Premium / deep-review tier: isPlatformDefault stays false (default remains the
+ * cheaper Sonnet tier). Pricing matches Anthropic's list ($5 / $25 per 1M) and
+ * the fallback in lib/cost.ts. Safe to re-run.
  *
  * Usage: bun run --cwd apps/web scripts/seed-opus-5.ts
  */

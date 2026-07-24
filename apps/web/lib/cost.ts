@@ -10,6 +10,8 @@ const PRICING_CACHE_TTL = 5 * 60 * 1000;
 
 // Fallback pricing for models not yet in DB
 const FALLBACK_PRICING: Record<string, ModelPricing> = {
+  // Anthropic's published API id for Opus 5 is undated (no dated canonical id
+  // was released); the key must match the id used in calls for exact-key lookup.
   "claude-opus-5": { input: 5, output: 25 },
   "claude-opus-4-6-20250619": { input: 15, output: 75 },
   "claude-sonnet-4-6-20250619": { input: 3, output: 15 },
