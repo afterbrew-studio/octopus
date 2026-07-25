@@ -13,6 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
+import { LATEST_MODEL_ID } from "@/lib/model-latest";
 import { IconPencil, IconCheck, IconX, IconSearch, IconLoader2 } from "@tabler/icons-react";
 import { updateDefaultModels } from "../../actions";
 import { updateRepoModels } from "../../repositories/actions";
@@ -117,7 +118,8 @@ function RepoModelRow({
               </option>
               {llmModels.map((m) => (
                 <option key={m.modelId} value={m.modelId}>
-                  {m.displayName} ({m.provider})
+                  {m.displayName}
+                  {m.modelId === LATEST_MODEL_ID ? " (Latest)" : ""} ({m.provider})
                 </option>
               ))}
             </select>
