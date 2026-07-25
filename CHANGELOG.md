@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.62] - 2026-07-25
+
+_Claude Opus 5 and Fable 5 are now selectable review models, and the Opus tier is now cheaper._
+
+### Added
+- Claude Opus 5 is available as an opt-in premium review model. Your default reviewer is unchanged; point a repository at Opus 5 in settings when you want a deeper read on a tricky change (gnarly concurrency, a security-sensitive change, a big refactor). Works with your own Anthropic key too.
+- Claude Fable 5, Anthropic's frontier model, is available as the top opt-in tier for the most demanding reviews.
+
+### Changed
+- The Opus review tier now costs $5 / $25 per million tokens, down from $15 / $75, matching Anthropic's current Opus pricing. Opus 4.6 is replaced by Opus 4.8 in the model list.
+
 ## [1.0.58] - 2026-07-24
 
 _A major upgrade to review quality — sharper, language-aware reviews with fewer false positives. On by default; no action needed._
