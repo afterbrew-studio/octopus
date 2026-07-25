@@ -89,10 +89,15 @@ export function calcCost(
 ): number {
   const p = pricing.get(model);
   if (!p) return 0;
+  // Cache-write premium tracks PROMPT_CACHE_TTL (the same env that sets the
+  // actual TTL on Anthropic review calls): a 1h cache write costs 2x base input,
+  // a 5m write 1.25x. Reviews are the dominant Anthropic path, so this keeps the
+  // billed write cost aligned with what Anthropic charges under the active TTL.
+  const cacheWriteMultiplier = process.env.PROMPT_CACHE_TTL === "5m" ? 1.25 : 2;
   const plainInput = Math.max(inputTokens - cacheReadTokens - cacheWriteTokens, 0);
   const baseCost =
     (plainInput * p.input +
-      cacheWriteTokens * p.input * 1.25 +
+      cacheWriteTokens * p.input * cacheWriteMultiplier +
       cacheReadTokens * p.input * 0.1 +
       outputTokens * p.output) /
     1_000_000;

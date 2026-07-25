@@ -8,7 +8,7 @@ describe("splitSystemForCache (#650)", () => {
     const blocks = splitSystemForCache(sys, true);
     expect(blocks).toHaveLength(2);
     expect(blocks[0].text).toBe("INSTRUCTIONS + RULEPACKS");
-    expect(blocks[0].cache_control).toEqual({ type: "ephemeral" });
+    expect(blocks[0].cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
     expect(blocks[1].text).toBe("VOLATILE CONTEXT");
     expect(blocks[1].cache_control).toBeUndefined();
   });
@@ -30,12 +30,23 @@ describe("splitSystemForCache (#650)", () => {
   it("no marker + caching → single cached block", () => {
     const blocks = splitSystemForCache("plain system", true);
     expect(blocks).toHaveLength(1);
-    expect(blocks[0].cache_control).toEqual({ type: "ephemeral" });
+    expect(blocks[0].cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
   });
 
   it("drops an empty suffix", () => {
     const blocks = splitSystemForCache(`prefix${CACHE_BREAKPOINT}   `, true);
     expect(blocks).toHaveLength(1);
+  });
+
+  it("honors an explicit ttl (5m) and defaults to 1h", () => {
+    expect(splitSystemForCache(sys, true, "5m")[0].cache_control).toEqual({
+      type: "ephemeral",
+      ttl: "5m",
+    });
+    expect(splitSystemForCache(sys, true)[0].cache_control).toEqual({
+      type: "ephemeral",
+      ttl: "1h",
+    });
   });
 });
 
@@ -49,6 +60,6 @@ describe("splitSystemForCache empty-side guards (#650)", () => {
   it("never emits an empty suffix block (marker at end → single cached block)", () => {
     const blocks = splitSystemForCache(`only static${CACHE_BREAKPOINT}`, true);
     expect(blocks).toHaveLength(1);
-    expect(blocks[0].cache_control).toEqual({ type: "ephemeral" });
+    expect(blocks[0].cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
   });
 });

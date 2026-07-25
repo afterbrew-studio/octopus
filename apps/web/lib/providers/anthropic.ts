@@ -1,7 +1,7 @@
 import "server-only";
 import Anthropic from "@anthropic-ai/sdk";
 import type { Provider, AiCreateParams, AiResponse } from "./index";
-import { splitSystemForCache } from "./system-cache";
+import { splitSystemForCache, type CacheTtl } from "./system-cache";
 
 let platformClient: Anthropic | null = null;
 
@@ -43,6 +43,12 @@ export const anthropicProvider: Provider = {
   async create(params: AiCreateParams, apiKey?: string | null): Promise<AiResponse> {
     const client = getClient(apiKey);
 
+    // Prompt-cache TTL for the stable system prefix. Default 1h so the cached
+    // rulepack/instruction prefix survives across a repo's review burst (5m
+    // expires between sporadic reviews → low hit rate). Set PROMPT_CACHE_TTL=5m
+    // to opt back down. Read at call time so it's tunable without a redeploy.
+    const cacheTtl: CacheTtl = process.env.PROMPT_CACHE_TTL === "5m" ? "5m" : "1h";
+
     const maxTokens = ALWAYS_THINKING_MODEL_RX.test(params.model)
       ? Math.max(params.maxTokens, ALWAYS_THINKING_MAX_TOKENS_FLOOR)
       : params.maxTokens;
@@ -61,7 +67,7 @@ export const anthropicProvider: Provider = {
       {
         model: params.model,
         max_tokens: maxTokens,
-        system: params.system ? splitSystemForCache(params.system, params.cacheSystem) : undefined,
+        system: params.system ? splitSystemForCache(params.system, params.cacheSystem, cacheTtl) : undefined,
         messages: params.messages.map((m) => ({
           role: m.role,
           content: m.content,
