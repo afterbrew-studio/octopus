@@ -9,10 +9,15 @@ const MODEL_ID = "eleven_turbo_v2_5";
 // ElevenLabs caps a single TTS request; stay well under and clip long posts.
 export const MAX_TTS_CHARS = 9000;
 
-const apiKey = process.env.ELEVENLABS_API_KEY;
+// Read at call time, not module load: a top-level capture goes stale / can be
+// evaluated before the runtime env is injected, which makes a configured key
+// read as "not set".
+function getApiKey(): string | undefined {
+  return process.env.ELEVENLABS_API_KEY;
+}
 
 export function isElevenLabsConfigured(): boolean {
-  return Boolean(apiKey);
+  return Boolean(getApiKey());
 }
 
 export type ElevenVoice = {
@@ -24,6 +29,7 @@ export type ElevenVoice = {
 
 /** List the account's available voices (for the admin voice picker). */
 export async function listVoices(): Promise<ElevenVoice[]> {
+  const apiKey = getApiKey();
   if (!apiKey) throw new Error("ELEVENLABS_API_KEY is not configured.");
   const res = await fetch(`${API_BASE}/voices`, {
     headers: { "xi-api-key": apiKey, accept: "application/json" },
@@ -48,6 +54,7 @@ export async function listVoices(): Promise<ElevenVoice[]> {
 
 /** Synthesize speech for `text` with `voiceId` → MP3 buffer. */
 export async function synthesizeSpeech(text: string, voiceId: string): Promise<Buffer> {
+  const apiKey = getApiKey();
   if (!apiKey) throw new Error("ELEVENLABS_API_KEY is not configured.");
   const res = await fetch(`${API_BASE}/text-to-speech/${encodeURIComponent(voiceId)}`, {
     method: "POST",
