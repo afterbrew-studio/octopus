@@ -8,6 +8,11 @@ mock.module("@octopus/db", () => ({
 
 import { calcCost, formatUsd, formatNumber } from "@/lib/cost";
 
+// The cache-write premium tracks PROMPT_CACHE_TTL (1.25x for 5m, 2x for 1h).
+// Pin 5m so the formula assertions below stay deterministic; a dedicated test
+// covers the 1h (2x) default.
+process.env.PROMPT_CACHE_TTL = "5m";
+
 describe("calcCost", () => {
   const pricing = new Map<string, { input: number; output: number }>([
     ["claude-sonnet-4-20250514", { input: 3, output: 15 }],
@@ -67,6 +72,19 @@ describe("calcCost", () => {
     //          = (0 + 187.5 + 24 + 750) / 1M = 0.0009615
     // cost = 0.0009615 * 1.2 = 0.001_153_8
     expect(cost).toBeCloseTo(0.0011538, 5);
+  });
+
+  it("uses the 2x cache-write premium under the 1h TTL default", () => {
+    const prev = process.env.PROMPT_CACHE_TTL;
+    process.env.PROMPT_CACHE_TTL = "1h";
+    try {
+      // plainInput = 700; (700*3 + 300*3*2 + 500*15)/1M = (2100 + 1800 + 7500)/1M
+      //            = 0.0114; * 1.2 markup = 0.01368
+      const cost = calcCost(pricing, "claude-sonnet-4-20250514", 1000, 500, 0, 300);
+      expect(cost).toBeCloseTo(0.01368, 5);
+    } finally {
+      process.env.PROMPT_CACHE_TTL = prev;
+    }
   });
 
   it("works with embedding model (output price = 0)", () => {
