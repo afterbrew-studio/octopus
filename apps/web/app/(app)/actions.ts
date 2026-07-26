@@ -13,7 +13,7 @@ import type { LogLevel } from "@/lib/indexer";
 import { createAbortController, abortIndexing } from "@/lib/indexing-abort";
 import { runIndexingInBackground } from "@/lib/indexing-runner";
 import { toBaseSlug, randomSlugSuffix } from "@/lib/slug";
-import { canUserCreateOrg } from "@/lib/org-limits";
+import { canUserCreateOrg, hasEverOwnedOrg } from "@/lib/org-limits";
 import { MAX_OWNED_ORGS_PER_USER, WELCOME_FREE_CREDITS } from "@/lib/constants";
 import { encryptString } from "@/lib/crypto";
 import { writeAuditLog } from "@/lib/audit";
@@ -106,7 +106,10 @@ export async function createOrganization(
         throw new Error("ORG_LIMIT_REACHED");
       }
 
-      const firstOrg = ownedCount === 0;
+      // Welcome bonus is once per user, ever — not once per active org — so it
+      // can't be farmed by delete-and-recreate. `ownedCount` above is active-only
+      // (drives the cap); grant eligibility counts soft-deleted owner rows too.
+      const firstOrg = !(await hasEverOwnedOrg(tx, user.id));
 
       return tx.organization.create({
         data: {

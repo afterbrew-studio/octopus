@@ -1,6 +1,6 @@
 import { prisma } from "@octopus/db";
 import { toBaseSlug, randomSlugSuffix } from "@/lib/slug";
-import { canUserCreateOrg } from "@/lib/org-limits";
+import { canUserCreateOrg, hasEverOwnedOrg } from "@/lib/org-limits";
 import { MAX_OWNED_ORGS_PER_USER, WELCOME_FREE_CREDITS } from "@/lib/constants";
 
 /**
@@ -50,7 +50,10 @@ export async function createOrgForUser(userId: string, userName: string) {
       throw new Error(`Organization limit reached (max ${MAX_OWNED_ORGS_PER_USER}).`);
     }
 
-    const firstOrg = ownedCount === 0;
+    // Welcome bonus is once per user, ever — not once per active org — so it
+    // can't be farmed by delete-and-recreate. `ownedCount` above is active-only
+    // (drives the cap); grant eligibility counts soft-deleted owner rows too.
+    const firstOrg = !(await hasEverOwnedOrg(tx, userId));
 
     return tx.organization.create({
       data: {
