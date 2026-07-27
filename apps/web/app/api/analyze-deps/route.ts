@@ -6,6 +6,7 @@ import { prisma } from "@octopus/db";
 import { analyzeRepositoryDependencies } from "@octopus/package-analyzer";
 import type { AnalysisProgressEvent } from "@octopus/package-analyzer";
 import { getInstallationToken } from "@/lib/github";
+import { resolveAnalyzerInstallation } from "@/lib/analyzer-install";
 
 const GITHUB_API = "https://api.github.com/repos";
 
@@ -72,7 +73,16 @@ export async function POST(req: NextRequest) {
       try {
         const token = await getInstallationToken(installationId);
         h.Authorization = `token ${token}`;
-      } catch { /* fall back to unauthenticated */ }
+      } catch (err) {
+        // Don't silently fall back to unauthenticated — that turns a token
+        // failure into a misleading "repository not found" for private repos
+        // (this hid a broken analyzer for months). Log it; the caller still
+        // gets the not-found error, but the real cause is now visible.
+        console.error(
+          `[analyze-deps] installation token failed for installation=${installationId}:`,
+          err,
+        );
+      }
     }
     return h;
   }
@@ -89,6 +99,16 @@ export async function POST(req: NextRequest) {
   if (!repoUrl || typeof repoUrl !== "string") {
     return Response.json({ error: "repoUrl is required" }, { status: 400 });
   }
+
+  // Prefer the repository's own installation (live, webhook-populated — the
+  // same source reviews use) over the current org's stored id, which can be
+  // stale/null. Authorized to the repo's org inside the resolver.
+  installationId = await resolveAnalyzerInstallation(prisma, {
+    repositoryId,
+    callerOrgId: orgId,
+    callerUserId: userId,
+    fallbackInstallationId: installationId,
+  });
 
   const parsed = parseGitHubUrl(repoUrl);
   if (!parsed) {
