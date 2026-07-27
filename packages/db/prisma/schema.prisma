@@ -29,6 +29,12 @@ model User {
   welcomeEmailSentAt    DateTime?
   marketingEmailsEnabled Boolean @default(true)
 
+  // Signup abuse signals. signupIp is captured at the first session and drives
+  // Sybil velocity scoring; welcomeGrantedAt stamps the one-time welcome bonus
+  // so it can't be re-farmed (leak-proof — survives org soft- OR hard-delete).
+  signupIp         String?
+  welcomeGrantedAt DateTime?
+
   emailSends EmailSend[]
   devices    UserDevice[]
 
@@ -133,6 +139,11 @@ model Organization {
   creditBalance           Decimal  @default(0) @db.Decimal(12, 4)
   freeCreditBalance       Decimal  @default(0) @db.Decimal(12, 4)
   billingEmail            String?
+
+  // Welcome-bonus risk decision recorded when this org was the user's first
+  // (null = never evaluated). Non-null score with 0 free credits = withheld.
+  welcomeRiskScore        Int?
+  welcomeRiskReason       String?
   // Monthly subscription plan (charged off-session against the saved card;
   // grants non-expiring credits each period). "free" | "pro" | "team".
   planTier              String    @default("free")

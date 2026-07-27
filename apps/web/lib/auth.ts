@@ -16,6 +16,15 @@ const IS_SELF_HOSTED = process.env.NEXT_PUBLIC_OCTOPUS_SELF_HOSTED === "true";
 
 export const auth = betterAuth({
   trustedOrigins: [process.env.BETTER_AUTH_URL!],
+  // Resolve the client IP from the edge-set, hard-to-spoof header first
+  // (Cloudflare fronts the SaaS), falling back through the proxy chain. This
+  // is the IP used for audit logs and the signup-abuse (Sybil) signal, so the
+  // source must not be the client-controlled first x-forwarded-for hop.
+  advanced: {
+    ipAddress: {
+      ipAddressHeaders: ["cf-connecting-ip", "x-real-ip", "x-forwarded-for"],
+    },
+  },
   database: prismaAdapter(prisma, {
     provider: "postgresql",
   }),
@@ -80,6 +89,17 @@ export const auth = betterAuth({
             where: { id: session.userId },
             select: { email: true },
           });
+
+          // Record the IP of the user's first session as a Sybil signal.
+          // updateMany with `signupIp: null` sets it exactly once, race-free.
+          if (session.ipAddress) {
+            await prisma.user
+              .updateMany({
+                where: { id: session.userId, signupIp: null },
+                data: { signupIp: session.ipAddress },
+              })
+              .catch(() => {});
+          }
 
           await writeAuditLog({
             action: "auth.login",
