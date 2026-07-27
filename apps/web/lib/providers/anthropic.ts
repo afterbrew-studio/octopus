@@ -3,6 +3,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import type { Provider, AiCreateParams, AiResponse } from "./index";
 import { splitSystemForCache, type CacheTtl } from "./system-cache";
 import { resolveThinking } from "./thinking";
+import { stripLoneSurrogates } from "./sanitize";
 
 let platformClient: Anthropic | null = null;
 
@@ -62,10 +63,15 @@ export const anthropicProvider: Provider = {
         max_tokens: maxTokens,
         ...(thinking ? { thinking } : {}),
         ...(outputConfig ? { output_config: outputConfig } : {}),
-        system: params.system ? splitSystemForCache(params.system, params.cacheSystem, cacheTtl) : undefined,
+        // Strip lone UTF-16 surrogates from all text: a diff/file body truncated
+        // mid-emoji can leave an unpaired surrogate, which serializes to invalid
+        // UTF-8 and makes Anthropic 400 the whole request ("no low surrogate").
+        system: params.system
+          ? splitSystemForCache(stripLoneSurrogates(params.system), params.cacheSystem, cacheTtl)
+          : undefined,
         messages: params.messages.map((m) => ({
           role: m.role,
-          content: m.content,
+          content: stripLoneSurrogates(m.content),
         })),
         ...(useTool
           ? {
