@@ -17,31 +17,30 @@ function envInt(name: string, fallback: number): number {
 export const SHARED_FINGERPRINT_THRESHOLD = envInt("SHARED_FP_THRESHOLD", 3);
 
 /** Minimal client shape — satisfied by the Prisma client. */
-type DeviceFinder = {
+type DeviceCounter = {
   userDevice: {
-    findMany(args: {
+    count(args: {
       where: { fingerprint: string; userId: { not: string } };
-      select: { userId: true };
-      distinct: ["userId"];
-    }): Promise<{ userId: string }[]>;
+    }): Promise<number>;
   };
 };
 
 /**
  * Count distinct OTHER users that have reported this device fingerprint.
- * Uses the global fingerprint index; excludes the current user.
+ *
+ * UserDevice is `@@unique([userId, fingerprint])`, so there is at most one row
+ * per (user, fingerprint) — a plain row count over other users already equals
+ * the distinct-user count, no DISTINCT scan needed. Uses the global fingerprint
+ * index and excludes the current user.
  */
 export async function countUsersSharingFingerprint(
-  client: DeviceFinder,
+  client: DeviceCounter,
   fingerprint: string,
   excludeUserId: string,
 ): Promise<number> {
-  const rows = await client.userDevice.findMany({
+  return client.userDevice.count({
     where: { fingerprint, userId: { not: excludeUserId } },
-    select: { userId: true },
-    distinct: ["userId"],
   });
-  return rows.length;
 }
 
 /** Whether a shared-fingerprint count crosses the flag threshold. */

@@ -14,28 +14,21 @@ describe("isSharedFingerprintAbuse", () => {
 });
 
 describe("countUsersSharingFingerprint", () => {
-  it("counts distinct OTHER users, excluding the current one", async () => {
+  it("counts OTHER users on the fingerprint, excluding the current one", async () => {
     let seen: Record<string, unknown> | undefined;
     const client = {
       userDevice: {
-        findMany: (args: {
-          where: { fingerprint: string; userId: { not: string } };
-          select: { userId: true };
-          distinct: ["userId"];
-        }) => {
+        count: (args: { where: { fingerprint: string; userId: { not: string } } }) => {
           seen = args;
-          return Promise.resolve([{ userId: "a" }, { userId: "b" }]);
+          return Promise.resolve(2);
         },
       },
     };
 
     const n = await countUsersSharingFingerprint(client, "fp123", "me");
     expect(n).toBe(2);
-    // Query must exclude the current user and dedupe by user (not device rows).
-    expect(seen).toEqual({
-      where: { fingerprint: "fp123", userId: { not: "me" } },
-      select: { userId: true },
-      distinct: ["userId"],
-    });
+    // Must exclude the current user; @@unique([userId,fingerprint]) makes a plain
+    // count == distinct users, so no DISTINCT needed.
+    expect(seen).toEqual({ where: { fingerprint: "fp123", userId: { not: "me" } } });
   });
 });
