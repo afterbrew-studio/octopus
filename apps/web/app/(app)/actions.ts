@@ -14,6 +14,7 @@ import { createAbortController, abortIndexing } from "@/lib/indexing-abort";
 import { runIndexingInBackground } from "@/lib/indexing-runner";
 import { toBaseSlug, randomSlugSuffix } from "@/lib/slug";
 import { canUserCreateOrg, hasEverOwnedOrg } from "@/lib/org-limits";
+import { assessWelcomeCredit } from "@/lib/welcome-credit";
 import { MAX_OWNED_ORGS_PER_USER, WELCOME_FREE_CREDITS } from "@/lib/constants";
 import { encryptString } from "@/lib/crypto";
 import { writeAuditLog } from "@/lib/audit";
@@ -95,6 +96,10 @@ export async function createOrganization(
     slug = `${baseSlug}-${randomSlugSuffix()}`;
   }
 
+  // Assess welcome-bonus risk before the tx (reads only); the tx confirms
+  // first-org atomically.
+  const welcome = await assessWelcomeCredit(user.id);
+
   // Re-check limit and create atomically to prevent TOCTOU race
   let org;
   try {
@@ -106,10 +111,23 @@ export async function createOrganization(
         throw new Error("ORG_LIMIT_REACHED");
       }
 
-      // Welcome bonus is once per user, ever — not once per active org — so it
-      // can't be farmed by delete-and-recreate. `ownedCount` above is active-only
-      // (drives the cap); grant eligibility counts soft-deleted owner rows too.
-      const firstOrg = !(await hasEverOwnedOrg(tx, user.id));
+      // First org = bonus not yet granted (leak-proof stamp) AND never owned an
+      // org (soft-delete-safe). `ownedCount` above is active-only (drives the cap).
+      const firstOrg = welcome.eligible && !(await hasEverOwnedOrg(tx, user.id));
+
+      // Consume the one-time bonus on the first org: stamp welcomeGrantedAt
+      // exactly once (updateMany where null → only one tx wins, so concurrent
+      // creates can't double-grant). A WITHHELD first org still consumes the
+      // bonus, so it can't be retried after an org hard-delete. Credits are
+      // added only when the claim wins AND the risk score clears.
+      let grantBonus = false;
+      if (firstOrg) {
+        const claim = await tx.user.updateMany({
+          where: { id: user.id, welcomeGrantedAt: null },
+          data: { welcomeGrantedAt: new Date() },
+        });
+        grantBonus = claim.count === 1 && welcome.grant;
+      }
 
       return tx.organization.create({
         data: {
@@ -122,6 +140,10 @@ export async function createOrganization(
             },
           },
           ...(firstOrg && {
+            welcomeRiskScore: welcome.score,
+            welcomeRiskReason: welcome.reason,
+          }),
+          ...(grantBonus && {
             freeCreditBalance: WELCOME_FREE_CREDITS,
             creditTransactions: {
               create: {
