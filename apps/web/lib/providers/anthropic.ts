@@ -43,8 +43,13 @@ export const anthropicProvider: Provider = {
     const useTool = params.responseSchema !== undefined;
 
     // Always-thinking models (Fable/Mythos): raise max_tokens to the floor and,
-    // on the text path, cap the thinking budget so the answer always has room.
-    const { maxTokens, thinking } = resolveThinking(params.model, params.maxTokens, useTool);
+    // on the text path, use adaptive thinking + effort so the answer isn't
+    // starved. (These models reject an explicit thinking budget.)
+    const { maxTokens, thinking, outputConfig } = resolveThinking(
+      params.model,
+      params.maxTokens,
+      useTool,
+    );
 
     // Streaming here is purely between this process and the Anthropic API —
     // finalMessage() buffers the SSE chunks and returns the same complete
@@ -56,6 +61,7 @@ export const anthropicProvider: Provider = {
         model: params.model,
         max_tokens: maxTokens,
         ...(thinking ? { thinking } : {}),
+        ...(outputConfig ? { output_config: outputConfig } : {}),
         system: params.system ? splitSystemForCache(params.system, params.cacheSystem, cacheTtl) : undefined,
         messages: params.messages.map((m) => ({
           role: m.role,
