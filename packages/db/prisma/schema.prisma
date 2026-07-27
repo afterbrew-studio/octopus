@@ -35,6 +35,8 @@ model User {
   signupIp         String?
   welcomeGrantedAt DateTime?
 
+  @@index([signupIp])
+
   emailSends EmailSend[]
   devices    UserDevice[]
 

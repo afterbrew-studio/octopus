@@ -89,7 +89,7 @@ export type WelcomeDecision = {
  * welcome bonus. Reads only — call it BEFORE the create transaction; the caller
  * still confirms first-org atomically inside the tx via `hasEverOwnedOrg`.
  *
- * ponytail: velocity keys on the raw signup IP, so shared egress (office NAT /
+ * Note: velocity keys on the raw signup IP, so shared egress (office NAT /
  * CGNAT) can withhold from legit users. That's why the action is WITHHOLD, not
  * a signup block — an admin can still grant, and device fingerprint (P2) will
  * disambiguate. Thresholds are env-tunable above.

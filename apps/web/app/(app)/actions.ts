@@ -115,16 +115,18 @@ export async function createOrganization(
       // org (soft-delete-safe). `ownedCount` above is active-only (drives the cap).
       const firstOrg = welcome.eligible && !(await hasEverOwnedOrg(tx, user.id));
 
-      // Atomically claim the one-time bonus: only the tx that flips
-      // welcomeGrantedAt from null wins, so concurrent first-org creates can't
-      // double-grant. Withhold (claim, but no credits) when risk doesn't clear.
+      // Consume the one-time bonus on the first org: stamp welcomeGrantedAt
+      // exactly once (updateMany where null → only one tx wins, so concurrent
+      // creates can't double-grant). A WITHHELD first org still consumes the
+      // bonus, so it can't be retried after an org hard-delete. Credits are
+      // added only when the claim wins AND the risk score clears.
       let grantBonus = false;
-      if (firstOrg && welcome.grant) {
+      if (firstOrg) {
         const claim = await tx.user.updateMany({
           where: { id: user.id, welcomeGrantedAt: null },
           data: { welcomeGrantedAt: new Date() },
         });
-        grantBonus = claim.count === 1;
+        grantBonus = claim.count === 1 && welcome.grant;
       }
 
       return tx.organization.create({
