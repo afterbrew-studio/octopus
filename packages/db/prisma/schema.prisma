@@ -1318,6 +1318,9 @@ model UserDevice {
 
   @@unique([userId, fingerprint])
   @@index([userId])
+  // Global index so we can ask "how many distinct users share this
+  // fingerprint" — the multi-account (Sybil) signal.
+  @@index([fingerprint])
   @@map("user_devices")
 }
 

@@ -3,6 +3,11 @@ import { auth } from "@/lib/auth";
 import { prisma } from "@octopus/db";
 import { sendEmail } from "@/lib/email";
 import { renderEmailTemplate } from "@/lib/email-renderer";
+import { writeAuditLog } from "@/lib/audit";
+import {
+  countUsersSharingFingerprint,
+  isSharedFingerprintAbuse,
+} from "@/lib/device-abuse";
 import { headers } from "next/headers";
 
 const FINGERPRINT_REGEX = /^[a-f0-9]{64}$/;
@@ -88,6 +93,25 @@ export async function POST(request: Request) {
       ...(secondarySignals ? { metadata: secondarySignals } : {}),
     },
   });
+
+  // Multi-account signal: this fingerprint on many distinct accounts. Flag for
+  // visibility only (no credit action here); best-effort, never blocks the
+  // device report.
+  try {
+    const sharedUsers = await countUsersSharingFingerprint(prisma, fingerprint, userId);
+    if (isSharedFingerprintAbuse(sharedUsers)) {
+      await writeAuditLog({
+        action: "abuse.shared_device_fingerprint",
+        category: "auth",
+        actorId: userId,
+        targetType: "user",
+        targetId: userId,
+        metadata: { fingerprintPrefix: fingerprint.slice(0, 12), sharedUserCount: sharedUsers },
+      });
+    }
+  } catch (err) {
+    console.error("[device] shared-fingerprint check failed:", err);
+  }
 
   // Check if user has any OTHER devices (first device = first login, don't alert)
   const deviceCount = await prisma.userDevice.count({ where: { userId } });
