@@ -2,6 +2,7 @@ import "server-only";
 import Anthropic from "@anthropic-ai/sdk";
 import type { Provider, AiCreateParams, AiResponse } from "./index";
 import { splitSystemForCache, type CacheTtl } from "./system-cache";
+import { resolveThinking } from "./thinking";
 
 let platformClient: Anthropic | null = null;
 
@@ -12,19 +13,6 @@ function getClient(apiKey?: string | null): Anthropic {
   }
   return platformClient;
 }
-
-/**
- * Claude Fable/Mythos models have always-on extended thinking that spends
- * from the max_tokens budget BEFORE any text is produced, and a tokenizer
- * that uses ~30% more tokens than Opus-tier models. Budgets tuned for other
- * models (8192 for reviews, 256 for titles) get fully consumed by the
- * thinking block on hard inputs, the response ends with
- * stop_reason "max_tokens" and zero text blocks, and the whole review fails.
- * Raise the cap to a floor that leaves room for thinking + text; max_tokens
- * is a ceiling, not a spend, so the floor costs nothing on easy inputs.
- */
-const ALWAYS_THINKING_MODEL_RX = /^claude-(fable|mythos)-/;
-const ALWAYS_THINKING_MAX_TOKENS_FLOOR = 64000;
 
 /**
  * Hard deadline for one Anthropic call, thinking time included. The SDK's
@@ -49,14 +37,14 @@ export const anthropicProvider: Provider = {
     // to opt back down. Read at call time so it's tunable without a redeploy.
     const cacheTtl: CacheTtl = process.env.PROMPT_CACHE_TTL === "5m" ? "5m" : "1h";
 
-    const maxTokens = ALWAYS_THINKING_MODEL_RX.test(params.model)
-      ? Math.max(params.maxTokens, ALWAYS_THINKING_MAX_TOKENS_FLOOR)
-      : params.maxTokens;
-
     // When a responseSchema is provided, use Anthropic tool-use for enforced
     // structured output: define a single tool whose input_schema matches the
     // requested shape, force it via tool_choice, then return the tool input.
     const useTool = params.responseSchema !== undefined;
+
+    // Always-thinking models (Fable/Mythos): raise max_tokens to the floor and,
+    // on the text path, cap the thinking budget so the answer always has room.
+    const { maxTokens, thinking } = resolveThinking(params.model, params.maxTokens, useTool);
 
     // Streaming here is purely between this process and the Anthropic API —
     // finalMessage() buffers the SSE chunks and returns the same complete
@@ -67,6 +55,7 @@ export const anthropicProvider: Provider = {
       {
         model: params.model,
         max_tokens: maxTokens,
+        ...(thinking ? { thinking } : {}),
         system: params.system ? splitSystemForCache(params.system, params.cacheSystem, cacheTtl) : undefined,
         messages: params.messages.map((m) => ({
           role: m.role,
