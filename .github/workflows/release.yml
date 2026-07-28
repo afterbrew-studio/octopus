@@ -6,11 +6,18 @@ name: Release Docker image to GHCR
 # `latestRelease` from SystemConfig, refreshed on demand (cached 1h) by
 # apps/web/lib/releases.ts when an admin opens the page.
 #
+# Two image variants are built (they differ only in build-time NEXT_PUBLIC_*
+# values baked into the client bundle, so each needs its own `next build`):
+#   - selfhost: PUBLIC octopus-selfhost package (self-hosters `compose pull`)
+#   - hosted:   PRIVATE octopus package (the hosted deploy stack pulls this)
+# They run as PARALLEL jobs (wall-clock ≈ the slower build, not the sum) since
+# their `next build` outputs can't be shared.
+#
 # Maintainers cut a release by:
 #   1. Bump apps/web/package.json version
 #   2. git tag v0.X.Y && git push origin v0.X.Y
-#   3. This workflow builds, pushes, and creates a GitHub Release with
-#      auto-generated notes.
+#   3. This workflow builds + pushes both variants, then creates a GitHub
+#      Release with auto-generated notes.
 
 on:
   push:
@@ -22,15 +29,15 @@ permissions:
   packages: write
 
 jobs:
-  build-and-publish:
+  # ── self-host distribution image (PUBLIC package) ──────────────────────────
+  selfhost:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
+      # No QEMU: builds are linux/amd64 only on an amd64 runner, so emulation
+      # setup is pure overhead. Add setup-qemu-action back if arm64 is added.
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -47,7 +54,6 @@ jobs:
       - name: Derive image tags
         id: tags
         run: |
-          # Strip the leading "v" from the tag — e.g. v0.2.0 → 0.2.0
           REF_NAME=${GITHUB_REF#refs/tags/}
           SEMVER=${REF_NAME#v}
           echo "semver=$SEMVER" >> $GITHUB_OUTPUT
@@ -58,8 +64,6 @@ jobs:
         with:
           context: .
           file: apps/web/Dockerfile
-          # ARM64 build is slow and the primary deployment target is x86_64;
-          # add linux/arm64 to platforms when there's demand.
           platforms: linux/amd64
           push: true
           # The self-host distribution lives on a SEPARATE package
@@ -84,15 +88,39 @@ jobs:
           cache-from: type=gha,scope=selfhost
           cache-to: type=gha,mode=max,scope=selfhost
 
-      # Hosted-deployment variant of the same commit. NEXT_PUBLIC_* values are
-      # inlined into the client bundle at build time, so the hosted instance
-      # needs its own build: selfHosted OFF, plus the instance's GitHub App
-      # slug + Pubby key (both are client-exposed identifiers, not secrets —
-      # they ship in every page's JS — hence repo *variables*, not secrets).
-      # Pushes an immutable `X.Y.Z-prod` plus the `latest-web`/`latest-engine`
-      # aliases the deployment stack pulls. Moving the aliases does NOT touch
-      # running services — they only change on an explicit service update.
-      # Skipped when the variables are unset (e.g. on forks).
+  # ── hosted-deploy image (PRIVATE package) ──────────────────────────────────
+  # NEXT_PUBLIC_* values are inlined into the client bundle at build time, so
+  # the hosted instance needs its own build: selfHosted OFF, plus the instance's
+  # GitHub App slug + Pubby key (both are client-exposed identifiers, not
+  # secrets — they ship in every page's JS — hence repo *variables*). Pushes an
+  # immutable `X.Y.Z-prod` plus the `latest-web`/`latest-engine` aliases the
+  # deployment stack pulls. Moving the aliases does NOT touch running services —
+  # they only change on an explicit service update. Skipped when the variables
+  # are unset (e.g. on forks).
+  prod:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_PAT }}
+
+      - name: Derive image tags
+        id: tags
+        run: |
+          REF_NAME=${GITHUB_REF#refs/tags/}
+          SEMVER=${REF_NAME#v}
+          echo "semver=$SEMVER" >> $GITHUB_OUTPUT
+          echo "image_name=ghcr.io/${GITHUB_REPOSITORY,,}" >> $GITHUB_OUTPUT
+
       - name: Build + push image (hosted deploy variant)
         if: ${{ vars.NEXT_PUBLIC_PUBBY_KEY != '' && vars.NEXT_PUBLIC_GITHUB_APP_SLUG != '' }}
         uses: docker/build-push-action@v6
@@ -115,6 +143,17 @@ jobs:
             NEXT_PUBLIC_PUBBY_KEY=${{ vars.NEXT_PUBLIC_PUBBY_KEY }}
           cache-from: type=gha,scope=prod
           cache-to: type=gha,mode=max,scope=prod
+
+  # ── GitHub Release (once, after both images are pushed) ────────────────────
+  release:
+    needs: [selfhost, prod]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Derive semver
+        id: tags
+        run: |
+          REF_NAME=${GITHUB_REF#refs/tags/}
+          echo "semver=${REF_NAME#v}" >> $GITHUB_OUTPUT
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
