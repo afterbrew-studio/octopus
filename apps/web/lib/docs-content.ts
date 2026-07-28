@@ -209,10 +209,10 @@ This is ideal for teams that already have API agreements with AI providers or wa
         heading: "Model Pricing",
         text: `Octopus supports multiple AI models. A 20% platform fee is applied on top of provider costs. Base prices per 1M tokens:
 Claude Fable 5 — $10 input / $50 output. Anthropic's Claude 5 frontier model; the top opt-in tier for the most demanding reviews.
-Claude Opus 5 — $5 input / $25 output. Premium, opt-in review model for a deeper read on tricky pull requests; the platform default is unchanged.
-Claude Opus 4.8 — $5 input / $25 output. Current Opus-tier review model.
+Claude Opus 5 — $5 input / $25 output. Premium, opt-in review model for a deeper read on tricky pull requests.
+Claude Opus 4.8 — $5 input / $25 output. The default review model on Octopus Cloud.
 Claude Opus 4 — $15 input / $75 output. Legacy high-quality review model.
-Claude Sonnet 4.6 and Claude Sonnet 4 — $3 input / $15 output. Primary review models: high quality, fast.
+Claude Sonnet 4.6 and Claude Sonnet 4 — $3 input / $15 output. High quality and fast; Sonnet 4.6 is the default for self-hosted installs.
 Claude Haiku 4.5 — $1 input / $5 output. Lightweight tasks like title generation.
 Gemini 2.5 Pro — $1.25 input / $10 output. Gemini 2.5 Flash — $0.15 input / $0.60 output.
 GPT-5.3 Codex — $1.75 input / $14 output.
