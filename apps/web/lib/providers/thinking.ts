@@ -5,9 +5,11 @@
  * blocks that spend from the max_tokens budget BEFORE any text. The small
  * review/title budgets (8192 / 256) get consumed by thinking on hard inputs, so
  * the response ends with stop_reason "max_tokens" and zero text blocks — an
- * empty review. So we raise max_tokens to a floor for EVERY Anthropic model:
- * it's a ceiling not a spend (free on easy inputs, harmless for non-thinking
- * models), and it gives thinking room to finish and still answer.
+ * empty review. So for these models we raise max_tokens to a floor (a ceiling,
+ * not a spend — free on easy inputs) so thinking has room to finish and still
+ * answer. The floor is applied ONLY to this known set: other models have lower
+ * per-model max_tokens caps (e.g. 8192), and blindly raising to 64000 would get
+ * a 400 rejected.
  *
  * The always-on-thinking models additionally REJECT `thinking.type: "enabled"`
  * with an explicit budget ("not supported for this model") — they require
@@ -54,16 +56,15 @@ export function resolveThinking(
   requestedMaxTokens: number,
   useTool: boolean,
 ): ResolvedThinking {
-  // Floor applies to ALL Anthropic models — a high ceiling is free on easy
-  // inputs and stops thinking-heavy models (e.g. Opus 5) from consuming the
-  // whole budget before producing text.
+  // Only the known thinking-heavy Claude-5 models get the floor — they have
+  // high per-model caps (>= 64000) and need the room. Other models keep their
+  // requested budget so we never exceed a lower cap (a 400).
+  if (!ALWAYS_THINKING_MODEL_RX.test(model)) return { maxTokens: requestedMaxTokens };
   const maxTokens = Math.max(requestedMaxTokens, ALWAYS_THINKING_MAX_TOKENS_FLOOR);
-  if (ALWAYS_THINKING_MODEL_RX.test(model) && !useTool) {
-    return {
-      maxTokens,
-      thinking: { type: "adaptive" },
-      outputConfig: { effort: resolveEffort() },
-    };
-  }
-  return { maxTokens };
+  if (useTool) return { maxTokens };
+  return {
+    maxTokens,
+    thinking: { type: "adaptive" },
+    outputConfig: { effort: resolveEffort() },
+  };
 }

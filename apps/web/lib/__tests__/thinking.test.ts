@@ -9,11 +9,17 @@ import {
 const FLOOR = ALWAYS_THINKING_MAX_TOKENS_FLOOR;
 
 describe("resolveThinking", () => {
-  it("non-thinking models get the max_tokens floor but NO thinking/output config", () => {
+  it("non-thinking models keep their requested budget (no floor → no cap 400)", () => {
     const r = resolveThinking("claude-sonnet-4-6", 8192, false);
-    expect(r.maxTokens).toBe(FLOOR); // floor applies to all models now
+    expect(r.maxTokens).toBe(8192);
     expect(r.thinking).toBeUndefined();
     expect(r.outputConfig).toBeUndefined();
+  });
+
+  it("a lower-cap model is not forced above its budget (no 64k floor)", () => {
+    const r = resolveThinking("claude-3-5-haiku", 4096, false);
+    expect(r.maxTokens).toBe(4096);
+    expect(r.thinking).toBeUndefined();
   });
 
   it("Fable text path: floor + adaptive thinking + effort", () => {
