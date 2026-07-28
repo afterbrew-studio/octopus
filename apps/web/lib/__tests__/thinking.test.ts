@@ -30,10 +30,18 @@ describe("resolveThinking", () => {
   });
 
   it("Opus 5 text path: also gets adaptive thinking (same Claude-5 thinking API)", () => {
-    const r = resolveThinking("claude-opus-5", 8192, false);
-    expect(r.maxTokens).toBe(FLOOR);
-    expect(r.thinking).toEqual({ type: "adaptive" });
-    expect(r.outputConfig).toEqual({ effort: DEFAULT_THINKING_EFFORT });
+    for (const m of ["claude-opus-5", "claude-opus-5-20260115"]) {
+      const r = resolveThinking(m, 8192, false);
+      expect(r.maxTokens).toBe(FLOOR);
+      expect(r.thinking).toEqual({ type: "adaptive" });
+      expect(r.outputConfig).toEqual({ effort: DEFAULT_THINKING_EFFORT });
+    }
+  });
+
+  it("opus-5 match is bounded — a different id like claude-opus-50 is NOT treated as Opus 5", () => {
+    const r = resolveThinking("claude-opus-50", 8192, false);
+    expect(r.maxTokens).toBe(8192); // no floor, no thinking config
+    expect(r.thinking).toBeUndefined();
   });
 
   it("always-thinking tool path: floor only, no thinking/output config", () => {

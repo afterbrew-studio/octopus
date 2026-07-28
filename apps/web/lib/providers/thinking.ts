@@ -21,7 +21,7 @@
 // Models that emit always-on thinking and need the adaptive config (confirmed
 // by their "use thinking.type.adaptive" API error). Opus 5 shares the Claude-5
 // thinking API with Fable 5.
-export const ALWAYS_THINKING_MODEL_RX = /^claude-(fable|mythos)-|^claude-opus-5/;
+export const ALWAYS_THINKING_MODEL_RX = /^claude-(?:fable|mythos)-|^claude-opus-5(?:-|$)/;
 export const ALWAYS_THINKING_MAX_TOKENS_FLOOR = 64000;
 
 export type ThinkingEffort = "low" | "medium" | "high" | "xhigh" | "max";
