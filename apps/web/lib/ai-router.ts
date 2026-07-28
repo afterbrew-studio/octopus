@@ -146,9 +146,14 @@ export async function createAiMessage(
   const keys = await getOrgKeys(orgId);
   const orgKey = getOrgKeyForProvider(keys, provider);
 
-  // Only always-thinking models consume effort; resolve it lazily so we don't
-  // add a DB read to every non-thinking call. An explicit params.effort wins.
-  if (params.effort === undefined && ALWAYS_THINKING_MODEL_RX.test(params.model)) {
+  // Only always-thinking models on the text path consume effort; resolve it
+  // lazily so we don't add a DB read to non-thinking calls or to the forced-tool
+  // path (where resolveThinking ignores effort). An explicit params.effort wins.
+  if (
+    params.effort === undefined &&
+    params.responseSchema === undefined &&
+    ALWAYS_THINKING_MODEL_RX.test(params.model)
+  ) {
     params = { ...params, effort: await getReviewEffort(orgId) };
   }
 
