@@ -39,6 +39,14 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid signature" }, { status: 400 });
   }
 
+  // NOTE on Stripe API versions: the SDK pin in lib/stripe.ts governs OUTBOUND
+  // calls, but webhook event payload SHAPES are set by the endpoint's version
+  // configured in the Stripe dashboard — the two are independent. This handler
+  // reads only version-stable fields (metadata, object ids, amounts,
+  // payment_intent, payment_status), so an SDK/dashboard version skew (e.g.
+  // after an SDK major bump) does not affect it. If you start reading a
+  // version-sensitive field, first align the dashboard endpoint version.
+
   // Single retry contract for value-bearing work: a duplicate delivery (P2002)
   // is ACKed with 200 (idempotent skip); ANY other failure returns 500 so Stripe
   // retries — otherwise a transient DB/Stripe error would silently drop a paid
