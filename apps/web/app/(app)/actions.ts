@@ -18,6 +18,7 @@ import { assessWelcomeCredit } from "@/lib/welcome-credit";
 import { MAX_OWNED_ORGS_PER_USER, WELCOME_FREE_CREDITS } from "@/lib/constants";
 import { encryptString } from "@/lib/crypto";
 import { validateProviderUrl } from "@/lib/providers/url-validation";
+import { asThinkingEffort } from "@/lib/providers/thinking";
 import { writeAuditLog } from "@/lib/audit";
 import { canUseLiveTelemetry } from "@/lib/entitlements";
 import { getClientIp } from "@/lib/request-ip";
@@ -412,10 +413,12 @@ export async function updateDefaultModels(
 
   const defaultModelId = (formData.get("defaultModelId") as string)?.trim() || null;
   const defaultEmbedModelId = (formData.get("defaultEmbedModelId") as string)?.trim() || null;
+  // Empty string = "Inherit platform default"; otherwise must be a valid effort.
+  const reviewEffort = asThinkingEffort((formData.get("reviewEffort") as string)?.trim()) ?? null;
 
   await prisma.organization.update({
     where: { id: orgId },
-    data: { defaultModelId, defaultEmbedModelId },
+    data: { defaultModelId, defaultEmbedModelId, reviewEffort },
   });
 
   revalidatePath("/settings/models");

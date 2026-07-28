@@ -50,6 +50,7 @@ export const anthropicProvider: Provider = {
       params.model,
       params.maxTokens,
       useTool,
+      params.effort,
     );
 
     // Streaming here is purely between this process and the Anthropic API —

@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
 import { prisma } from "@octopus/db";
 import { HARDCODED_REVIEW_MODEL, HARDCODED_EMBED_MODEL } from "@/lib/ai-client";
+import { DEFAULT_THINKING_EFFORT } from "@/lib/providers/thinking";
 import { ModelsSettings } from "./models-settings";
 
 const INITIAL_REPO_COUNT = 10;
@@ -30,6 +31,7 @@ export default async function ModelsPage() {
             id: true,
             defaultModelId: true,
             defaultEmbedModelId: true,
+            reviewEffort: true,
           },
         },
       },
@@ -77,10 +79,17 @@ export default async function ModelsPage() {
   // hosted SaaS OLLAMA_SERVER_URL is unset, so the panel stays hidden.
   const ollamaEnabled = !!process.env.OLLAMA_SERVER_URL?.trim();
 
-  const platformDefaults = await prisma.availableModel.findMany({
-    where: { isPlatformDefault: true, isActive: true },
-    select: { modelId: true, displayName: true, category: true },
-  });
+  const [platformDefaults, sysConfig] = await Promise.all([
+    prisma.availableModel.findMany({
+      where: { isPlatformDefault: true, isActive: true },
+      select: { modelId: true, displayName: true, category: true },
+    }),
+    prisma.systemConfig.findUnique({
+      where: { id: "singleton" },
+      select: { defaultReviewEffort: true },
+    }),
+  ]);
+  const platformDefaultEffort = sysConfig?.defaultReviewEffort || DEFAULT_THINKING_EFFORT;
   const platformDefaultLlm =
     platformDefaults.find((m) => m.category === "llm") ??
     availableModels.find((m) => m.modelId === HARDCODED_REVIEW_MODEL) ??
@@ -97,6 +106,8 @@ export default async function ModelsPage() {
       availableModels={availableModels}
       currentModelId={member.organization.defaultModelId}
       currentEmbedModelId={member.organization.defaultEmbedModelId}
+      currentReviewEffort={member.organization.reviewEffort}
+      platformDefaultEffort={platformDefaultEffort}
       platformDefaultLlmName={platformDefaultLlm?.displayName ?? null}
       platformDefaultEmbedName={platformDefaultEmbed?.displayName ?? null}
       initialRepos={repos}

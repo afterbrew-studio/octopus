@@ -136,6 +136,9 @@ model Organization {
   claudeCodeApiKey     String?
   defaultModelId       String?
   defaultEmbedModelId  String?
+  // Per-org thinking-model effort override (low|medium|high|xhigh|max);
+  // null = inherit the platform default (SystemConfig.defaultReviewEffort).
+  reviewEffort         String?
   monthlySpendLimitUsd    Float?
   checkFailureThreshold   String   @default("critical") // "critical" | "high" | "medium" | "none"
   reviewsPaused           Boolean  @default(false)
@@ -855,6 +858,9 @@ model OllamaModelPull {
 model SystemConfig {
   id        String   @id @default("singleton")
   defaultReviewConfig Json @default("{}")
+  // Platform default thinking-model effort (low|medium|high|xhigh|max);
+  // null = the built-in code default (DEFAULT_THINKING_EFFORT = medium).
+  defaultReviewEffort String?
   blockedAuthors      Json @default("[]") // string[] of globally blocked PR author usernames
   queueConfig         Json @default("{}") // { reviewTimeoutSeconds, reviewConcurrency }
   announcements       Json @default("[]") // landing-page announcement bar entries (see lib/announcements types)
