@@ -12,8 +12,16 @@
 -- Guarded on BOTH the slug and the exact stale value, so this matches only the
 -- one affected prod row and is a no-op in every other environment (self-host,
 -- dev, CI) where no such row exists.
+--
+-- githubInstallationId is UNIQUE, so also guard on no other row already holding
+-- the target id: otherwise the UPDATE would raise a unique violation and abort
+-- the entire `migrate deploy`. No org currently holds 111609667, so this
+-- applies now; the guard just turns a future collision into a safe no-op.
 UPDATE "organizations"
 SET "githubInstallationId" = 111609667,
     "updatedAt" = now()
 WHERE "slug" = 'aot'
-  AND "githubInstallationId" = 111815536;
+  AND "githubInstallationId" = 111815536
+  AND NOT EXISTS (
+    SELECT 1 FROM "organizations" WHERE "githubInstallationId" = 111609667
+  );
