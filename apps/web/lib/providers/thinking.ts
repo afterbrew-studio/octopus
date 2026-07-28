@@ -43,9 +43,10 @@ export type ResolvedThinking = {
 };
 
 /**
- * Raise max_tokens to the floor for every model (so thinking can't starve the
- * answer), and for always-on-thinking models additionally set adaptive thinking
- * + an effort level.
+ * For a thinking-heavy model (ALWAYS_THINKING_MODEL_RX), raise max_tokens to the
+ * floor so thinking can't starve the answer, and additionally set adaptive
+ * thinking + an effort level. All other models are returned with their
+ * requested max_tokens unchanged (no floor — their per-model cap may be lower).
  *
  * Adaptive is applied only on the plain-text path: the forced-`tool_choice`
  * (structured output) path keeps the floor alone and leaves thinking implicit,
