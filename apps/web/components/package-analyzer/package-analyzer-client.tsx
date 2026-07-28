@@ -13,10 +13,11 @@ interface PackageAnalyzerClientProps {
   authenticated?: boolean;
   history?: AnalysisHistoryItem[];
   defaultUrl?: string;
+  repositoryId?: string;
   autoStart?: boolean;
 }
 
-export function PackageAnalyzerClient({ authenticated, history, defaultUrl, autoStart }: PackageAnalyzerClientProps) {
+export function PackageAnalyzerClient({ authenticated, history, defaultUrl, repositoryId, autoStart }: PackageAnalyzerClientProps) {
   const router = useRouter();
   const [isLoading, setIsLoading] = useState(false);
   const [progressEntries, setProgressEntries] = useState<ProgressEntry[]>([]);
@@ -43,10 +44,14 @@ export function PackageAnalyzerClient({ authenticated, history, defaultUrl, auto
     redirectingRef.current = false;
 
     try {
+      // Send repositoryId only when analyzing the exact repo it belongs to
+      // (the prefilled URL) — if the user edits the URL to another repo, the
+      // id no longer matches, so omit it and let the server resolve by org.
+      const sendRepoId = repositoryId && repoUrl.trim() === (defaultUrl ?? "").trim();
       const resp = await fetch("/api/analyze-deps", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ repoUrl }),
+        body: JSON.stringify(sendRepoId ? { repoUrl, repositoryId } : { repoUrl }),
       });
 
       if (!resp.ok) {
@@ -131,7 +136,7 @@ export function PackageAnalyzerClient({ authenticated, history, defaultUrl, auto
         setIsLoading(false);
       }
     }
-  }, [addProgress, router]);
+  }, [addProgress, router, repositoryId, defaultUrl]);
 
   return (
     <div className="space-y-6">
