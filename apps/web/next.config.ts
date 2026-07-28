@@ -9,7 +9,11 @@ const nextConfig: NextConfig = {
   transpilePackages: ["@octopus/db", "@octopus/package-analyzer"],
   // pdfkit reads its built-in AFM font data from disk at runtime; bundling it
   // breaks those reads, so keep it external (traced into standalone output).
-  serverExternalPackages: ["pdfkit"],
+  // sharp is a native module — Next auto-externalized 0.34, but 0.35's packaging
+  // trips the bundler during `next build` page-data collection (routes importing
+  // it, e.g. /api/organizations/avatar, fail with an externalImport error), so
+  // pin it external explicitly.
+  serverExternalPackages: ["pdfkit", "sharp"],
   experimental: {
     serverActions: {
       allowedOrigins: ["octopus-review.ai", "*.octopus-review.ai"],
