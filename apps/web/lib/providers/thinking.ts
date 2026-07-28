@@ -26,7 +26,7 @@ export const ALWAYS_THINKING_MAX_TOKENS_FLOOR = 64000;
 
 export type ThinkingEffort = "low" | "medium" | "high" | "xhigh" | "max";
 const VALID_EFFORTS: readonly ThinkingEffort[] = ["low", "medium", "high", "xhigh", "max"];
-export const DEFAULT_THINKING_EFFORT: ThinkingEffort = "high";
+export const DEFAULT_THINKING_EFFORT: ThinkingEffort = "medium";
 
 /** Effort knob, env-tunable without a redeploy (FABLE_THINKING_EFFORT). */
 export function resolveEffort(): ThinkingEffort {
