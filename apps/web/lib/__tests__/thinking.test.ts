@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import {
   resolveThinking,
   resolveEffort,
+  asThinkingEffort,
   ALWAYS_THINKING_MAX_TOKENS_FLOOR,
   DEFAULT_THINKING_EFFORT,
 } from "@/lib/providers/thinking";
@@ -55,6 +56,26 @@ describe("resolveThinking", () => {
     const r = resolveThinking("claude-mythos-1", 100000, false);
     expect(r.maxTokens).toBe(100000);
     expect(r.thinking).toEqual({ type: "adaptive" });
+  });
+
+  it("an explicit effort overrides the default", () => {
+    const r = resolveThinking("claude-fable-5", 8192, false, "high");
+    expect(r.outputConfig).toEqual({ effort: "high" });
+  });
+
+  it("explicit effort is ignored on the tool path and by non-thinking models", () => {
+    expect(resolveThinking("claude-fable-5", 8192, true, "high").outputConfig).toBeUndefined();
+    expect(resolveThinking("claude-sonnet-4-6", 8192, false, "high").outputConfig).toBeUndefined();
+  });
+});
+
+describe("asThinkingEffort", () => {
+  it("passes valid efforts through and rejects everything else", () => {
+    expect(asThinkingEffort("xhigh")).toBe("xhigh");
+    expect(asThinkingEffort("bogus")).toBeUndefined();
+    expect(asThinkingEffort("")).toBeUndefined();
+    expect(asThinkingEffort(null)).toBeUndefined();
+    expect(asThinkingEffort(undefined)).toBeUndefined();
   });
 });
 

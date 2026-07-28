@@ -25,15 +25,17 @@ export const ALWAYS_THINKING_MODEL_RX = /^claude-(?:fable|mythos)-|^claude-opus-
 export const ALWAYS_THINKING_MAX_TOKENS_FLOOR = 64000;
 
 export type ThinkingEffort = "low" | "medium" | "high" | "xhigh" | "max";
-const VALID_EFFORTS: readonly ThinkingEffort[] = ["low", "medium", "high", "xhigh", "max"];
+export const VALID_EFFORTS: readonly ThinkingEffort[] = ["low", "medium", "high", "xhigh", "max"];
 export const DEFAULT_THINKING_EFFORT: ThinkingEffort = "medium";
 
-/** Effort knob, env-tunable without a redeploy (FABLE_THINKING_EFFORT). */
+/** Narrow an arbitrary string to a valid ThinkingEffort (else undefined). */
+export function asThinkingEffort(v: string | null | undefined): ThinkingEffort | undefined {
+  return v && (VALID_EFFORTS as readonly string[]).includes(v) ? (v as ThinkingEffort) : undefined;
+}
+
+/** Env fallback effort (FABLE_THINKING_EFFORT), else the built-in default. */
 export function resolveEffort(): ThinkingEffort {
-  const v = process.env.FABLE_THINKING_EFFORT;
-  return v && (VALID_EFFORTS as readonly string[]).includes(v)
-    ? (v as ThinkingEffort)
-    : DEFAULT_THINKING_EFFORT;
+  return asThinkingEffort(process.env.FABLE_THINKING_EFFORT) ?? DEFAULT_THINKING_EFFORT;
 }
 
 export type ResolvedThinking = {
@@ -56,6 +58,7 @@ export function resolveThinking(
   model: string,
   requestedMaxTokens: number,
   useTool: boolean,
+  effort?: ThinkingEffort,
 ): ResolvedThinking {
   // Only the known thinking-heavy Claude-5 models get the floor — they have
   // high per-model caps (>= 64000) and need the room. Other models keep their
@@ -66,6 +69,8 @@ export function resolveThinking(
   return {
     maxTokens,
     thinking: { type: "adaptive" },
-    outputConfig: { effort: resolveEffort() },
+    // Caller-resolved effort (org override → platform default) wins; else the
+    // env/built-in default.
+    outputConfig: { effort: effort ?? resolveEffort() },
   };
 }

@@ -14,6 +14,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { LATEST_MODEL_ID } from "@/lib/model-latest";
+import { VALID_EFFORTS } from "@/lib/providers/thinking";
 import { IconPencil, IconCheck, IconX, IconSearch, IconLoader2 } from "@tabler/icons-react";
 import { updateDefaultModels } from "../../actions";
 import { updateRepoModels } from "../../repositories/actions";
@@ -335,6 +336,8 @@ export function ModelsSettings({
   availableModels,
   currentModelId,
   currentEmbedModelId,
+  currentReviewEffort,
+  platformDefaultEffort,
   platformDefaultLlmName,
   platformDefaultEmbedName,
   initialRepos,
@@ -345,6 +348,8 @@ export function ModelsSettings({
   availableModels: AvailableModel[];
   currentModelId: string | null;
   currentEmbedModelId: string | null;
+  currentReviewEffort: string | null;
+  platformDefaultEffort: string;
   platformDefaultLlmName: string | null;
   platformDefaultEmbedName: string | null;
   initialRepos: RepoModelItem[];
@@ -353,6 +358,7 @@ export function ModelsSettings({
 }) {
   const [selectedModelId, setSelectedModelId] = useState(currentModelId ?? "");
   const [selectedEmbedModelId, setSelectedEmbedModelId] = useState(currentEmbedModelId ?? "");
+  const [selectedEffort, setSelectedEffort] = useState(currentReviewEffort ?? "");
   const [saving, startTransition] = useTransition();
   const [saveResult, setSaveResult] = useState<{ error?: string; success?: boolean }>({});
 
@@ -440,6 +446,32 @@ export function ModelsSettings({
               </select>
               <p className="text-xs text-muted-foreground">
                 Used for code search and context retrieval.
+              </p>
+            </div>
+
+            <Separator />
+
+            <div className="space-y-2">
+              <Label htmlFor="reviewEffort">Reasoning Effort</Label>
+              <select
+                id="reviewEffort"
+                name="reviewEffort"
+                value={selectedEffort}
+                onChange={(e) => setSelectedEffort(e.target.value)}
+                disabled={!isOwner}
+                className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <option value="">{`(Platform Default — ${platformDefaultEffort})`}</option>
+                {VALID_EFFORTS.map((e) => (
+                  <option key={e} value={e}>
+                    {e}
+                  </option>
+                ))}
+              </select>
+              <p className="text-xs text-muted-foreground">
+                How hard extended-thinking models (e.g. Fable, Opus 5) reason before
+                answering. Higher effort is more thorough but slower. Ignored by models
+                without extended thinking.
               </p>
             </div>
 

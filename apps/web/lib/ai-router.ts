@@ -3,6 +3,8 @@ import { prisma } from "@octopus/db";
 import { decryptStringMaybeLegacy } from "@/lib/crypto";
 import { getProvider } from "./providers";
 import type { AiCreateParams, AiProvider, AiResponse } from "./providers";
+import { ALWAYS_THINKING_MODEL_RX } from "./providers/thinking";
+import { getReviewEffort } from "./review-effort";
 
 export type { AiCreateParams, AiMessage, AiProvider, AiResponse } from "./providers";
 
@@ -143,6 +145,17 @@ export async function createAiMessage(
   const provider = await resolveProvider(params.model);
   const keys = await getOrgKeys(orgId);
   const orgKey = getOrgKeyForProvider(keys, provider);
+
+  // Only always-thinking models on the text path consume effort; resolve it
+  // lazily so we don't add a DB read to non-thinking calls or to the forced-tool
+  // path (where resolveThinking ignores effort). An explicit params.effort wins.
+  if (
+    params.effort === undefined &&
+    params.responseSchema === undefined &&
+    ALWAYS_THINKING_MODEL_RX.test(params.model)
+  ) {
+    params = { ...params, effort: await getReviewEffort(orgId) };
+  }
 
   try {
     return await getProvider(provider).create(params, orgKey, orgId);

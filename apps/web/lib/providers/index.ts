@@ -11,6 +11,7 @@ import { opencodeProvider } from "./opencode";
 import { claudeCodeProvider } from "./claude-code";
 import { mockProvider } from "./mock";
 import { mockFailProvider } from "./mock-fail";
+import type { ThinkingEffort } from "./thinking";
 
 export type AiProvider =
   | "anthropic"
@@ -50,6 +51,12 @@ export type AiCreateParams = {
   messages: AiMessage[];
   cacheSystem?: boolean;
   responseSchema?: ResponseJsonSchema;
+  /**
+   * Thinking-model reasoning effort, resolved per-org (org override → platform
+   * default) by the router. Only affects always-thinking models; others ignore
+   * it. Falls back to the env/built-in default when unset.
+   */
+  effort?: ThinkingEffort;
 };
 
 export type AiResponse = {
