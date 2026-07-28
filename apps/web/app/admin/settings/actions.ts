@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { prisma } from "@octopus/db";
 import { getSuperAdmin } from "@/lib/superadmin";
 import { asThinkingEffort } from "@/lib/providers/thinking";
+import { writeAuditLog } from "@/lib/audit";
 
 /**
  * Set the platform-default thinking-model reasoning effort
@@ -25,6 +26,16 @@ export async function setPlatformReviewEffort(
     where: { id: "singleton" },
     update: { defaultReviewEffort },
     create: { id: "singleton", defaultReviewEffort },
+  });
+
+  await writeAuditLog({
+    action: "platform.review_effort.update",
+    category: "admin",
+    actorId: sa.id,
+    actorEmail: sa.email,
+    targetType: "SystemConfig",
+    targetId: "singleton",
+    metadata: { defaultReviewEffort },
   });
 
   revalidatePath("/admin/settings");
