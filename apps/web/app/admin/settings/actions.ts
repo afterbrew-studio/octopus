@@ -19,8 +19,13 @@ export async function setPlatformReviewEffort(
   const sa = await getSuperAdmin();
   if (!sa) return { error: "Not authorized." };
 
-  const raw = (formData.get("defaultReviewEffort") as string)?.trim();
-  const defaultReviewEffort = asThinkingEffort(raw) ?? null;
+  // Empty = clear the override (built-in default applies); a non-empty value
+  // must be valid (reject rather than silently clear).
+  const raw = (formData.get("defaultReviewEffort") as string)?.trim() || "";
+  const defaultReviewEffort = raw ? asThinkingEffort(raw) : null;
+  if (raw && defaultReviewEffort === undefined) {
+    return { error: "Invalid reasoning effort." };
+  }
 
   await prisma.systemConfig.upsert({
     where: { id: "singleton" },

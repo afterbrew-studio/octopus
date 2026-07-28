@@ -19,10 +19,9 @@ export default async function AdminSettingsPage() {
   const sa = await getSuperAdmin();
   if (!sa) notFound();
 
-  const sysConfig = await prisma.systemConfig.findUnique({
-    where: { id: "singleton" },
-    select: { defaultReviewEffort: true },
-  });
+  const sysConfig = await prisma.systemConfig
+    .findUnique({ where: { id: "singleton" }, select: { defaultReviewEffort: true } })
+    .catch(() => null);
 
   return (
     <SettingsClient

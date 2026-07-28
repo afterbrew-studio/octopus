@@ -413,8 +413,13 @@ export async function updateDefaultModels(
 
   const defaultModelId = (formData.get("defaultModelId") as string)?.trim() || null;
   const defaultEmbedModelId = (formData.get("defaultEmbedModelId") as string)?.trim() || null;
-  // Empty string = "Inherit platform default"; otherwise must be a valid effort.
-  const reviewEffort = asThinkingEffort((formData.get("reviewEffort") as string)?.trim()) ?? null;
+  // Empty = "Inherit platform default"; a non-empty value must be a valid effort
+  // (reject rather than silently clear the override).
+  const rawEffort = (formData.get("reviewEffort") as string)?.trim() || "";
+  const reviewEffort = rawEffort ? asThinkingEffort(rawEffort) : null;
+  if (rawEffort && reviewEffort === undefined) {
+    return { error: "Invalid reasoning effort." };
+  }
 
   await prisma.organization.update({
     where: { id: orgId },

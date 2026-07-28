@@ -84,10 +84,10 @@ export default async function ModelsPage() {
       where: { isPlatformDefault: true, isActive: true },
       select: { modelId: true, displayName: true, category: true },
     }),
-    prisma.systemConfig.findUnique({
-      where: { id: "singleton" },
-      select: { defaultReviewEffort: true },
-    }),
+    // Label-only; a read failure must not break the whole page.
+    prisma.systemConfig
+      .findUnique({ where: { id: "singleton" }, select: { defaultReviewEffort: true } })
+      .catch(() => null),
   ]);
   const platformDefaultEffort = sysConfig?.defaultReviewEffort || DEFAULT_THINKING_EFFORT;
   const platformDefaultLlm =
