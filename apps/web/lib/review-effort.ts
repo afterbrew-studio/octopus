@@ -10,15 +10,23 @@ import { asThinkingEffort, type ThinkingEffort } from "./providers/thinking";
  * Only matters for always-thinking models; other models ignore effort.
  */
 export async function getReviewEffort(orgId: string): Promise<ThinkingEffort | undefined> {
-  const [org, sysRow] = await Promise.all([
-    prisma.organization.findUnique({
-      where: { id: orgId },
-      select: { reviewEffort: true },
-    }),
-    prisma.systemConfig.findUnique({
-      where: { id: "singleton" },
-      select: { defaultReviewEffort: true },
-    }),
-  ]);
-  return asThinkingEffort(org?.reviewEffort) ?? asThinkingEffort(sysRow?.defaultReviewEffort);
+  // Effort is a non-critical enhancement: on any DB error, fall through to
+  // undefined so the provider uses the env/built-in default rather than failing
+  // the whole AI call. Mirrors the defensive systemConfig reads in review-core.
+  try {
+    const [org, sysRow] = await Promise.all([
+      prisma.organization.findUnique({
+        where: { id: orgId },
+        select: { reviewEffort: true },
+      }),
+      prisma.systemConfig.findUnique({
+        where: { id: "singleton" },
+        select: { defaultReviewEffort: true },
+      }),
+    ]);
+    return asThinkingEffort(org?.reviewEffort) ?? asThinkingEffort(sysRow?.defaultReviewEffort);
+  } catch (err) {
+    console.error("[review-effort] failed to resolve effort, using provider default:", err);
+    return undefined;
+  }
 }

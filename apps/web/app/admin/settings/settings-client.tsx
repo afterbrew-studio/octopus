@@ -3,9 +3,8 @@
 import { useState, useTransition } from "react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
+import { VALID_EFFORTS } from "@/lib/providers/thinking";
 import { setPlatformReviewEffort } from "./actions";
-
-const EFFORT_OPTIONS = ["low", "medium", "high", "xhigh", "max"] as const;
 
 export function SettingsClient({
   currentEffort,
@@ -47,7 +46,7 @@ export function SettingsClient({
             className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors"
           >
             <option value="">{`(Built-in default — ${builtInDefault})`}</option>
-            {EFFORT_OPTIONS.map((e) => (
+            {VALID_EFFORTS.map((e) => (
               <option key={e} value={e}>
                 {e}
               </option>

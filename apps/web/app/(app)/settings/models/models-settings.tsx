@@ -14,6 +14,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { LATEST_MODEL_ID } from "@/lib/model-latest";
+import { VALID_EFFORTS } from "@/lib/providers/thinking";
 import { IconPencil, IconCheck, IconX, IconSearch, IconLoader2 } from "@tabler/icons-react";
 import { updateDefaultModels } from "../../actions";
 import { updateRepoModels } from "../../repositories/actions";
@@ -330,8 +331,6 @@ function RepositoryModelsSection({
   );
 }
 
-const EFFORT_OPTIONS = ["low", "medium", "high", "xhigh", "max"] as const;
-
 export function ModelsSettings({
   isOwner,
   availableModels,
@@ -463,7 +462,7 @@ export function ModelsSettings({
                 className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <option value="">{`(Platform Default — ${platformDefaultEffort})`}</option>
-                {EFFORT_OPTIONS.map((e) => (
+                {VALID_EFFORTS.map((e) => (
                   <option key={e} value={e}>
                     {e}
                   </option>

@@ -5,10 +5,14 @@ mock.module("server-only", () => ({}));
 // Mutable fixtures the mocked prisma reads from — each test sets these.
 let orgRow: { reviewEffort: string | null } | null = null;
 let sysRow: { defaultReviewEffort: string | null } | null = null;
+let dbThrows = false;
 
 mock.module("@octopus/db", () => ({
   prisma: {
-    organization: { findUnique: () => Promise.resolve(orgRow) },
+    organization: {
+      findUnique: () =>
+        dbThrows ? Promise.reject(new Error("db down")) : Promise.resolve(orgRow),
+    },
     systemConfig: { findUnique: () => Promise.resolve(sysRow) },
   },
 }));
@@ -18,6 +22,7 @@ const { getReviewEffort } = await import("@/lib/review-effort");
 beforeEach(() => {
   orgRow = null;
   sysRow = null;
+  dbThrows = false;
 });
 
 describe("getReviewEffort", () => {
@@ -43,5 +48,10 @@ describe("getReviewEffort", () => {
     orgRow = { reviewEffort: "bogus" };
     sysRow = { defaultReviewEffort: "medium" };
     expect(await getReviewEffort("org1")).toBe("medium");
+  });
+
+  it("returns undefined on a DB error instead of throwing (provider falls back)", async () => {
+    dbThrows = true;
+    expect(await getReviewEffort("org1")).toBeUndefined();
   });
 });
