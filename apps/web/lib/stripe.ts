@@ -7,8 +7,8 @@ export function getStripe(): Stripe {
     _stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
       // Pin the API version so switching Stripe accounts can't silently change
       // event/object shapes by inheriting a different account default. Matches
-      // the stripe@20.4.1 SDK's generated types.
-      apiVersion: "2026-02-25.clover",
+      // the stripe@22.x SDK's generated types (its pinned LatestApiVersion).
+      apiVersion: "2026-06-24.dahlia",
     });
   }
   return _stripe;
