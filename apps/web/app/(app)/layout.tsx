@@ -1,6 +1,7 @@
 import { headers, cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
+import { getGithubAppConfig } from "@/lib/github-app-config";
 import { prisma } from "@octopus/db";
 import { AppSidebar, MobileHeader } from "@/components/app-sidebar";
 import { ChatWrapper } from "@/components/chat-wrapper";
@@ -177,7 +178,7 @@ export default async function AppLayout({
     canCreateOrg,
   };
 
-  const githubAppSlug = process.env.NEXT_PUBLIC_GITHUB_APP_SLUG;
+  const githubAppSlug = (await getGithubAppConfig())?.slug ?? undefined;
 
   // Check GitHub for orgs that need permission — auto-clear if already granted
   const flaggedOrgs = orgs.filter((o) => o.needsPermissionGrant && o.githubInstallationId);

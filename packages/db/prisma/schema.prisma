@@ -866,6 +866,15 @@ model SystemConfig {
   announcements       Json @default("[]") // landing-page announcement bar entries (see lib/announcements types)
   latestRelease       Json?    // cached latest GitHub release for the self-hosted Updates page (see lib/releases.ts)
   blogAudioVoiceId    String?  // selected ElevenLabs voice id for blog read-aloud (see lib/elevenlabs.ts)
+  // Self-hosted GitHub App created via the App Manifest flow (see lib/github-app-config.ts).
+  // Takes precedence over the GITHUB_APP_* env vars; secrets are encrypted at rest (crypto.ts).
+  githubAppId              String? // GitHub App id (plaintext)
+  githubAppSlug            String? // App slug, used to build the install URL (plaintext)
+  githubAppClientId        String? // OAuth client id (plaintext)
+  githubAppHtmlUrl         String? // App's github.com settings URL (plaintext)
+  githubAppPrivateKeyEnc   String? // encrypted PEM private key
+  githubAppWebhookSecretEnc String? // encrypted webhook secret
+  githubAppClientSecretEnc String? // encrypted OAuth client secret
   updatedAt DateTime @updatedAt
 
   @@map("system_config")

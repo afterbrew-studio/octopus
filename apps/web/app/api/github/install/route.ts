@@ -3,6 +3,7 @@ import { cookies, headers } from "next/headers";
 import { auth } from "@/lib/auth";
 import { prisma } from "@octopus/db";
 import { signInstallState } from "@/lib/github-install-state";
+import { getGithubAppConfig } from "@/lib/github-app-config";
 
 const baseUrl = process.env.BETTER_AUTH_URL || "http://localhost:3000";
 
@@ -13,7 +14,7 @@ function safeRelativePath(value: string | null | undefined): string {
 }
 
 export async function GET(request: NextRequest) {
-  const appSlug = process.env.NEXT_PUBLIC_GITHUB_APP_SLUG;
+  const appSlug = (await getGithubAppConfig())?.slug;
   if (!appSlug) {
     return NextResponse.json({ error: "github_app_not_configured" }, { status: 500 });
   }

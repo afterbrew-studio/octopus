@@ -1,6 +1,7 @@
 import { headers, cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
+import { getGithubAppConfig } from "@/lib/github-app-config";
 import { prisma } from "@octopus/db";
 import { decryptStringMaybeLegacy } from "@/lib/crypto";
 import { Card } from "@/components/ui/card";
@@ -175,7 +176,7 @@ export default async function DashboardPage({
   const indexedRepos = repos.filter((r) => r.indexStatus === "indexed").length;
   const notIndexedRepos = totalRepos - indexedRepos;
   const githubConnected = org.githubInstallationId !== null;
-  const githubAppSlug = process.env.NEXT_PUBLIC_GITHUB_APP_SLUG;
+  const githubAppSlug = (await getGithubAppConfig())?.slug ?? undefined;
 
   const bitbucketIntegration = await prisma.bitbucketIntegration.findUnique({
     where: { organizationId: org.id },

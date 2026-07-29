@@ -11,10 +11,11 @@ import {
   updateCheckRun,
 } from "@/lib/github";
 import { startReviewFlow } from "@/lib/webhook-shared";
+import { getGithubAppConfig } from "@/lib/github-app-config";
 
-function verifySignature(payload: string, signature: string | null): boolean {
+async function verifySignature(payload: string, signature: string | null): Promise<boolean> {
   if (!signature) return false;
-  const secret = process.env.GITHUB_WEBHOOK_SECRET;
+  const secret = (await getGithubAppConfig())?.webhookSecret;
   if (!secret) return false;
 
   const expected =
@@ -32,7 +33,7 @@ export async function POST(request: NextRequest) {
   const body = await request.text();
   const signature = request.headers.get("x-hub-signature-256");
 
-  if (!verifySignature(body, signature)) {
+  if (!(await verifySignature(body, signature))) {
     return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
   }
 
@@ -394,11 +395,12 @@ export async function POST(request: NextRequest) {
     // comment author is a Bot whose login matches our app slug (covers old
     // payloads or edge cases where performed_via_github_app is absent).
     const commentId: number = payload.comment?.id;
-    const ownAppId = process.env.GITHUB_APP_ID;
+    const appConfig = await getGithubAppConfig();
+    const ownAppId = appConfig?.appId;
     const viaAppId = payload.comment?.performed_via_github_app?.id;
     const authorType: string | undefined = payload.comment?.user?.type;
     const authorLogin: string = payload.comment?.user?.login ?? "";
-    const appSlug = process.env.NEXT_PUBLIC_GITHUB_APP_SLUG ?? "";
+    const appSlug = appConfig?.slug ?? "";
     const isOwnApp = !!ownAppId && viaAppId != null && String(viaAppId) === String(ownAppId);
     const isOwnBotLogin =
       authorType === "Bot" && !!appSlug && authorLogin.toLowerCase() === `${appSlug}[bot]`.toLowerCase();
