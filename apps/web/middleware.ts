@@ -13,15 +13,6 @@ const publicPrefixes = [
   "/not-a-rabbit",
   "/compare",
   "/vs-",
-  // Public content/marketing + feed paths. These must never bounce anonymous
-  // visitors or crawlers to /login; ones that aren't built yet then fall
-  // through to a normal 404 instead of a 307→/login (#443). (Extensioned feeds
-  // like /feed.xml already bypass the middleware via the matcher's dot rule.)
-  "/careers",
-  "/open-positions",
-  "/jobs",
-  "/feed",
-  "/rss",
   "/api/auth",
   "/api/github",
   "/api/bitbucket/webhook",
@@ -45,6 +36,14 @@ const publicPrefixes = [
 ];
 const publicExact = ["/"];
 
+// Public content/marketing + feed paths. Anonymous visitors and crawlers must
+// never be bounced to /login here; paths that aren't built yet then fall
+// through to a normal 404 instead of a 307→/login (#443). Matched on an exact
+// or path-segment boundary (not a bare prefix) so "/feed" can't also whitelist
+// a future "/feedback". Extensioned feeds like /feed.xml already bypass the
+// middleware via the matcher's dot rule.
+const publicContentPrefixes = ["/careers", "/open-positions", "/jobs", "/feed", "/rss"];
+
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
@@ -66,7 +65,8 @@ export function middleware(request: NextRequest) {
 
   if (
     publicExact.includes(pathname) ||
-    publicPrefixes.some((path) => pathname.startsWith(path))
+    publicPrefixes.some((path) => pathname.startsWith(path)) ||
+    publicContentPrefixes.some((path) => pathname === path || pathname.startsWith(path + "/"))
   ) {
     return NextResponse.next();
   }
