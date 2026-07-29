@@ -7,10 +7,20 @@ import { auth } from "@/lib/auth";
 import { prisma } from "@octopus/db";
 import { uploadToR2, deleteFromR2, extractR2Key, isR2Configured } from "@/lib/r2";
 import { writeAuditLog } from "@/lib/audit";
+import { fixedWindowLimit, tooManyRequests } from "@/lib/rate-limit";
 
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024; // 5 MB
 const ALLOWED_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
 const OUTPUT_SIZE = 512;
+// Reject a compressed "pixel bomb" before libvips allocates the raster: a few MB
+// can decode to hundreds of MP. 100 MP covers any real avatar source; sharp's
+// ~268 MP default would otherwise let a 5 MB input drive a ~1–2 GB allocation.
+const MAX_INPUT_PIXELS = 100_000_000;
+// Avatar changes are rare; this is generous for real use and caps the CPU/R2/
+// audit cost of an unthrottled loop. The endpoint is also exempt from Cloudflare
+// edge rate limiting, so the app is the only place this can be enforced.
+const UPLOAD_LIMIT = 10;
+const UPLOAD_WINDOW_S = 10 * 60; // 10 minutes
 
 async function getOwnerContext() {
   const session = await auth.api.getSession({ headers: await headers() });
@@ -38,6 +48,11 @@ export async function POST(req: Request) {
   const ctx = await getOwnerContext();
   if ("error" in ctx) return NextResponse.json({ error: ctx.error }, { status: ctx.status });
 
+  // Throttle before the expensive work (formData read + sharp decode/resize +
+  // R2 write + audit row). Keyed per user; fails open on a Redis outage.
+  const rl = await fixedWindowLimit(`avatar-upload:${ctx.userId}`, UPLOAD_LIMIT, UPLOAD_WINDOW_S);
+  if (!rl.ok) return tooManyRequests("Too many avatar uploads. Try again later.", rl.retryAfterSeconds);
+
   const formData = await req.formData();
   const file = formData.get("file");
   if (!(file instanceof File)) {
@@ -60,7 +75,7 @@ export async function POST(req: Request) {
 
   let outputBuffer: Buffer;
   try {
-    outputBuffer = await sharp(inputBuffer, { failOn: "truncated" })
+    outputBuffer = await sharp(inputBuffer, { failOn: "truncated", limitInputPixels: MAX_INPUT_PIXELS })
       .rotate()
       .resize(OUTPUT_SIZE, OUTPUT_SIZE, { fit: "cover", position: "center" })
       .webp({ quality: 88 })
