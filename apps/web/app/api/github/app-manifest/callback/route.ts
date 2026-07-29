@@ -4,6 +4,7 @@ import { auth } from "@/lib/auth";
 import { prisma } from "@octopus/db";
 import { decryptJson } from "@/lib/crypto";
 import { saveGithubAppConfig, hasDbGithubApp } from "@/lib/github-app-config";
+import { isSelfHosted } from "@/lib/self-hosted";
 import { signInstallState } from "@/lib/github-install-state";
 import {
   GITHUB_MANIFEST_STATE_COOKIE,
@@ -28,7 +29,7 @@ function errorRedirect(reason: string): NextResponse {
  * persist them (encrypted), then send the user straight into installing the App.
  */
 export async function GET(request: NextRequest) {
-  if (process.env.NEXT_PUBLIC_OCTOPUS_SELF_HOSTED !== "true") {
+  if (!isSelfHosted()) {
     return NextResponse.json({ error: "not_self_hosted" }, { status: 404 });
   }
 
@@ -97,6 +98,7 @@ export async function GET(request: NextRequest) {
     const res = await fetch(`${GITHUB_API}/app-manifests/${code}/conversions`, {
       method: "POST",
       headers: { Accept: "application/vnd.github+json" },
+      signal: AbortSignal.timeout(15_000),
     });
     if (!res.ok) {
       console.error(`[app-manifest] conversions failed: ${res.status}`);

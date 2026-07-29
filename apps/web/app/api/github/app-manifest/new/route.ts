@@ -5,6 +5,7 @@ import { auth } from "@/lib/auth";
 import { prisma } from "@octopus/db";
 import { encryptJson } from "@/lib/crypto";
 import { isGithubAppConfigured } from "@/lib/github-app-config";
+import { isSelfHosted } from "@/lib/self-hosted";
 import {
   GITHUB_MANIFEST_STATE_COOKIE,
   GITHUB_MANIFEST_STATE_TTL_MS,
@@ -34,7 +35,7 @@ function htmlAttr(s: string): string {
  * is already configured (so we never clobber existing credentials).
  */
 export async function GET(request: NextRequest) {
-  if (process.env.NEXT_PUBLIC_OCTOPUS_SELF_HOSTED !== "true") {
+  if (!isSelfHosted()) {
     return NextResponse.json({ error: "not_self_hosted" }, { status: 404 });
   }
 

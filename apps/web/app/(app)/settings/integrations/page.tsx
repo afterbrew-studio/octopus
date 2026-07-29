@@ -10,6 +10,7 @@ import { GitlabIntegrationCard } from "./gitlab-integration-card";
 import { LinearIntegrationCard } from "./linear-integration-card";
 import { JiraIntegrationCard } from "./jira-integration-card";
 import { getGithubAppConfig } from "@/lib/github-app-config";
+import { isSelfHosted } from "@/lib/self-hosted";
 
 const ALLOWED_GITHUB_ERRORS = [
   "installation_already_bound",
@@ -129,7 +130,7 @@ export default async function IntegrationsPage({
   // DB-first so the card flips to "Install" after a manifest-created app whose
   // NEXT_PUBLIC_* slug isn't baked into this build.
   const appSlug = (await getGithubAppConfig())?.slug ?? null;
-  const isSelfHosted = process.env.NEXT_PUBLIC_OCTOPUS_SELF_HOSTED === "true";
+  const selfHosted = isSelfHosted();
 
   return (
     <div className="space-y-6">
@@ -138,7 +139,7 @@ export default async function IntegrationsPage({
       <GitHubIntegrationCard
         data={githubData}
         appSlug={appSlug}
-        isSelfHosted={isSelfHosted}
+        isSelfHosted={selfHosted}
         error={githubError}
       />
       <BitbucketIntegrationCard data={bitbucketIntegration} />
