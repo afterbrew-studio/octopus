@@ -182,10 +182,15 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // ── PR opened / reopened / synchronize → auto-review if repo has autoReview enabled ──
+  // ── PR opened / reopened / synchronize / ready_for_review → auto-review if repo has autoReview enabled ──
+  // `ready_for_review` fires when a draft is marked ready; its payload has
+  // draft:false, so the draft guard below passes it straight through.
   if (
     event === "pull_request" &&
-    (payload.action === "opened" || payload.action === "reopened" || payload.action === "synchronize")
+    (payload.action === "opened" ||
+      payload.action === "reopened" ||
+      payload.action === "synchronize" ||
+      payload.action === "ready_for_review")
   ) {
     const installationId = payload.installation?.id as number | undefined;
     if (!installationId) {
@@ -200,6 +205,7 @@ export async function POST(request: NextRequest) {
     const prUrl: string = payload.pull_request?.html_url ?? "";
     const prAuthor: string = payload.pull_request?.user?.login ?? "unknown";
     const headSha: string = payload.pull_request?.head?.sha ?? "";
+    const isDraft: boolean = payload.pull_request?.draft === true;
 
     console.log(`[webhook] pull_request ${payload.action} — ${repoFullName}#${prNumber}`);
 
@@ -242,6 +248,14 @@ export async function POST(request: NextRequest) {
 
     if (!repo.autoReview) {
       await skipReview(`Auto-review disabled for repo ${repoFullName}`);
+      return NextResponse.json({ ok: true });
+    }
+
+    // Draft PRs are WIP by definition — skip auto-review (posts a neutral check
+    // so the PR isn't left pending). The review fires on `ready_for_review`.
+    // A manual @octopus mention still reviews a draft (explicit opt-in).
+    if (isDraft) {
+      await skipReview(`PR #${prNumber} is a draft`);
       return NextResponse.json({ ok: true });
     }
 
