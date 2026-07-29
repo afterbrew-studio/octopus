@@ -13,6 +13,15 @@ const publicPrefixes = [
   "/not-a-rabbit",
   "/compare",
   "/vs-",
+  // Public content/marketing + feed paths. These must never bounce anonymous
+  // visitors or crawlers to /login; ones that aren't built yet then fall
+  // through to a normal 404 instead of a 307→/login (#443). (Extensioned feeds
+  // like /feed.xml already bypass the middleware via the matcher's dot rule.)
+  "/careers",
+  "/open-positions",
+  "/jobs",
+  "/feed",
+  "/rss",
   "/api/auth",
   "/api/github",
   "/api/bitbucket/webhook",
