@@ -37,7 +37,15 @@ export async function GET(request: NextRequest) {
   if (!code || !state) return errorRedirect("failed");
 
   const session = await auth.api.getSession({ headers: await headers() });
-  if (!session) return NextResponse.redirect(new URL("/login", baseUrl));
+  if (!session) {
+    // Session expired between "Create" on GitHub and this callback: preserve the
+    // one-time code + state through login so re-authenticating resumes the flow
+    // instead of orphaning the just-created app. (The state cookie survives login.)
+    const resume = `/api/github/app-manifest/callback?code=${encodeURIComponent(code)}&state=${encodeURIComponent(state)}`;
+    return NextResponse.redirect(
+      new URL(`/login?callbackUrl=${encodeURIComponent(resume)}`, baseUrl),
+    );
+  }
 
   // Validate state: decrypt, expiry, cookie-nonce (CSRF), then re-check the
   // caller is still an owner/admin of the org from the signed state.
