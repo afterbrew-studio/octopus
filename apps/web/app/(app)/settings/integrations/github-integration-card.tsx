@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -38,6 +39,11 @@ type GitHubError =
   | "invalid_state_malformed"
   | "replay_detected"
   | "not_a_member"
+  | "manifest_forbidden"
+  | "manifest_already_configured"
+  | "manifest_bad_org"
+  | "manifest_expired"
+  | "manifest_failed"
   | null;
 
 const ERROR_TITLES: Record<Exclude<GitHubError, null>, string> = {
@@ -49,6 +55,11 @@ const ERROR_TITLES: Record<Exclude<GitHubError, null>, string> = {
   invalid_state_malformed: "Install flow could not be verified",
   replay_detected: "Install link already used",
   not_a_member: "Organization access lost",
+  manifest_forbidden: "Not allowed",
+  manifest_already_configured: "GitHub App already set up",
+  manifest_bad_org: "Invalid organization",
+  manifest_expired: "Setup expired",
+  manifest_failed: "Couldn't create the GitHub App",
 };
 
 const ERROR_MESSAGES: Record<Exclude<GitHubError, null>, string> = {
@@ -67,6 +78,16 @@ const ERROR_MESSAGES: Record<Exclude<GitHubError, null>, string> = {
     "This install link has already been used. Please start a new install flow.",
   not_a_member:
     "You are no longer a member of the organization you started the install for. Switch organizations and try again.",
+  manifest_forbidden:
+    "Only an organization owner or admin can create the GitHub App. Ask an admin, or switch to an org you own.",
+  manifest_already_configured:
+    "A GitHub App is already configured for this instance. Reload the page — you should see an “Install GitHub App” button.",
+  manifest_bad_org:
+    "That doesn't look like a valid GitHub organization name. Leave it blank to create the App under your personal account.",
+  manifest_expired:
+    "The setup flow expired. Please start again and finish within 15 minutes.",
+  manifest_failed:
+    "Something went wrong creating the GitHub App. Please try again; if it persists, use the manual setup guide.",
 };
 
 const INSTALL_URL = "/api/github/install?returnTo=/settings/integrations";
@@ -74,10 +95,12 @@ const INSTALL_URL = "/api/github/install?returnTo=/settings/integrations";
 export function GitHubIntegrationCard({
   data,
   appSlug,
+  isSelfHosted = false,
   error,
 }: {
   data: GitHubData;
   appSlug: string | null;
+  isSelfHosted?: boolean;
   error?: GitHubError;
 }) {
   const [isPending, startTransition] = useTransition();
@@ -85,6 +108,10 @@ export function GitHubIntegrationCard({
   const [errorOpen, setErrorOpen] = useState<boolean>(Boolean(error));
   const [confirmDisconnectOpen, setConfirmDisconnectOpen] = useState(false);
   const [disconnectError, setDisconnectError] = useState<string | null>(null);
+  const [manifestOrg, setManifestOrg] = useState("");
+  const createAppHref = `/api/github/app-manifest/new${
+    manifestOrg.trim() ? `?org=${encodeURIComponent(manifestOrg.trim())}` : ""
+  }`;
 
   useEffect(() => {
     setErrorOpen(Boolean(error));
@@ -155,6 +182,46 @@ export function GitHubIntegrationCard({
                   Install GitHub App
                 </a>
               </Button>
+            ) : isSelfHosted ? (
+              <div className="space-y-3">
+                <p className="text-sm text-[#888]">
+                  Octopus needs a GitHub App (separate from OAuth login) to receive
+                  PR webhooks and post reviews. Create one automatically — no manual
+                  config. Leave the field blank to create it under your personal
+                  account, or enter a GitHub organization to create it there (needed
+                  if your repos live in an org).
+                </p>
+                <form
+                  className="space-y-3"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    trackEvent("cta_click", {
+                      location: "settings_integrations",
+                      label: "create_github_app_manifest",
+                    });
+                    window.location.href = createAppHref;
+                  }}
+                >
+                  <Input
+                    value={manifestOrg}
+                    onChange={(e) => setManifestOrg(e.target.value)}
+                    placeholder="GitHub organization (optional)"
+                    aria-label="GitHub organization (optional)"
+                  />
+                  <Button type="submit">
+                    <IconBrandGithub className="mr-2 size-4" />
+                    Create GitHub App
+                  </Button>
+                </form>
+                <p className="text-xs">
+                  <a
+                    href="/docs/github-app"
+                    className="text-cyan-400 underline decoration-cyan-400/30 underline-offset-2 hover:decoration-cyan-400"
+                  >
+                    Prefer to set it up manually? →
+                  </a>
+                </p>
+              </div>
             ) : (
               <div className="rounded-lg border border-amber-900/30 bg-amber-950/10 p-3 text-sm">
                 <p className="font-medium text-amber-200">

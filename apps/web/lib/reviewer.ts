@@ -49,6 +49,7 @@ import {
 } from "@/lib/github";
 import * as bitbucket from "@/lib/bitbucket";
 import * as gitlab from "@/lib/gitlab";
+import { getGithubAppConfig } from "@/lib/github-app-config";
 import { parseOctopusIgnore, filterDiff, detectBadCommits } from "@/lib/octopus-ignore";
 import type { ReviewComment } from "@/lib/github";
 import { eventBus } from "@/lib/events";
@@ -1531,7 +1532,7 @@ export async function processReview(pullRequestId: string): Promise<void> {
     }
 
     // Fetch prior review comments once — shared by prompt context injection and inline dedup.
-    const appSlug = process.env.NEXT_PUBLIC_GITHUB_APP_SLUG ?? "octopus-review";
+    const appSlug = (await getGithubAppConfig())?.slug ?? "octopus-review";
     const botLogin = `${appSlug}[bot]`;
     let allPriorReviewComments: import("@/lib/github").PRReviewComment[] = [];
     const priorSummaryTableFindings: PriorFinding[] = [];

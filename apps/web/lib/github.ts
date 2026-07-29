@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { getGithubAppConfig } from "@/lib/github-app-config";
 
 const GITHUB_API = "https://api.github.com";
 const RETRYABLE_STATUSES = new Set([502, 503, 504]);
@@ -24,17 +25,23 @@ async function fetchWithRetry(
   throw new Error("Exceeded max retries");
 }
 
-function getPrivateKey(): string {
-  const raw = process.env.GITHUB_APP_PRIVATE_KEY!;
-  // Support base64-encoded key (recommended for env vars)
+// Support base64-encoded keys (recommended for env vars) as well as raw PEM.
+function normalizePrivateKey(raw: string): string {
   if (!raw.includes("-----BEGIN")) {
     return Buffer.from(raw, "base64").toString("utf-8");
   }
   return raw;
 }
 
-export function createAppJwt(): string {
-  const appId = process.env.GITHUB_APP_ID!;
+export async function createAppJwt(): Promise<string> {
+  // App id + private key come from the resolver (DB-first for manifest-created
+  // self-host apps, env fallback for cloud / manual self-host).
+  const config = await getGithubAppConfig();
+  if (!config) {
+    throw new Error(
+      "GitHub App is not configured (no manifest-created app and no GITHUB_APP_* env vars).",
+    );
+  }
   const now = Math.floor(Date.now() / 1000);
 
   const header = Buffer.from(
@@ -42,13 +49,13 @@ export function createAppJwt(): string {
   ).toString("base64url");
 
   const payload = Buffer.from(
-    JSON.stringify({ iat: now - 60, exp: now + 600, iss: appId }),
+    JSON.stringify({ iat: now - 60, exp: now + 600, iss: config.appId }),
   ).toString("base64url");
 
   const signature = crypto
     .createSign("RSA-SHA256")
     .update(`${header}.${payload}`)
-    .sign(getPrivateKey(), "base64url");
+    .sign(normalizePrivateKey(config.privateKey), "base64url");
 
   return `${header}.${payload}.${signature}`;
 }
@@ -56,7 +63,7 @@ export function createAppJwt(): string {
 export async function getInstallationPermissions(
   installationId: number,
 ): Promise<Record<string, string>> {
-  const jwt = createAppJwt();
+  const jwt = await createAppJwt();
   const res = await fetchWithRetry(
     `${GITHUB_API}/app/installations/${installationId}`,
     {
@@ -78,7 +85,7 @@ export async function getInstallationPermissions(
 export async function getInstallationToken(
   installationId: number,
 ): Promise<string> {
-  const jwt = createAppJwt();
+  const jwt = await createAppJwt();
   const res = await fetchWithRetry(
     `${GITHUB_API}/app/installations/${installationId}/access_tokens`,
     {

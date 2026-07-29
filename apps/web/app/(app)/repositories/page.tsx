@@ -1,6 +1,7 @@
 import { headers, cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
+import { getGithubAppConfig } from "@/lib/github-app-config";
 import { prisma } from "@octopus/db";
 import { HARDCODED_REVIEW_MODEL, HARDCODED_EMBED_MODEL } from "@/lib/ai-client";
 import { RepositoriesContent } from "./repositories-content";
@@ -227,7 +228,7 @@ export default async function RepositoriesPage({
       repos={mappedRepos}
       orgId={orgId}
       selectedRepoId={selectedRepoId ?? null}
-      githubAppSlug={process.env.NEXT_PUBLIC_GITHUB_APP_SLUG ?? null}
+      githubAppSlug={(await getGithubAppConfig())?.slug ?? null}
       favoriteRepoIds={favoriteRepoIds}
       availableModels={availableModels}
       orgDefaultLlmName={orgDefaultLlmName}
