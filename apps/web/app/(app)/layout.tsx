@@ -8,9 +8,12 @@ import { PermissionBanner } from "@/components/permission-banner";
 import { SpendLimitBanner } from "@/components/spend-limit-banner";
 import { getInstallationPermissions } from "@/lib/github";
 import { getOrgSpendLimitStatus } from "@/lib/cost";
+import { getOrgEntitlements } from "@/lib/entitlements";
 import { canUserCreateOrg } from "@/lib/org-limits";
 import { OrgCookieSync } from "@/components/org-cookie-sync";
 import { DeviceReporter } from "@/components/device-reporter";
+import { PresenceReporter } from "@/components/presence-reporter";
+import { TelemetryNotice } from "@/components/telemetry-notice";
 import { createOrgForUser } from "@/lib/org-create";
 
 /**
@@ -49,10 +52,12 @@ export default async function AppLayout({
       name: true,
       email: true,
       bannedAt: true,
+      mustChangePassword: true,
       onboardingCompleted: true,
       organizationMembers: {
         where: { deletedAt: null, organization: { deletedAt: null } },
         select: {
+          telemetryOptedOut: true,
           organization: {
             select: {
               id: true,
@@ -62,6 +67,7 @@ export default async function AppLayout({
               deletedAt: true,
               needsPermissionGrant: true,
               githubInstallationId: true,
+              liveTelemetryEnabled: true,
             },
           },
         },
@@ -70,6 +76,12 @@ export default async function AppLayout({
   });
 
   if (user.bannedAt) redirect("/blocked");
+
+  // Forced password change — seeded admin accounts (and any user an operator
+  // has flagged) cannot reach any app UI until they pick a new password.
+  // /change-password is in the (auth) route group, not (app), so this redirect
+  // doesn't loop. No-op on the SaaS (mustChangePassword is never set there).
+  if (user.mustChangePassword) redirect("/change-password");
 
   const hasOrg = user.organizationMembers.length > 0;
 
@@ -138,6 +150,24 @@ export default async function AppLayout({
   const currentOrg =
     orgs.find((o) => o.id === currentOrgId) ?? orgs[0] ?? { id: "", name: "Octopus", avatarUrl: null };
 
+  // Per-user telemetry notice: show when the active org is actually COLLECTING
+  // (entitled AND enabled — not just the raw liveTelemetryEnabled flag, which
+  // can linger true after an org loses paid status) and this member hasn't
+  // opted out. Gated on the same liveTelemetryActive signal as the settings
+  // opt-out control so the banner and that control never disagree.
+  const currentMember = user.organizationMembers.find(
+    (m) => m.organization.id === currentOrg.id,
+  );
+  // Cheap gate first: liveTelemetryEnabled is opt-in and rare, and is already
+  // loaded on the member — only pay for the entitlement lookup (which the
+  // settings page also uses) when the org actually has telemetry switched on.
+  const telemetryActive =
+    !!currentMember &&
+    currentMember.organization.liveTelemetryEnabled &&
+    (await getOrgEntitlements(currentOrg.id)).liveTelemetryActive;
+  const showTelemetryNotice =
+    !!currentMember && telemetryActive && !currentMember.telemetryOptedOut;
+
   const canCreateOrg = await canUserCreateOrg(session.user.id);
 
   const sidebarProps = {
@@ -178,6 +208,7 @@ export default async function AppLayout({
     <ChatWrapper orgId={currentOrg.id} userId={session.user.id} userName={session.user.name}>
       <OrgCookieSync orgId={currentOrg.id} />
       <DeviceReporter />
+      <PresenceReporter orgId={currentOrg.id} />
       <div className="flex h-screen flex-col">
         {orgsNeedingPermission.length > 0 && (
           <PermissionBanner
@@ -185,6 +216,7 @@ export default async function AppLayout({
           />
         )}
         <SpendLimitBanner spendStatus={spendStatus} />
+        {showTelemetryNotice && <TelemetryNotice orgId={currentOrg.id} />}
         <div className="flex min-h-0 flex-1 flex-col md:flex-row">
           <AppSidebar {...sidebarProps} />
           <div className="flex min-h-0 flex-1 flex-col">

@@ -122,16 +122,25 @@ cd octopus
 cp .env.example .env
 # Edit .env with your API keys and configuration
 
-# Start all services (PostgreSQL, Qdrant, Web)
-docker compose up -d
+# Pull the prebuilt public image + start all services (PostgreSQL, Qdrant, Web).
+# The image bakes in email/password login for self-hosted instances — no build.
+export OCTOPUS_VERSION=latest   # or a pinned release, e.g. 1.0.27
+docker compose -f docker-compose.selfhost.yml pull
+docker compose -f docker-compose.selfhost.yml up -d
 
-# Run database migrations
-docker compose exec web bunx prisma migrate deploy
+# Run database migrations — from the checkout, not inside the container
+# (the runtime image ships only the compiled app, no prisma/schema)
+cd packages/db
+DATABASE_URL=postgresql://octopus:octopus@localhost:43332/octopus bunx prisma migrate deploy
+cd ../..
 ```
 
 Octopus will be available at `http://localhost:43300`.
 
-See [docker-compose.yml](docker-compose.yml) for service configuration.
+Prefer to build from source? Use `docker-compose.yml` with
+`docker compose build --build-arg NEXT_PUBLIC_OCTOPUS_SELF_HOSTED=true`.
+See [docker-compose.selfhost.yml](docker-compose.selfhost.yml) (pull) and
+[docker-compose.yml](docker-compose.yml) (build) for service configuration.
 
 ## How It Works
 
@@ -140,6 +149,12 @@ See [docker-compose.yml](docker-compose.yml) for service configuration.
 3. **Analyze** — The codebase is analyzed using AI with relevant code chunks, pinned docs, and org knowledge
 4. **Review** — The diff is reviewed by the LLM, generating findings with severity levels and category-based thresholds
 5. **Comment** — Findings are posted as inline comments on the PR/MR, with one-click Linear or Jira issue creation
+
+## Roadmap
+
+See [ROADMAP.md](ROADMAP.md) for what we're building and the [Octopus Roadmap Project board](https://github.com/orgs/octopusreview/projects) for the live, sortable view.
+
+Work flows through **Proposed → Up Next → In Progress → Shipped**. Anyone can propose an item by opening a [roadmap proposal issue](.github/ISSUE_TEMPLATE/roadmap_proposal.yml); maintainers promote it to **Up Next** once it has an owner. The [CHANGELOG](CHANGELOG.md) is the source of truth for what has actually shipped.
 
 ## Contributing
 

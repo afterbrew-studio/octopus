@@ -1,10 +1,12 @@
 import { NextRequest } from "next/server";
 import { auth } from "@/lib/auth";
+import { authenticateApiToken } from "@/lib/api-auth";
 import { headers, cookies } from "next/headers";
 import { prisma } from "@octopus/db";
 import { analyzeRepositoryDependencies } from "@octopus/package-analyzer";
 import type { AnalysisProgressEvent } from "@octopus/package-analyzer";
 import { getInstallationToken } from "@/lib/github";
+import { resolveAnalyzerInstallation } from "@/lib/analyzer-install";
 
 const GITHUB_API = "https://api.github.com/repos";
 
@@ -22,34 +24,47 @@ function parseGitHubUrl(url: string): { owner: string; repo: string; branch?: st
 }
 
 export async function POST(req: NextRequest) {
-  // Auth check
-  const session = await auth.api.getSession({ headers: await headers() });
-  if (!session) {
-    return Response.json({ error: "Authentication required" }, { status: 401 });
+  // Accept either a CLI API token (Authorization: Bearer oct_…) or a browser
+  // session. The token path is additive — `octp analyze-deps` works headlessly
+  // while the web UI keeps using the session path below, unchanged.
+  let orgId: string;
+  let userId: string;
+  let installationId: number | null;
+
+  const tokenAuth = await authenticateApiToken(req);
+  if (tokenAuth) {
+    orgId = tokenAuth.org.id;
+    userId = tokenAuth.user.id;
+    installationId = tokenAuth.org.githubInstallationId;
+  } else {
+    const session = await auth.api.getSession({ headers: await headers() });
+    if (!session) {
+      return Response.json({ error: "Authentication required" }, { status: 401 });
+    }
+
+    const cookieStore = await cookies();
+    const currentOrgId = cookieStore.get("current_org_id")?.value;
+
+    const member = await prisma.organizationMember.findFirst({
+      where: {
+        userId: session.user.id,
+        ...(currentOrgId ? { organizationId: currentOrgId } : {}),
+        deletedAt: null,
+      },
+      select: {
+        organizationId: true,
+        organization: { select: { githubInstallationId: true } },
+      },
+    });
+
+    if (!member) {
+      return Response.json({ error: "No organization found" }, { status: 403 });
+    }
+
+    orgId = member.organizationId;
+    userId = session.user.id;
+    installationId = member.organization.githubInstallationId;
   }
-
-  const cookieStore = await cookies();
-  const currentOrgId = cookieStore.get("current_org_id")?.value;
-
-  const member = await prisma.organizationMember.findFirst({
-    where: {
-      userId: session.user.id,
-      ...(currentOrgId ? { organizationId: currentOrgId } : {}),
-      deletedAt: null,
-    },
-    select: {
-      organizationId: true,
-      organization: { select: { githubInstallationId: true } },
-    },
-  });
-
-  if (!member) {
-    return Response.json({ error: "No organization found" }, { status: 403 });
-  }
-
-  const orgId = member.organizationId;
-  const userId = session.user.id;
-  const installationId = member.organization.githubInstallationId;
 
   // Build auth headers for GitHub API (uses installation token if available)
   async function githubHeaders(): Promise<Record<string, string>> {
@@ -58,7 +73,16 @@ export async function POST(req: NextRequest) {
       try {
         const token = await getInstallationToken(installationId);
         h.Authorization = `token ${token}`;
-      } catch { /* fall back to unauthenticated */ }
+      } catch (err) {
+        // Don't silently fall back to unauthenticated — that turns a token
+        // failure into a misleading "repository not found" for private repos
+        // (this hid a broken analyzer for months). Log it; the caller still
+        // gets the not-found error, but the real cause is now visible.
+        console.error(
+          `[analyze-deps] installation token failed for installation=${installationId}:`,
+          err,
+        );
+      }
     }
     return h;
   }
@@ -75,6 +99,16 @@ export async function POST(req: NextRequest) {
   if (!repoUrl || typeof repoUrl !== "string") {
     return Response.json({ error: "repoUrl is required" }, { status: 400 });
   }
+
+  // Prefer the repository's own installation (live, webhook-populated — the
+  // same source reviews use) over the current org's stored id, which can be
+  // stale/null. Authorized to the repo's org inside the resolver.
+  installationId = await resolveAnalyzerInstallation(prisma, {
+    repositoryId,
+    callerOrgId: orgId,
+    callerUserId: userId,
+    fallbackInstallationId: installationId,
+  });
 
   const parsed = parseGitHubUrl(repoUrl);
   if (!parsed) {

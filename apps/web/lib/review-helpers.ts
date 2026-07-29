@@ -11,6 +11,7 @@ import {
   parseFindingsFromJson,
   extractDiffFiles,
 } from "@/lib/review-dedup";
+import { getCategoryConfidenceThreshold } from "@/lib/review-categories";
 // Re-define the type locally to avoid importing from github.ts (which has side effects in some envs)
 export type ReviewComment = {
   path: string;
@@ -493,6 +494,7 @@ export type ReviewConfig = {
   disabledCategories?: string[];
   confidenceThreshold?: number | string; // numeric 0-100 or legacy "HIGH" | "MEDIUM"
   enableTwoPassReview?: boolean;
+  enableToolPrePass?: boolean; // opt-in deterministic (semgrep) pre-pass (#643), default off
 };
 
 export function parseReviewConfig(raw: unknown): ReviewConfig {
@@ -510,6 +512,7 @@ export function mergeReviewConfigs(...configs: ReviewConfig[]): ReviewConfig {
     if (cfg.disabledCategories !== undefined) merged.disabledCategories = cfg.disabledCategories;
     if (cfg.confidenceThreshold !== undefined) merged.confidenceThreshold = cfg.confidenceThreshold;
     if (cfg.enableTwoPassReview !== undefined) merged.enableTwoPassReview = cfg.enableTwoPassReview;
+    if (cfg.enableToolPrePass !== undefined) merged.enableToolPrePass = cfg.enableToolPrePass;
   }
   return merged;
 }
@@ -692,4 +695,227 @@ export function generateVerificationQueries(
   }
 
   return queries.slice(0, 15);
+}
+
+/**
+ * The merge-gating decision: does a review fail its check given the findings'
+ * severities and the org's checkFailureThreshold? Single source of truth for
+ * both the GitHub check-run conclusion and the GitLab commit status (and the
+ * REQUEST_CHANGES review event), so the two providers can never drift.
+ * threshold: "none" | "critical" | "high" | "medium".
+ */
+export function shouldFailReviewCheck(
+  sev: { hasCritical: boolean; hasHigh: boolean; hasMedium: boolean },
+  threshold: string,
+): boolean {
+  return (
+    threshold !== "none" &&
+    (sev.hasCritical ||
+      (threshold !== "critical" && sev.hasHigh) ||
+      (threshold === "medium" && sev.hasMedium))
+  );
+}
+
+/** One hit from `searchReviewChunks` (past review summaries in Qdrant). */
+export interface PastReviewHit {
+  text: string;
+  prTitle: string;
+  prNumber: number;
+  repoFullName: string;
+  author: string;
+  reviewDate: string;
+  score: number;
+}
+
+/**
+ * Format past reviews on similar code into a compact prompt block. Grounds a
+ * review in what Octopus already concluded on related PRs so it stops
+ * relitigating settled findings. Pure so it is unit-testable; the caller does
+ * the Qdrant query and passes the current PR's identity so we never inject the
+ * PR's own prior review back into it (that is the separate re-review context).
+ * Returns "" when there is nothing usable, so the placeholder empties cleanly.
+ */
+export function formatPastReviews(
+  hits: PastReviewHit[],
+  currentPrNumber: number,
+  currentRepoFullName: string,
+  opts: { max?: number; minScore?: number; maxCharsPerHit?: number } = {},
+): string {
+  const { max = 5, minScore = 0.3, maxCharsPerHit = 800 } = opts;
+  const usable = hits
+    .filter((h) => h.text?.trim())
+    .filter((h) => h.score >= minScore)
+    // Never echo the current PR's own prior review back at it.
+    .filter(
+      (h) =>
+        !(h.prNumber === currentPrNumber && h.repoFullName === currentRepoFullName),
+    )
+    .slice(0, max);
+
+  if (usable.length === 0) return "";
+
+  return usable
+    .map((h) => {
+      const body = h.text.trim().slice(0, maxCharsPerHit);
+      const date = h.reviewDate ? ` (${h.reviewDate.slice(0, 10)})` : "";
+      return `### ${h.repoFullName}#${h.prNumber} — ${h.prTitle}${date}\n${body}`;
+    })
+    .join("\n\n---\n\n");
+}
+
+/**
+ * Build the PR-intent context block from the PR title + description. Gives the
+ * reviewer what the change is TRYING to do so it can flag "doesn't accomplish
+ * the stated goal", missing-requirement, and scope-creep findings a diff-only
+ * reviewer cannot. Extracts linked-issue references (closes/fixes/resolves #N,
+ * plus bare #N) from the body so they surface even without fetching each issue.
+ * The body is UNTRUSTED (author-controlled) — the prompt marks it so; this
+ * helper only bounds length. Returns "" when there is no usable intent.
+ */
+export function formatPrIntent(
+  title: string | null | undefined,
+  body: string | null | undefined,
+  opts: { maxBodyChars?: number } = {},
+): string {
+  const { maxBodyChars = 2000 } = opts;
+  const t = (title ?? "").trim();
+  const b = (body ?? "").trim();
+  if (!t && !b) return "";
+
+  const linked = new Set<string>();
+  // "closes #12", "fixes #7", "resolves #9" (case-insensitive) and bare "#123".
+  for (const m of b.matchAll(/\b(?:close[sd]?|fixe[sd]?|resolve[sd]?)\s+#(\d+)/gi)) {
+    linked.add(`#${m[1]}`);
+  }
+  // Bare refs, including parenthesised/bracketed forms like "(#12)" or "[#12]".
+  for (const m of b.matchAll(/(?:^|[\s([])#(\d+)\b/g)) linked.add(`#${m[1]}`);
+
+  const parts: string[] = [];
+  if (t) parts.push(`Title: ${t}`);
+  if (b) {
+    const truncated = b.length > maxBodyChars ? `${b.slice(0, maxBodyChars)}\n…(truncated)` : b;
+    parts.push(`Description:\n${truncated}`);
+  }
+  if (linked.size > 0) parts.push(`Linked issues: ${[...linked].join(", ")}`);
+  return parts.join("\n\n");
+}
+
+// Common language keywords/stopwords stripped from identifier extraction so the
+// retrieval query is weighted toward domain identifiers, not syntax.
+const QUERY_STOPWORDS = new Set([
+  "const", "let", "var", "function", "return", "import", "export", "from", "class",
+  "interface", "type", "async", "await", "else", "while", "switch",
+  "case", "break", "continue", "new", "true", "false", "null", "undefined",
+  "void", "public", "private", "protected", "static", "extends", "implements",
+  "the", "and", "for", "with", "that", "this",
+]);
+
+/**
+ * Build a semantic retrieval query for a diff WITHOUT embedding the raw +/-
+ * churn (which dilutes the embedding and drops files past the old 8k slice).
+ * Composes: PR title + every changed file path + `@@` hunk-header context +
+ * de-duplicated identifiers from changed lines across the WHOLE diff, bounded so
+ * every file is represented regardless of diff size. Pure/testable.
+ */
+export function buildRetrievalQuery(
+  diff: string,
+  title: string,
+  opts: { maxIdentifiers?: number; maxChars?: number } = {},
+): string {
+  const { maxIdentifiers = 60, maxChars = 4000 } = opts;
+  const lines = diff.split("\n");
+
+  const paths: string[] = [];
+  const hunkContexts: string[] = [];
+  const identifierCounts = new Map<string, number>();
+
+  for (const line of lines) {
+    // New-side file path.
+    const fileMatch = line.match(/^\+\+\+ b\/(.+)$/);
+    if (fileMatch) {
+      paths.push(fileMatch[1]);
+      continue;
+    }
+    // Hunk header: keep the trailing context (usually the enclosing signature).
+    const hunkMatch = line.match(/^@@[^@]*@@\s*(.*)$/);
+    if (hunkMatch) {
+      if (hunkMatch[1].trim()) hunkContexts.push(hunkMatch[1].trim());
+      continue;
+    }
+    // Changed content lines (added/removed), excluding the file headers.
+    if ((line.startsWith("+") || line.startsWith("-")) && !line.startsWith("+++") && !line.startsWith("---")) {
+      for (const m of line.slice(1).matchAll(/[A-Za-z_][A-Za-z0-9_]{2,}/g)) {
+        const id = m[0];
+        if (QUERY_STOPWORDS.has(id.toLowerCase())) continue;
+        identifierCounts.set(id, (identifierCounts.get(id) ?? 0) + 1);
+      }
+    }
+  }
+
+  // Most frequent identifiers first — domain terms that recur across the change.
+  const topIdentifiers = [...identifierCounts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, maxIdentifiers)
+    .map(([id]) => id);
+
+  // Budget each section independently so a path/hunk-heavy diff can't consume the
+  // whole char budget and starve the identifiers (the strongest semantic signal).
+  // Caps sum to maxChars; identifiers get the largest guaranteed share.
+  const identifierBudget = Math.floor(maxChars * 0.55);
+  const pathBudget = Math.floor(maxChars * 0.2);
+  const hunkBudget = Math.floor(maxChars * 0.2);
+  // Leave a small margin for the newline separators so the total stays <= maxChars.
+  const titleBudget = Math.max(0, maxChars - identifierBudget - pathBudget - hunkBudget - 4);
+  const parts = [
+    title.slice(0, titleBudget),
+    [...new Set(paths)].join(" ").slice(0, pathBudget),
+    hunkContexts.join(" ").slice(0, hunkBudget),
+    topIdentifiers.join(" ").slice(0, identifierBudget),
+  ].filter((p) => p && p.trim());
+
+  // Per-section budgets already guarantee identifiers their share; the final
+  // clamp only trims trailing newline overhead, never a whole section.
+  return parts.join("\n").slice(0, maxChars);
+}
+
+/** High severities that must be tied to a concrete diff line to keep a high score. */
+const HIGH_SEVERITY = new Set(["🔴", "🟠"]);
+/** Ceiling for an uncited high-severity finding after adversarial validation (#654). */
+export const UNCITED_HIGH_SEV_CAP = 60;
+
+/**
+ * A high-severity finding the adversarial validator could not tie to a concrete
+ * diff line is suspect — cap its confidence so an uncited 🔴/🟠 can't ride a high
+ * self-reported score into the review. All other findings keep the validator's
+ * score. Pure so it is unit-testable without the server-only validation module.
+ */
+export function cappedConfidence(severity: string, confidence: number, hasCitation: boolean): number {
+  if (HIGH_SEVERITY.has(severity) && !hasCitation && confidence > UNCITED_HIGH_SEV_CAP) {
+    return UNCITED_HIGH_SEV_CAP;
+  }
+  return confidence;
+}
+
+/**
+ * Per-category confidence filter — the single source of truth for "does this
+ * finding clear the bar", shared by the standard review path (reviewer.ts) and
+ * the large-PR path (large-review-result.ts) so the two can't drift (#652).
+ * High-risk categories (Security/Bug) get a relaxed threshold via
+ * getCategoryConfidenceThreshold. Pure/testable.
+ */
+export function filterByConfidence(findings: InlineFinding[], baseThreshold = 70): InlineFinding[] {
+  return findings.filter(
+    (f) => f.confidence >= getCategoryConfidenceThreshold(f.category, baseThreshold),
+  );
+}
+
+/**
+ * Resolve the numeric base confidence threshold from a review config. Shared by
+ * the standard and large-PR paths so both honor the repo/org-configured value
+ * ("HIGH" → 85, an explicit number as-is, else the 70 default). Pure.
+ */
+export function resolveConfidenceThreshold(cfg: { confidenceThreshold?: number | string }): number {
+  if (typeof cfg.confidenceThreshold === "number") return cfg.confidenceThreshold;
+  if (cfg.confidenceThreshold === "HIGH") return 85;
+  return 70;
 }

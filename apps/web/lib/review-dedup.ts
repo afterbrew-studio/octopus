@@ -17,6 +17,8 @@ export type InlineFinding = {
   description: string;
   suggestion: string;
   confidence: number;
+  /** CWE id (e.g. "CWE-89"), set only for security findings mapped to a rulepack rule. */
+  cwe?: string;
   // Anti-hallucination fields — see apps/web/prompts/SYSTEM_PROMPT.md.
   // Optional in the type because (a) older review bodies don't contain
   // them and the parser is intentionally permissive about that, and
@@ -99,6 +101,7 @@ export function parseFindingsFromJson(reviewBody: string): InlineFinding[] | nul
       startLine: item.startLine,
       endLine: typeof item.endLine === "number" ? item.endLine : item.startLine,
       category: item.category ?? "",
+      ...(typeof item.cwe === "string" && item.cwe.trim() ? { cwe: item.cwe.trim() } : {}),
       description: item.description,
       suggestion: item.suggestion ?? "",
       confidence:

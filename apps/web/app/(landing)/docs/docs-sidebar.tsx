@@ -22,16 +22,22 @@ const sections: SidebarSection[] = [
     title: "Get Started",
     items: [
       { href: "/docs/getting-started", label: "Introduction" },
-      { href: "/docs/open-source", label: "Free for Open Source" },
       { href: "/docs/pricing", label: "Pricing" },
     ],
   },
   {
-    title: "Setup & Integrations",
+    title: "Cloud Setup",
     items: [
       { href: "/docs/github-action", label: "GitHub Action" },
       { href: "/docs/integrations", label: "Integrations" },
+    ],
+  },
+  {
+    title: "Self-Host",
+    items: [
       { href: "/docs/self-hosting", label: "Self-Hosting" },
+      { href: "/docs/github-app", label: "GitHub App (self-host)" },
+      { href: "/docs/oauth-setup", label: "Google & GitHub Login" },
     ],
   },
   {
@@ -68,6 +74,15 @@ const sections: SidebarSection[] = [
       { href: "/docs/terms", label: "Terms & Conditions" },
       { href: "/docs/cookies", label: "Cookie Policy" },
       { href: "/docs/security", label: "Security & Bug Bounty" },
+    ],
+  },
+  {
+    title: "Compliance",
+    items: [
+      { href: "/docs/security-overview", label: "Security Overview" },
+      { href: "/docs/dpa", label: "Data Processing Addendum" },
+      { href: "/docs/sub-processors", label: "Sub-processors" },
+      { href: "/docs/data-retention", label: "Data Retention" },
     ],
   },
 ];

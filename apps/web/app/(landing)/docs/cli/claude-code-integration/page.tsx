@@ -74,26 +74,23 @@ export default function ClaudeCodeIntegrationPage() {
           1. Install the CLI
         </h3>
         <CodeBlock>{`# macOS / Linux (x64 & ARM)
-curl -fsSL https://octopus-review.ai/install.sh | sh
+curl -fsSL https://octopus-review.ai/install.sh | bash
 
 # Windows (PowerShell)
-irm https://octopus-review.ai/install.ps1 | iex
-
-# Windows ARM
-npm install -g @octp/cli`}</CodeBlock>
+irm https://octopus-review.ai/install.ps1 | iex`}</CodeBlock>
 
         <h3 className="mb-2 mt-4 text-sm font-semibold text-white">
           2. Authenticate
         </h3>
-        <CodeBlock>{`octopus login
+        <CodeBlock>{`octp login
 
 # Or with a token
-octopus login --token oct_your_token_here`}</CodeBlock>
+octp login --token oct_your_token_here`}</CodeBlock>
 
         <h3 className="mb-2 mt-4 text-sm font-semibold text-white">
           3. Verify
         </h3>
-        <CodeBlock>octopus whoami</CodeBlock>
+        <CodeBlock>octp whoami</CodeBlock>
       </Section>
 
       {/* Install Plugin */}
@@ -128,10 +125,10 @@ octopus login --token oct_your_token_here`}</CodeBlock>
         <div className="mb-4 space-y-1.5">
           {[
             { severity: "Critical", color: "text-red-400", desc: "Security vulnerabilities, data loss risks" },
-            { severity: "High", color: "text-orange-400", desc: "Bugs, logic errors, performance issues" },
-            { severity: "Medium", color: "text-yellow-400", desc: "Code quality, maintainability concerns" },
-            { severity: "Low", color: "text-blue-400", desc: "Style, naming, minor improvements" },
-            { severity: "Info", color: "text-purple-400", desc: "Suggestions, best practices, tips" },
+            { severity: "Major", color: "text-orange-400", desc: "Bugs, logic errors, performance issues" },
+            { severity: "Minor", color: "text-yellow-400", desc: "Code quality, maintainability concerns" },
+            { severity: "Suggestion", color: "text-blue-400", desc: "Style, naming, improvement ideas" },
+            { severity: "Tip", color: "text-purple-400", desc: "Best practices, informational notes" },
           ].map((item) => (
             <div
               key={item.severity}
@@ -226,23 +223,23 @@ octopus login --token oct_your_token_here`}</CodeBlock>
           The plugin also supports these Octopus CLI commands:
         </Paragraph>
         <CommandCard
-          command="octopus repo status"
+          command="octp repo status"
           description="Check indexing progress, analysis results, and auto-review status."
         />
         <CommandCard
-          command="octopus repo index"
+          command="octp repo index"
           description="Trigger code indexing for better review context."
         />
         <CommandCard
-          command="octopus repo analyze"
+          command="octp repo analyze"
           description="Run AI analysis to generate a codebase summary."
         />
         <CommandCard
-          command="octopus repo chat"
+          command="octp chat"
           description="Interactive Q&A about your codebase."
         />
         <CommandCard
-          command="octopus usage"
+          command="octp usage"
           description="Check monthly token usage, spend limits, and credit balance."
         />
       </Section>
@@ -269,7 +266,7 @@ skills/
       {/* Source Code */}
       <Section title="Source Code">
         <Paragraph>
-          The plugin is open source. Contributions are welcome.
+          The plugin&apos;s source is available. Contributions are welcome.
         </Paragraph>
         <a
           href="https://github.com/octopusreview/claude-plugin"

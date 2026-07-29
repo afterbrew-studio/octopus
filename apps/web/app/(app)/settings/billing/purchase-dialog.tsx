@@ -1,6 +1,9 @@
 "use client";
 
 import { useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
+import { toast } from "sonner";
+import confetti from "canvas-confetti";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -13,6 +16,7 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { purchaseCredits } from "./actions";
+import { volumeBonusUsd } from "@/lib/plans";
 
 const PRESETS = [10, 25, 50, 100];
 
@@ -23,6 +27,7 @@ export function PurchaseDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
+  const router = useRouter();
   const [amount, setAmount] = useState<number | "">(25);
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
@@ -37,6 +42,18 @@ export function PurchaseDialog({
       const result = await purchaseCredits(amount);
       if (result.error) {
         setError(result.error);
+      } else if (result.success) {
+        // Charged the saved card in-app — celebrate, close, and refresh the balance.
+        const total = amount + volumeBonusUsd(amount);
+        toast.success("Credits added", {
+          description: `$${total.toFixed(2)} in credits added to your balance.`,
+        });
+        // Honor reduced-motion: the toast already confirms success; skip the burst.
+        if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+          confetti({ particleCount: 120, spread: 70, origin: { y: 0.7 } });
+        }
+        onOpenChange(false);
+        router.refresh();
       } else if (result.url) {
         window.location.href = result.url;
       }
@@ -95,6 +112,13 @@ export function PurchaseDialog({
             <p className="text-xs text-muted-foreground">Min $5, max $1,000</p>
           </div>
 
+          {typeof amount === "number" && volumeBonusUsd(amount) > 0 && (
+            <p className="text-sm text-emerald-600 dark:text-emerald-400">
+              +${volumeBonusUsd(amount).toFixed(2)} bonus credits — you&apos;ll get $
+              {(amount + volumeBonusUsd(amount)).toFixed(2)} total.
+            </p>
+          )}
+
           {error && <p className="text-sm text-destructive">{error}</p>}
         </div>
 
@@ -104,9 +128,7 @@ export function PurchaseDialog({
             disabled={pending || !amount}
             className="w-full"
           >
-            {pending
-              ? "Redirecting to Stripe..."
-              : `Purchase $${amount || 0} Credits`}
+            {pending ? "Processing…" : `Purchase $${amount || 0} Credits`}
           </Button>
         </DialogFooter>
       </DialogContent>

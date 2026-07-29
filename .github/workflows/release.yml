@@ -1,0 +1,186 @@
+name: Release Docker image to GHCR
+
+# On every `v*` tag, build the apps/web Docker image and push it to GitHub
+# Container Registry with both a semver tag and the `latest` alias. The
+# self-hosted update page (apps/web/app/(app)/settings/updates) reads
+# `latestRelease` from SystemConfig, refreshed on demand (cached 1h) by
+# apps/web/lib/releases.ts when an admin opens the page.
+#
+# Two image variants are built (they differ only in build-time NEXT_PUBLIC_*
+# values baked into the client bundle, so each needs its own `next build`):
+#   - selfhost: PUBLIC octopus-selfhost package (self-hosters `compose pull`)
+#   - hosted:   PRIVATE octopus package (the hosted deploy stack pulls this)
+# They run as PARALLEL jobs (wall-clock ≈ the slower build, not the sum) since
+# their `next build` outputs can't be shared.
+#
+# Maintainers cut a release by:
+#   1. Bump apps/web/package.json version
+#   2. git tag v0.X.Y && git push origin v0.X.Y
+#   3. This workflow builds + pushes both variants, then creates a GitHub
+#      Release with auto-generated notes.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  # ── self-host distribution image (PUBLIC package) ──────────────────────────
+  selfhost:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # No QEMU: builds are linux/amd64 only on an amd64 runner, so emulation
+      # setup is pure overhead. Add setup-qemu-action back if arm64 is added.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          # The org enforces read-only GITHUB_TOKEN for workflows, so it can't
+          # push to GHCR. Use a dedicated PAT (repo secret GHCR_PAT) scoped to
+          # write:packages instead of broadening the org-wide token policy.
+          password: ${{ secrets.GHCR_PAT }}
+
+      - name: Derive image tags
+        id: tags
+        run: |
+          REF_NAME=${GITHUB_REF#refs/tags/}
+          SEMVER=${REF_NAME#v}
+          echo "semver=$SEMVER" >> $GITHUB_OUTPUT
+          echo "image_name=ghcr.io/${GITHUB_REPOSITORY,,}" >> $GITHUB_OUTPUT
+
+      - name: Build + push image (self-host distribution)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/web/Dockerfile
+          platforms: linux/amd64
+          push: true
+          # The self-host distribution lives on a SEPARATE package
+          # (octopusreview/octopus-selfhost) which is PUBLIC, so self-hosters can
+          # `docker compose pull` it. The private `octopus` package holds only
+          # the hosted-deploy variant below — keeping prod images off the public
+          # package. Visibility is per-package, which is why they're split.
+          tags: |
+            ${{ steps.tags.outputs.image_name }}-selfhost:${{ steps.tags.outputs.semver }}
+            ${{ steps.tags.outputs.image_name }}-selfhost:latest
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.tags.outputs.semver }}
+          build-args: |
+            NEXT_PUBLIC_BUILD_ID=${{ github.sha }}
+            NEXT_PUBLIC_APP_VERSION=${{ steps.tags.outputs.semver }}
+            # Ships the Updates page + nav entry (gated on this build-time flag).
+            # No app-slug/pubby baked here — safe to publish publicly.
+            NEXT_PUBLIC_OCTOPUS_SELF_HOSTED=true
+          # Distinct cache scope per variant — with the shared default scope the
+          # two builds would overwrite each other's cache every release.
+          cache-from: type=gha,scope=selfhost
+          cache-to: type=gha,mode=max,scope=selfhost
+
+  # ── hosted-deploy image (PRIVATE package) ──────────────────────────────────
+  # NEXT_PUBLIC_* values are inlined into the client bundle at build time, so
+  # the hosted instance needs its own build: selfHosted OFF, plus the instance's
+  # GitHub App slug + Pubby key (both are client-exposed identifiers, not
+  # secrets — they ship in every page's JS — hence repo *variables*). Pushes an
+  # immutable `X.Y.Z-prod` plus the `latest-web`/`latest-engine` aliases the
+  # deployment stack pulls. Moving the aliases does NOT touch running services —
+  # they only change on an explicit service update. Skipped when the variables
+  # are unset (e.g. on forks).
+  prod:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_PAT }}
+
+      - name: Derive image tags
+        id: tags
+        run: |
+          REF_NAME=${GITHUB_REF#refs/tags/}
+          SEMVER=${REF_NAME#v}
+          echo "semver=$SEMVER" >> $GITHUB_OUTPUT
+          echo "image_name=ghcr.io/${GITHUB_REPOSITORY,,}" >> $GITHUB_OUTPUT
+
+      - name: Build + push image (hosted deploy variant)
+        if: ${{ vars.NEXT_PUBLIC_PUBBY_KEY != '' && vars.NEXT_PUBLIC_GITHUB_APP_SLUG != '' }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/web/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ steps.tags.outputs.image_name }}:${{ steps.tags.outputs.semver }}-prod
+            ${{ steps.tags.outputs.image_name }}:latest-web
+            ${{ steps.tags.outputs.image_name }}:latest-engine
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.tags.outputs.semver }}
+          build-args: |
+            NEXT_PUBLIC_BUILD_ID=${{ github.sha }}
+            NEXT_PUBLIC_APP_VERSION=${{ steps.tags.outputs.semver }}
+            NEXT_PUBLIC_GITHUB_APP_SLUG=${{ vars.NEXT_PUBLIC_GITHUB_APP_SLUG }}
+            NEXT_PUBLIC_PUBBY_KEY=${{ vars.NEXT_PUBLIC_PUBBY_KEY }}
+          cache-from: type=gha,scope=prod
+          cache-to: type=gha,mode=max,scope=prod
+
+  # ── GitHub Release (once, after both images are pushed) ────────────────────
+  release:
+    needs: [selfhost, prod]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Derive semver
+        id: tags
+        run: |
+          REF_NAME=${GITHUB_REF#refs/tags/}
+          echo "semver=${REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          name: ${{ steps.tags.outputs.semver }}
+          body: |
+            To upgrade a self-hosted instance, pull the new public image and
+            apply migrations (the runtime image ships no migrations, so run them
+            from a checkout of this tag):
+
+            ```bash
+            git fetch --tags && git checkout vX.Y.Z    # for the compose file + migrations
+            export OCTOPUS_VERSION=${{ steps.tags.outputs.semver }}
+            docker compose -f docker-compose.selfhost.yml pull
+            # migrate FIRST (expand-only, safe under the still-running old version) ...
+            cd packages/db && DATABASE_URL=postgresql://octopus:octopus@localhost:43332/octopus bunx prisma migrate deploy && cd ../..
+            # ... then roll to the new version
+            docker compose -f docker-compose.selfhost.yml up -d
+            ```
+
+            Then verify:
+
+            ```bash
+            curl -fsS http://localhost:43300/api/health    # expect {"status":"ok"}
+            curl -fsS http://localhost:43300/api/version   # confirm the new version
+            ```
+
+            The in-app Updates page (Settings → System → Updates) shows when a new
+            release is available, along with this upgrade snippet.

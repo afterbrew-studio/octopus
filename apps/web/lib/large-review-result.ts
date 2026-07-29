@@ -1,4 +1,4 @@
-import { prisma } from "@octopus/db";
+import { prisma, type Prisma } from "@octopus/db";
 import { pubby } from "@/lib/pubby";
 import {
   createPullRequestComment as ghCreatePullRequestComment,
@@ -7,10 +7,18 @@ import {
   updateCheckRun as ghUpdateCheckRun,
 } from "@/lib/github";
 import { parseFindings } from "@/lib/review-dedup";
+import { findingSignature, mergeFindingsBySignature, inheritReviewIssueTriage } from "@/lib/finding-merge";
 import {
   buildLowSeveritySummary,
   stripDetailedFindings,
-  countFindings,
+  filterByConfidence,
+  resolveConfidenceThreshold,
+  sortAndCapFindings,
+  parseReviewConfig,
+  mergeReviewConfigs,
+  MAX_FINDINGS_PER_REVIEW,
+  shouldFailReviewCheck,
+  type ReviewConfig,
 } from "@/lib/review-helpers";
 import { eventBus } from "@/lib/events";
 
@@ -109,11 +117,33 @@ export async function handleLargeReviewResult(
 
   const reviewBody = data.reviewBody;
 
-  // 1. Parse findings out of the markdown
-  const findings = parseFindings(reviewBody);
-  const findingsCount = countFindings(reviewBody);
+  // 1. Parse findings out of the markdown, then apply the SAME per-category
+  // confidence filter + severity cap as the standard path (#652) so the largest,
+  // most bug-prone PRs no longer get raw model output straight to comments.
+  // (Diff-dependent validateFindings + semantic suppression require the diff,
+  // which this job payload doesn't carry — tracked as a follow-up.)
+  // Resolve the repo/org-configured threshold + max via the same 3-tier merge as
+  // the standard path so the two never diverge on configuration.
+  let systemConfig: ReviewConfig = {};
+  try {
+    const sysRow = await prisma.systemConfig.findUnique({ where: { id: "singleton" } });
+    if (sysRow) systemConfig = parseReviewConfig(sysRow.defaultReviewConfig);
+  } catch {
+    // SystemConfig unavailable — fall back to org/repo config only.
+  }
+  const reviewConfig = mergeReviewConfigs(
+    systemConfig,
+    parseReviewConfig(org.defaultReviewConfig),
+    parseReviewConfig(repo.reviewConfig),
+  );
+  const parsedFindings = parseFindings(reviewBody);
+  const { kept: findings, truncatedCount } = sortAndCapFindings(
+    filterByConfidence(parsedFindings, resolveConfidenceThreshold(reviewConfig)),
+    reviewConfig.maxFindings ?? MAX_FINDINGS_PER_REVIEW,
+  );
+  const findingsCount = findings.length;
   console.log(
-    `[large-review-result] PR #${pr.number}: ${reviewBody.length} chars, ${findings.length} findings parsed`,
+    `[large-review-result] PR #${pr.number}: ${reviewBody.length} chars, ${parsedFindings.length} parsed → ${findings.length} after confidence filter${truncatedCount ? ` (capped ${truncatedCount})` : ""}`,
   );
 
   // 2. Update placeholder comment with main body (findings JSON stripped — they go inline/summary)
@@ -168,11 +198,10 @@ export async function handleLargeReviewResult(
   const hasHigh = findings.some((f) => f.severity === "🟠");
   const hasMedium = findings.some((f) => f.severity === "🟡");
   const threshold = org.checkFailureThreshold || "critical";
-  const shouldRequestChanges =
-    threshold !== "none" &&
-    (hasCritical ||
-      (threshold !== "critical" && hasHigh) ||
-      (threshold === "medium" && hasMedium));
+  const shouldRequestChanges = shouldFailReviewCheck(
+    { hasCritical, hasHigh, hasMedium },
+    threshold,
+  );
   const reviewEvent: "COMMENT" | "REQUEST_CHANGES" = shouldRequestChanges
     ? "REQUEST_CHANGES"
     : "COMMENT";
@@ -217,20 +246,36 @@ export async function handleLargeReviewResult(
   }
 
   // 4. Persist findings to review_issues
-  await prisma.reviewIssue.deleteMany({ where: { pullRequestId: pr.id } });
-  if (findings.length > 0) {
-    await prisma.reviewIssue.createMany({
-      data: findings.map((f) => ({
-        title: f.title.replace(/^(CRITICAL|HIGH|MEDIUM|LOW|INFO)\s*—\s*/i, "").trim(),
-        description: f.description || f.category,
-        severity: SEVERITY_TO_DB[f.severity] ?? "medium",
-        filePath: f.filePath || null,
-        lineNumber: f.startLine || null,
-        confidence: f.confidence ? String(f.confidence) : null,
-        pullRequestId: pr.id,
-      })),
-    });
-    console.log(`[large-review-result] Saved ${findings.length} review issues to DB`);
+  // Signature-matched findings inherit prior triage state; delete+create run
+  // atomically so a mid-way failure can never wipe triage without replacement.
+  const priorIssues = await prisma.reviewIssue.findMany({ where: { pullRequestId: pr.id } });
+  const current: Prisma.ReviewIssueCreateManyInput[] = findings.map((f) => {
+    const title = f.title.replace(/^(CRITICAL|HIGH|MEDIUM|LOW|INFO)\s*—\s*/i, "").trim();
+    return {
+      title,
+      description: f.description || f.category,
+      severity: SEVERITY_TO_DB[f.severity] ?? "medium",
+      filePath: f.filePath || null,
+      lineNumber: f.startLine || null,
+      confidence: f.confidence ? String(f.confidence) : null,
+      pullRequestId: pr.id,
+      signature: findingSignature({ filePath: f.filePath || "", category: f.category, title }),
+    };
+  });
+  const { merged, inherited } = mergeFindingsBySignature<Prisma.ReviewIssueCreateManyInput>({
+    prior: priorIssues,
+    current,
+    inherit: inheritReviewIssueTriage,
+  });
+  await prisma.$transaction([
+    prisma.reviewIssue.deleteMany({ where: { pullRequestId: pr.id } }),
+    ...(merged.length > 0 ? [prisma.reviewIssue.createMany({ data: merged })] : []),
+  ]);
+  if (merged.length > 0) {
+    console.log(
+      `[large-review-result] Saved ${merged.length} review issues to DB` +
+        (inherited > 0 ? ` (${inherited} inherited prior triage state)` : ""),
+    );
   }
 
   // 5. Mark PR completed

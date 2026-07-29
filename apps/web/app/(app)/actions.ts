@@ -13,9 +13,16 @@ import type { LogLevel } from "@/lib/indexer";
 import { createAbortController, abortIndexing } from "@/lib/indexing-abort";
 import { runIndexingInBackground } from "@/lib/indexing-runner";
 import { toBaseSlug, randomSlugSuffix } from "@/lib/slug";
-import { canUserCreateOrg } from "@/lib/org-limits";
-import { MAX_OWNED_ORGS_PER_USER } from "@/lib/constants";
+import { canUserCreateOrg, hasEverOwnedOrg } from "@/lib/org-limits";
+import { assessWelcomeCredit } from "@/lib/welcome-credit";
+import { MAX_OWNED_ORGS_PER_USER, WELCOME_FREE_CREDITS } from "@/lib/constants";
 import { encryptString } from "@/lib/crypto";
+import { validateProviderUrl } from "@/lib/providers/url-validation";
+import { asThinkingEffort } from "@/lib/providers/thinking";
+import { writeAuditLog } from "@/lib/audit";
+import { canUseLiveTelemetry } from "@/lib/entitlements";
+import { getClientIp } from "@/lib/request-ip";
+import { clearPresence } from "@/lib/presence";
 
 export async function clearOrgCookie() {
   const cookieStore = await cookies();
@@ -91,6 +98,10 @@ export async function createOrganization(
     slug = `${baseSlug}-${randomSlugSuffix()}`;
   }
 
+  // Assess welcome-bonus risk before the tx (reads only); the tx confirms
+  // first-org atomically.
+  const welcome = await assessWelcomeCredit(user.id);
+
   // Re-check limit and create atomically to prevent TOCTOU race
   let org;
   try {
@@ -102,7 +113,23 @@ export async function createOrganization(
         throw new Error("ORG_LIMIT_REACHED");
       }
 
-      const firstOrg = ownedCount === 0;
+      // First org = bonus not yet granted (leak-proof stamp) AND never owned an
+      // org (soft-delete-safe). `ownedCount` above is active-only (drives the cap).
+      const firstOrg = welcome.eligible && !(await hasEverOwnedOrg(tx, user.id));
+
+      // Consume the one-time bonus on the first org: stamp welcomeGrantedAt
+      // exactly once (updateMany where null → only one tx wins, so concurrent
+      // creates can't double-grant). A WITHHELD first org still consumes the
+      // bonus, so it can't be retried after an org hard-delete. Credits are
+      // added only when the claim wins AND the risk score clears.
+      let grantBonus = false;
+      if (firstOrg) {
+        const claim = await tx.user.updateMany({
+          where: { id: user.id, welcomeGrantedAt: null },
+          data: { welcomeGrantedAt: new Date() },
+        });
+        grantBonus = claim.count === 1 && welcome.grant;
+      }
 
       return tx.organization.create({
         data: {
@@ -115,12 +142,17 @@ export async function createOrganization(
             },
           },
           ...(firstOrg && {
+            welcomeRiskScore: welcome.score,
+            welcomeRiskReason: welcome.reason,
+          }),
+          ...(grantBonus && {
+            freeCreditBalance: WELCOME_FREE_CREDITS,
             creditTransactions: {
               create: {
-                amount: 150,
+                amount: WELCOME_FREE_CREDITS,
                 type: "free_credit",
-                description: "Welcome bonus — $150 free credits",
-                balanceAfter: 150,
+                description: `Welcome bonus — $${WELCOME_FREE_CREDITS} free credits`,
+                balanceAfter: WELCOME_FREE_CREDITS,
               },
             },
           }),
@@ -244,6 +276,8 @@ export async function updateApiKeys(
   const anthropicApiKey = (formData.get("anthropicApiKey") as string)?.trim() || null;
   const googleApiKey = (formData.get("googleApiKey") as string)?.trim() || null;
   const cohereApiKey = (formData.get("cohereApiKey") as string)?.trim() || null;
+  const grokApiKey = (formData.get("grokApiKey") as string)?.trim() || null;
+  const openrouterApiKey = (formData.get("openrouterApiKey") as string)?.trim() || null;
 
   if (openaiApiKey && !openaiApiKey.startsWith("sk-")) {
     return { error: "Invalid OpenAI API key format." };
@@ -257,6 +291,14 @@ export async function updateApiKeys(
     return { error: "Invalid Google AI API key format." };
   }
 
+  if (grokApiKey && !grokApiKey.startsWith("xai-")) {
+    return { error: "Invalid Grok (xAI) API key format." };
+  }
+
+  if (openrouterApiKey && !openrouterApiKey.startsWith("sk-or-")) {
+    return { error: "Invalid OpenRouter API key format." };
+  }
+
   // Only update keys that have new values — empty fields keep the existing key.
   // Keys are encrypted at rest with the same helper used for OAuth tokens.
   const data: Record<string, string | null> = {};
@@ -264,6 +306,37 @@ export async function updateApiKeys(
   if (anthropicApiKey) data.anthropicApiKey = encryptString(anthropicApiKey);
   if (googleApiKey) data.googleApiKey = encryptString(googleApiKey);
   if (cohereApiKey) data.cohereApiKey = encryptString(cohereApiKey);
+  if (grokApiKey) data.grokApiKey = encryptString(grokApiKey);
+  if (openrouterApiKey) data.openrouterApiKey = encryptString(openrouterApiKey);
+
+  // Per-org provider config: gateway/base-URL overrides + gateway API keys.
+  // These clear when submitted empty — a present-but-empty field sets the
+  // column to null, an absent field (formData.get() === null) is left
+  // unchanged. (The BYOK keys above share the older can't-clear-inline pattern:
+  // they only clear via removeApiKey. Left as-is — out of scope for this fix.)
+  // Base URLs are not secrets, but they become server-side fetch targets, so
+  // they are SSRF-validated here before persisting; gateway API keys are
+  // encrypted like the other BYOK keys.
+  for (const field of ["ollamaBaseUrl", "acpBaseUrl", "opencodeBaseUrl"] as const) {
+    const raw = formData.get(field);
+    if (raw === null) continue;
+    const trimmed = (raw as string).trim();
+    if (!trimmed) {
+      data[field] = null;
+      continue;
+    }
+    try {
+      data[field] = validateProviderUrl(trimmed);
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : "Invalid provider URL." };
+    }
+  }
+  for (const field of ["acpApiKey", "opencodeApiKey"] as const) {
+    const raw = formData.get(field);
+    if (raw === null) continue;
+    const trimmed = (raw as string).trim();
+    data[field] = trimmed ? encryptString(trimmed) : null;
+  }
 
   if (Object.keys(data).length === 0) {
     return { error: "Enter at least one API key to save." };
@@ -278,7 +351,7 @@ export async function updateApiKeys(
   return { success: true };
 }
 
-const VALID_KEY_FIELDS = ["openaiApiKey", "anthropicApiKey", "googleApiKey", "cohereApiKey"] as const;
+const VALID_KEY_FIELDS = ["openaiApiKey", "anthropicApiKey", "googleApiKey", "cohereApiKey", "grokApiKey", "openrouterApiKey"] as const;
 
 export async function removeApiKey(
   keyField: (typeof VALID_KEY_FIELDS)[number],
@@ -340,10 +413,17 @@ export async function updateDefaultModels(
 
   const defaultModelId = (formData.get("defaultModelId") as string)?.trim() || null;
   const defaultEmbedModelId = (formData.get("defaultEmbedModelId") as string)?.trim() || null;
+  // Empty = "Inherit platform default"; a non-empty value must be a valid effort
+  // (reject rather than silently clear the override).
+  const rawEffort = (formData.get("reviewEffort") as string)?.trim() || "";
+  const reviewEffort = rawEffort ? asThinkingEffort(rawEffort) : null;
+  if (rawEffort && reviewEffort === undefined) {
+    return { error: "Invalid reasoning effort." };
+  }
 
   await prisma.organization.update({
     where: { id: orgId },
-    data: { defaultModelId, defaultEmbedModelId },
+    data: { defaultModelId, defaultEmbedModelId, reviewEffort },
   });
 
   revalidatePath("/settings/models");
@@ -845,6 +925,161 @@ export async function toggleReviewsPaused(
   });
 
   revalidatePath("/settings/reviews");
+  return { success: true };
+}
+
+/**
+ * Enable/disable live telemetry (real-time presence + activity) for the org.
+ * Owner/admin only. Paid-only: a free org cannot enable it (entitlement is
+ * re-checked server-side, never trusting the client). Audited under the
+ * "admin" category since it controls member-activity monitoring.
+ */
+export async function toggleLiveTelemetry(
+  _prevState: { error?: string; success?: boolean },
+  formData: FormData,
+): Promise<{ error?: string; success?: boolean }> {
+  const user = await getUser();
+  const reqHeaders = await headers();
+  const cookieStore = await cookies();
+  const orgId = cookieStore.get("current_org_id")?.value;
+
+  if (!orgId) return { error: "No organization selected." };
+
+  const member = await prisma.organizationMember.findFirst({
+    where: { organizationId: orgId, userId: user.id, deletedAt: null },
+    select: { role: true },
+  });
+
+  if (!member || (member.role !== "owner" && member.role !== "admin")) {
+    return { error: "Only organization owners and admins can change live telemetry." };
+  }
+
+  const enabled = formData.get("enabled") === "true";
+
+  // Force-off for unpaid orgs: a free org may never enable telemetry, even if a
+  // crafted form tries to. (Disabling is always allowed.)
+  if (enabled && !(await canUseLiveTelemetry(orgId))) {
+    return { error: "Live telemetry is a paid feature. Upgrade your plan to enable it." };
+  }
+
+  const orgBefore = await prisma.organization.findUnique({
+    where: { id: orgId },
+    select: { liveTelemetryEnabled: true },
+  });
+
+  // No-op if unchanged — don't write a misleading audit entry.
+  if (orgBefore && orgBefore.liveTelemetryEnabled === enabled) {
+    return { success: true };
+  }
+
+  await prisma.organization.update({
+    where: { id: orgId },
+    data: { liveTelemetryEnabled: enabled },
+  });
+
+  await writeAuditLog({
+    action: enabled ? "telemetry.enabled" : "telemetry.disabled",
+    category: "admin",
+    actorId: user.id,
+    actorEmail: user.email,
+    targetType: "organization",
+    targetId: orgId,
+    organizationId: orgId,
+    metadata: {
+      liveTelemetryEnabled: { old: orgBefore?.liveTelemetryEnabled ?? false, new: enabled },
+    },
+    ipAddress: getClientIp(reqHeaders),
+    userAgent: reqHeaders.get("user-agent") ?? null,
+  });
+
+  revalidatePath("/settings/telemetry");
+  return { success: true };
+}
+
+/**
+ * Per-member opt-out from live telemetry. When opted out, no presence/activity
+ * is collected for this member in the current org. Any member may set their own
+ * preference (no role gate — it's the member's own privacy choice).
+ */
+export async function toggleTelemetryOptOut(optedOut: boolean): Promise<{ error?: string }> {
+  const user = await getUser();
+  const cookieStore = await cookies();
+  const orgId = cookieStore.get("current_org_id")?.value;
+  if (!orgId) return { error: "No organization selected." };
+
+  const member = await prisma.organizationMember.findFirst({
+    where: { organizationId: orgId, userId: user.id, deletedAt: null },
+    select: { id: true },
+  });
+  if (!member) return { error: "Not a member of this organization." };
+
+  await prisma.organizationMember.update({
+    where: { id: member.id },
+    data: { telemetryOptedOut: optedOut },
+  });
+
+  // Opting out should take effect immediately — drop any live presence so the
+  // member disappears from the roster at once (rather than after the TTL).
+  if (optedOut) {
+    await clearPresence(orgId, user.id);
+  }
+
+  revalidatePath("/settings/telemetry");
+  return {};
+}
+
+/**
+ * Org opt-in to letting Octopus (vendor) staff see member-level detail in the
+ * cross-org console — SEPARATE from liveTelemetryEnabled (internal monitoring).
+ * Owner-only: authorizing a third party to see named members is a higher-trust
+ * consent than enabling internal monitoring. Audited under "admin".
+ */
+export async function toggleVendorMemberVisibility(
+  _prevState: { error?: string; success?: boolean },
+  formData: FormData,
+): Promise<{ error?: string; success?: boolean }> {
+  const user = await getUser();
+  const reqHeaders = await headers();
+  const cookieStore = await cookies();
+  const orgId = cookieStore.get("current_org_id")?.value;
+  if (!orgId) return { error: "No organization selected." };
+
+  const member = await prisma.organizationMember.findFirst({
+    where: { organizationId: orgId, userId: user.id, deletedAt: null },
+    select: { role: true },
+  });
+  if (!member || member.role !== "owner") {
+    return { error: "Only the organization owner can change vendor visibility." };
+  }
+
+  const allowed = formData.get("allowed") === "true";
+  const before = await prisma.organization.findUnique({
+    where: { id: orgId },
+    select: { allowVendorMemberVisibility: true },
+  });
+  if (before && before.allowVendorMemberVisibility === allowed) return { success: true };
+
+  await prisma.organization.update({
+    where: { id: orgId },
+    data: { allowVendorMemberVisibility: allowed },
+  });
+
+  await writeAuditLog({
+    action: allowed ? "telemetry.vendor_visibility_enabled" : "telemetry.vendor_visibility_disabled",
+    category: "admin",
+    actorId: user.id,
+    actorEmail: user.email,
+    targetType: "organization",
+    targetId: orgId,
+    organizationId: orgId,
+    metadata: {
+      allowVendorMemberVisibility: { old: before?.allowVendorMemberVisibility ?? false, new: allowed },
+    },
+    ipAddress: getClientIp(reqHeaders),
+    userAgent: reqHeaders.get("user-agent") ?? null,
+  });
+
+  revalidatePath("/settings/telemetry");
   return { success: true };
 }
 

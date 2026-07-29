@@ -14,11 +14,11 @@ export const metadata = {
 const generalFaqs = [
   {
     q: "What is Octopus?",
-    a: "Octopus is an AI-powered code review tool. It connects to your GitHub or Bitbucket repositories, indexes your codebase, and automatically reviews pull requests — posting findings as inline comments with severity levels.",
+    a: "Octopus is an AI-powered code review tool. It connects to your GitHub, GitLab, or Bitbucket repositories, indexes your codebase, and automatically reviews pull requests — posting findings as inline comments with severity levels.",
   },
   {
     q: "How does Octopus review my code?",
-    a: "When a pull request is opened, Octopus fetches the diff, retrieves relevant context from your indexed codebase using vector search, and sends it to an LLM (Claude or OpenAI) for analysis. The results are posted as PR comments with severity indicators: 🔴 Critical, 🟠 Major, 🟡 Minor, 🔵 Suggestion, 💡 Tip.",
+    a: "When a pull request is opened, Octopus fetches the diff, retrieves relevant context from your indexed codebase using vector search, and sends it to an LLM (Claude, OpenAI, or Google Gemini) for analysis. The results are posted as PR comments with severity indicators: 🔴 Critical, 🟠 Major, 🟡 Minor, 🔵 Suggestion, 💡 Tip.",
   },
   {
     q: "Which programming languages does Octopus support?",
@@ -37,26 +37,26 @@ const generalFaqs = [
 const securityFaqs = [
   {
     q: "Is my code safe?",
-    a: "Yes. Your code is processed in-memory and never stored permanently on our servers. Embeddings are stored in your Qdrant instance for search, but the original source code is not retained. If you self-host, everything stays on your own infrastructure.",
+    a: "Yes. Your code is processed in-memory and never stored permanently on our servers. Embeddings are stored in a Qdrant vector database for search, but the original source code is not retained. If you self-host, the entire pipeline — including Qdrant — runs on your own infrastructure.",
   },
   {
     q: "Can I self-host Octopus?",
-    a: "Absolutely. Octopus is open source (MIT license) and fully self-hostable. You can deploy it with Docker on your own infrastructure — your code never leaves your servers. See the Self-Hosting documentation for setup instructions.",
+    a: "Absolutely. Octopus is source-available under a Modified MIT License and fully self-hostable. You can deploy it with Docker on your own infrastructure — your code never leaves your servers. See the Self-Hosting documentation for setup instructions.",
   },
   {
     q: "Which AI models process my code?",
-    a: "Octopus supports Anthropic Claude and OpenAI models. You can configure which model your organization uses, or bring your own API keys (BYO keys) so requests go directly to the provider without any intermediary.",
+    a: "Octopus supports Anthropic Claude, OpenAI (GPT), and Google Gemini as review models. You can configure which your organization uses, or bring your own API key (BYOK) for any of them — including a Google Gemini key — so requests go directly to the provider without any intermediary. (Embeddings use OpenAI, and Cohere is used for search re-ranking.)",
   },
   {
     q: "Does Octopus train AI models on my code?",
-    a: "No. Your code is never used for training. When using the cloud service, code is sent to Anthropic or OpenAI via their API, which does not use API inputs for model training. When self-hosting, you control the entire pipeline.",
+    a: "No. Your code is never used for training. When using the cloud service, code is sent to Anthropic, OpenAI, or Google via their API, which do not use API inputs for model training. When self-hosting, you control the entire pipeline.",
   },
 ];
 
 const integrationFaqs = [
   {
     q: "Which Git platforms are supported?",
-    a: "Octopus integrates with GitHub (including GitHub Enterprise) and Bitbucket. It installs as a GitHub App or connects via Bitbucket OAuth, and listens for pull request webhooks.",
+    a: "Octopus integrates with GitHub (including GitHub Enterprise), GitLab, and Bitbucket. It installs as a GitHub App, or connects to GitLab and Bitbucket via OAuth, and listens for pull request and merge request webhooks.",
   },
   {
     q: "Can I connect Octopus to Slack?",
@@ -67,12 +67,16 @@ const integrationFaqs = [
     a: "Yes. You can connect Octopus to Linear to automatically create issues from review findings. This makes it easy to track and prioritize the issues Octopus discovers.",
   },
   {
+    q: "Does Octopus integrate with Jira?",
+    a: "Yes. Connect your Atlassian site to create Jira issues directly from review findings. Each issue is pre-filled with the finding details, severity, and a link back to the PR/MR.",
+  },
+  {
     q: "Can I use Octopus with a monorepo?",
     a: <>Yes. Octopus indexes the entire repository and understands cross-package dependencies. You can use <Link href="/docs/octopusignore" className="text-white underline decoration-white/30 underline-offset-2 hover:decoration-white">.octopusignore</Link> to exclude directories that shouldn&apos;t be reviewed (build outputs, vendor code, etc.).</>,
   },
   {
     q: "Is there a CLI?",
-    a: "Yes. The Octopus CLI lets you trigger reviews, index repositories, check usage, and chat with your codebase — all from the terminal. Install it with npm install -g @octp/cli.",
+    a: "Yes. The Octopus CLI lets you trigger reviews, index repositories, check usage, and chat with your codebase — all from the terminal. Install it with curl -fsSL https://octopus-review.ai/install.sh | bash.",
   },
 ];
 
@@ -87,7 +91,7 @@ const pricingFaqs = [
   },
   {
     q: "What are BYO (Bring Your Own) keys?",
-    a: "BYO keys let you use your own Anthropic or OpenAI API keys. This way, AI usage is billed directly to your provider account, and you only pay Octopus for the platform — not the AI tokens.",
+    a: "BYO keys let you use your own Anthropic, OpenAI, Google, or Cohere API keys. This way, AI usage is billed directly to your provider account, and you only pay Octopus for the platform — not the AI tokens.",
   },
   {
     q: "Can I set spend limits?",

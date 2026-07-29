@@ -6,6 +6,11 @@ FROM base AS deps
 WORKDIR /app
 COPY package.json bun.lock ./
 COPY apps/web/package.json ./apps/web/
+# apps/cli is a workspace recorded in bun.lock; without its manifest the
+# in-container workspace set differs from the lockfile and `bun install
+# --frozen-lockfile` fails ("lockfile had changes"). The web image doesn't run
+# the CLI, but the manifest must be present for the frozen install to validate.
+COPY apps/cli/package.json ./apps/cli/
 COPY packages/db/package.json ./packages/db/
 COPY packages/package-analyzer/package.json ./packages/package-analyzer/
 COPY tools/tsconfig/package.json ./tools/tsconfig/
@@ -31,9 +36,13 @@ RUN cd packages/db && bun run db:generate
 ARG NEXT_PUBLIC_BUILD_ID
 ARG NEXT_PUBLIC_GITHUB_APP_SLUG
 ARG NEXT_PUBLIC_PUBBY_KEY
+ARG NEXT_PUBLIC_APP_VERSION
+ARG NEXT_PUBLIC_OCTOPUS_SELF_HOSTED
 ENV NEXT_PUBLIC_BUILD_ID=${NEXT_PUBLIC_BUILD_ID}
 ENV NEXT_PUBLIC_GITHUB_APP_SLUG=${NEXT_PUBLIC_GITHUB_APP_SLUG}
 ENV NEXT_PUBLIC_PUBBY_KEY=${NEXT_PUBLIC_PUBBY_KEY}
+ENV NEXT_PUBLIC_APP_VERSION=${NEXT_PUBLIC_APP_VERSION}
+ENV NEXT_PUBLIC_OCTOPUS_SELF_HOSTED=${NEXT_PUBLIC_OCTOPUS_SELF_HOSTED}
 ENV NODE_OPTIONS="--max-old-space-size=4096"
 RUN cd apps/web && bun run build
 
@@ -54,4 +63,11 @@ USER nextjs
 EXPOSE 3000
 ENV HOSTNAME=0.0.0.0
 ENV NODE_OPTIONS="--max-old-space-size=4096"
+
+# Container-level readiness for orchestrators / compose. Hits the same
+# /api/health probe the Cloudflare LB monitors. Node 22 ships a global fetch, so
+# no curl is needed in the alpine runner. start-period covers app boot.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+
 CMD ["node", "apps/web/server.js"]

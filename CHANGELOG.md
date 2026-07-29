@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.62] - 2026-07-25
+
+_Claude Opus 5 and Fable 5 are now selectable review models, and the Opus tier is now cheaper._
+
+### Added
+- Claude Opus 5 is available as an opt-in premium review model. Your default reviewer is unchanged; point a repository at Opus 5 in settings when you want a deeper read on a tricky change (gnarly concurrency, a security-sensitive change, a big refactor). Works with your own Anthropic key too.
+- Claude Fable 5, Anthropic's frontier model, is available as the top opt-in tier for the most demanding reviews.
+
+### Changed
+- The Opus review tier now costs $5 / $25 per million tokens, down from $15 / $75, matching Anthropic's current Opus pricing. Opus 4.6 is replaced by Opus 4.8 in the model list.
+
+## [1.0.58] - 2026-07-24
+
+_A major upgrade to review quality — sharper, language-aware reviews with fewer false positives. On by default; no action needed._
+
+### Added
+- Reviews now learn from your team's past reviews of similar code, staying consistent with earlier decisions and no longer re-raising issues you have already settled
+- Reviews now read each pull request's title and description and check the change against it — flagging changes that do not do what they claim, miss a stated requirement, or expand scope unexpectedly
+- Built-in, language-aware rulepacks for TypeScript/JavaScript, Python, Go, Rust, Java, and Ruby, plus an always-on security pack covering the OWASP Top 10 and common CWE weaknesses, so reviews catch idiomatic and security issues rather than only generic ones
+- Security findings now include the relevant CWE identifier where one applies
+
+### Changed
+- More accurate findings with fewer false positives: an adversarial validation step now challenges each finding and keeps only those backed by concrete evidence, and every finding — inline and in the summary — is held to the same standard
+- Smarter context retrieval surfaces the most relevant code from across the entire pull request, not just the first part of large diffs
+- Large pull requests now run through the full review-quality pipeline instead of a lighter path
+- Routine changes (lockfiles, generated files, docs, tiny edits) use a lighter, faster model, and review prompts are cached for quicker repeat reviews on active repositories
+
+## [1.0.26] - 2026-07-03
+
+### Changed
+- Login page now shows a product-highlights panel in place of the 3D scene, cutting time-to-first-paint on the login screen
+- Documentation accuracy overhaul: self-hosting build/upgrade/migration steps, CLI command names, and the pricing table now match the shipped platform
+
+### Fixed
+- OAuth provider gate is evaluated per-request, so correctly configured providers no longer show "(not configured)"
+
+## [1.0.25] - 2026-07-02
+
+### Fixed
+- OAuth provider gate was rendered at build time, which disabled all providers in production
+
+## [1.0.24] - 2026-07-02
+
+### Added
+- Release pipeline builds a hosted-deploy image variant alongside the self-host image
+- OCI `revision`/`version` image labels
+
+## [1.0.23] - 2026-06-30
+
+### Fixed
+- Stripe billing hardening: pinned API version, self-healing customer records, and a webhook retry contract with idempotent per-refund accounting
+- Release build fixes: build context, lockfile workspace, and registry auth
+
+_Versions 1.0.20–1.0.22 were tagged but not published (release-pipeline repairs); their fixes ship in 1.0.23._
+
 ## [1.0.19] - 2026-06-16
 
 ### Added
@@ -366,6 +421,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Suppress dismissed findings in Additional findings summary (#25)
 - CI lint failures across all packages (#36)
 
+[1.0.26]: https://github.com/octopusreview/octopus/compare/v1.0.25...v1.0.26
+[1.0.25]: https://github.com/octopusreview/octopus/compare/v1.0.24...v1.0.25
+[1.0.24]: https://github.com/octopusreview/octopus/compare/v1.0.23...v1.0.24
+[1.0.23]: https://github.com/octopusreview/octopus/compare/v1.0.19...v1.0.23
 [1.0.19]: https://github.com/octopusreview/octopus/compare/v1.0.18...v1.0.19
 [1.0.18]: https://github.com/octopusreview/octopus/compare/v1.0.17...v1.0.18
 [1.0.17]: https://github.com/octopusreview/octopus/compare/v1.0.16...v1.0.17

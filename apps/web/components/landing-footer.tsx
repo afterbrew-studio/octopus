@@ -8,7 +8,6 @@ import {
   IconBrandX,
   IconBrandYoutube,
   IconBug,
-  IconHeartHandshake,
 } from "@tabler/icons-react";
 import { TrackedLink, TrackedAnchor } from "@/components/tracked-link";
 import { GetInTouchModal } from "@/components/get-in-touch-modal";
@@ -28,7 +27,7 @@ export function LandingFooter() {
               <span className="text-sm font-semibold text-white">Octopus</span>
             </div>
             <p className="mt-3 text-sm leading-relaxed text-[#555]">
-              AI-powered code review automation. Open source, self-hostable.
+              AI-powered code review automation. Source-available, self-hostable.
             </p>
             <div className="mt-4 flex items-center gap-3">
               <TrackedAnchor
@@ -195,17 +194,6 @@ export function LandingFooter() {
                   className="text-sm text-[#666] transition-colors hover:text-white"
                 >
                   System Status
-                </TrackedLink>
-              </li>
-              <li>
-                <TrackedLink
-                  href="/open-source"
-                  event="footer_click"
-                  eventParams={{ label: "open_source" }}
-                  className="flex items-center gap-1.5 text-sm text-[#666] transition-colors hover:text-white"
-                >
-                  <IconHeartHandshake className="size-3 text-[#10D8BE]" />
-                  Free for OSS
                 </TrackedLink>
               </li>
               <li>
@@ -431,28 +419,12 @@ export function LandingFooter() {
         <div className="mt-10 flex flex-col items-center gap-3 border-t border-white/[0.06] pt-6 sm:flex-row sm:justify-between">
           <div className="flex flex-col gap-1">
             <span className="text-xs text-[#333]">
-              &copy; {new Date().getFullYear()} Octopus. Open source code review
-              automation.
+              &copy; {new Date().getFullYear()} SC Technology Limited. Octopus is
+              source-available code review automation.
             </span>
             <span className="text-xs text-[#333]">
-              3D model{" "}
-              <a
-                href="https://sketchfab.com/3d-models/octopus-lowpoly-rigged-52870f0c8cec4b29992bfda0854c7a30"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="underline transition-colors hover:text-white"
-              >
-                &quot;Octopus Lowpoly Rigged&quot;
-              </a>{" "}
-              by MushyDay,{" "}
-              <a
-                href="https://creativecommons.org/licenses/by/4.0/"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="underline transition-colors hover:text-white"
-              >
-                CC BY 4.0
-              </a>
+              SC Technology Limited · registered in England &amp; Wales, company no.
+              09579805 · 3rd Floor, 86-90 Paul Street, London EC2A 4NE
             </span>
           </div>
           <div className="flex items-center gap-4">

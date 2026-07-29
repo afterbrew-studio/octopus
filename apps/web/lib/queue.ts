@@ -99,6 +99,48 @@ export async function startQueue(): Promise<PgBoss> {
     expireInSeconds: 1800, // 30 min hard cap per attempt
   }).catch(() => {});
 
+  // Daily audit-log retention (scheduled in instrumentation.ts, worked in
+  // queue-workers.ts). pg-boss v12 requires the queue to exist before
+  // schedule()/work() — without this the cron silently no-ops.
+  await boss.createQueue("enforce-audit-retention", {
+    retryLimit: 1,
+    expireInSeconds: 600, // 10 min — a deleteMany shouldn't take long
+  }).catch(() => {});
+
+  // Daily ActivityEvent (live-telemetry) retention (scheduled in
+  // instrumentation.ts, worked in queue-workers.ts). Same v12 requirement —
+  // the queue must exist before schedule()/work() or the cron silently no-ops.
+  await boss.createQueue("enforce-activity-retention", {
+    retryLimit: 1,
+    expireInSeconds: 600, // 10 min — a deleteMany shouldn't take long
+  }).catch(() => {});
+
+  // Daily self-hosted release-cache refresh (scheduled in instrumentation.ts,
+  // worked in queue-workers.ts). Same pg-boss v12 requirement — the queue must
+  // exist before schedule()/work() or the cron silently no-ops.
+  await boss.createQueue("refresh-release-cache", {
+    retryLimit: 1,
+    expireInSeconds: 300, // 5 min — a single GitHub fetch + upsert
+  }).catch(() => {});
+
+  // Daily subscription renewals (scheduled in instrumentation.ts, worked in
+  // queue-workers.ts). Same pg-boss v12 requirement — the queue must exist
+  // before schedule()/work(); a missing queue crashed review-engine startup
+  // in the 1.0.43 deploy. No auto-retry: renewDueSubscriptions is idempotent
+  // and the next daily run re-sweeps anything unfinished.
+  await boss.createQueue("subscription-renewals", {
+    retryLimit: 1,
+    expireInSeconds: 1800, // 30 min — one off-session charge per due org
+  }).catch(() => {});
+
+  // Admin-triggered Ollama model downloads (self-hosted). Long expiry — a
+  // large model is many GB. No auto-retry: runOllamaPull records failures in
+  // the OllamaModelPull row itself and re-pulls are admin-driven from the UI.
+  await boss.createQueue("pull-ollama-model", {
+    retryLimit: 0,
+    expireInSeconds: 7200, // 2 h hard cap per attempt
+  }).catch(() => {});
+
   // Only review-engine containers should register workers. Web containers
   // still need pg-boss started so they can enqueue jobs, but must not consume.
   // The flag must be set explicitly: a missing value is a misconfiguration,

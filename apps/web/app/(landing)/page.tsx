@@ -3,19 +3,16 @@ import { headers } from "next/headers";
 import { auth } from "@/lib/auth";
 import { prisma } from "@octopus/db";
 import { getLandingStats } from "@/lib/landing-stats";
-import { FloatingOctopus } from "@/components/landing-unicorn-section";
 import { LandingFeatures } from "@/components/landing-features";
 import { TrackedLink, TrackedAnchor } from "@/components/tracked-link";
 import { LandingFooter } from "@/components/landing-footer";
-import { LaunchCountdown } from "@/components/landing-countdown";
 import { LandingMobileNav } from "@/components/landing-mobile-nav";
 import { LandingDesktopNav } from "@/components/landing-desktop-nav";
-import { WebGLToggleButton } from "@/components/webgl-toggle-button";
 import { RotatingHeroText } from "@/components/landing-rotating-hero";
+import { LandingTerminalHero } from "@/components/landing-terminal-hero";
 import { NewsletterForm } from "@/components/landing-newsletter";
 import { CliInstallSection } from "@/components/landing-cli-install";
 import { LandingStats } from "@/components/landing-stats";
-import { LandingOssWorkflowSnippet } from "@/components/landing-oss-workflow-snippet";
 import { LandingAnnouncementBar } from "@/components/landing-announcement-bar";
 import { loadActiveAnnouncements } from "@/lib/announcements";
 
@@ -23,23 +20,22 @@ import { FaqList } from "@/components/FaqList";
 import {
   IconBrandGithub,
   IconArrowRight,
-  IconCode,
-  IconShieldCheck,
+  IconCloud,
+  IconServer,
+  IconCheck,
   IconPlugConnected,
   IconRocket,
   IconBrain,
-  IconHeartHandshake,
-  IconChecks,
 } from "@tabler/icons-react";
 
 const landingFaqs = [
   {
     q: "What is Octopus?",
-    a: "Octopus is an AI-powered code review tool that connects to GitHub and Bitbucket, indexes your codebase for deep context, and automatically reviews every pull request — posting findings as inline comments with severity levels.",
+    a: "Octopus is an AI-powered code review tool that connects to GitHub, GitLab, and Bitbucket, indexes your codebase for deep context, and automatically reviews every pull request — posting findings as inline comments with severity levels.",
   },
   {
     q: "How does the automated review work?",
-    a: "When a pull request is opened, Octopus fetches the diff, retrieves relevant context from your indexed codebase using vector search, and sends it to an LLM (Claude or OpenAI) for analysis. Findings are posted directly on the PR with severity ratings: Critical, Major, Minor, Suggestion, and Tip.",
+    a: "When a pull request is opened, Octopus fetches the diff, retrieves relevant context from your indexed codebase using vector search, and sends it to an LLM (Claude, OpenAI, or Google Gemini) for analysis. Findings are posted directly on the PR with severity ratings: Critical, Major, Minor, Suggestion, and Tip.",
   },
   {
     q: "Which programming languages are supported?",
@@ -55,7 +51,7 @@ const landingFaqs = [
   },
   {
     q: "Is Octopus free to use?",
-    a: "Yes. Octopus is open source under the MIT license and free to self-host. The cloud service includes free credits to get started, with a credit-based model for continued use. You can also bring your own API keys to use your existing AI provider billing.",
+    a: "Yes. Octopus is source-available under a Modified MIT License and free to self-host. The cloud service includes free credits to get started, with a credit-based model for continued use. You can also bring your own API keys to use your existing AI provider billing.",
   },
 ];
 
@@ -66,19 +62,20 @@ const productJsonLd = {
   url: "https://octopus-review.ai",
   logo: "https://octopus-review.ai/logo.svg",
   description:
-    "AI-powered code review tool that connects to GitHub and Bitbucket, indexes your codebase, and automatically reviews pull requests with severity-rated findings.",
+    "AI-powered code review tool that connects to GitHub, GitLab, and Bitbucket, indexes your codebase, and automatically reviews pull requests with severity-rated findings.",
   applicationCategory: "DeveloperApplication",
   operatingSystem: "Web",
   offers: {
     "@type": "Offer",
     price: "0",
     priceCurrency: "USD",
+    url: "https://octopus-review.ai/docs/pricing",
   },
   featureList: [
     "Automated pull request review",
     "Codebase indexing with vector search",
     "Severity-rated findings (Critical, Major, Minor, Suggestion, Tip)",
-    "GitHub and Bitbucket integration",
+    "GitHub, GitLab, and Bitbucket integration",
     "Slack and Linear integration",
     "Self-hostable with Docker",
     "Bring Your Own API keys",
@@ -124,9 +121,6 @@ export default async function LandingPage() {
         dangerouslySetInnerHTML={{ __html: JSON.stringify(faqJsonLd) }}
       />
 
-      {/* Floating particle octopus — follows scroll across entire page */}
-      <FloatingOctopus />
-
       {/* Grain overlay */}
       <div
         className="pointer-events-none fixed inset-0 z-50 opacity-[0.025]"
@@ -147,14 +141,15 @@ export default async function LandingPage() {
 
       {/* Hero — dark bg */}
       <section className="relative z-10 px-6 pb-20 pt-40 md:px-8 md:pb-28 md:pt-52">
-        <div className="mx-auto max-w-4xl text-center">
-          <h1 className="animate-fade-in text-4xl font-bold leading-[1.1] tracking-tight text-white [animation-delay:100ms] sm:text-5xl md:text-6xl lg:text-7xl">
+        <div className="mx-auto grid max-w-6xl grid-cols-1 items-center gap-12 lg:grid-cols-2 lg:gap-12">
+         <div className="text-center lg:text-left">
+          <h1 className="animate-fade-in text-4xl font-bold leading-[1.1] tracking-tight text-white [animation-delay:100ms] sm:text-5xl md:text-6xl">
             Review every PR
             <br />
             <span className="text-[#777]">with repo context.</span>
           </h1>
 
-          <p className="animate-fade-in mx-auto mt-6 min-h-16 max-w-2xl text-base leading-relaxed text-[#777] [animation-delay:200ms] sm:text-lg">
+          <p className="animate-fade-in mx-auto mt-6 min-h-16 max-w-2xl text-base leading-relaxed text-[#777] [animation-delay:200ms] sm:text-lg lg:mx-0">
             <RotatingHeroText
               texts={[
                 "Octopus indexes your codebase, applies team standards,\nand leaves source-backed comments with severity on every pull request.",
@@ -164,8 +159,8 @@ export default async function LandingPage() {
                 "Deep context awareness across your entire codebase",
                 "Indexes every file, function, and relationship in your repo",
                 "Posts inline comments with severity levels directly on your PRs",
-                "Works with GitHub and Bitbucket out of the box",
-                "Open source and self-hostable, your code never leaves your servers",
+                "Works with GitHub, GitLab, and Bitbucket out of the box",
+                "Source-available and self-hostable, your code never leaves your servers",
                 "Improves over time with team feedback on every finding",
                 "Powered by Claude, understands any language, any framework",
                 "Reviews every PR in under 2 minutes, 24/7",
@@ -174,7 +169,7 @@ export default async function LandingPage() {
             />
           </p>
 
-          <div className="animate-fade-in mt-10 flex flex-col items-center gap-4 [animation-delay:300ms] sm:flex-row sm:justify-center">
+          <div className="animate-fade-in mt-10 flex flex-col items-center gap-4 [animation-delay:300ms] sm:flex-row sm:justify-center lg:justify-start">
             <TrackedLink
               href="/login"
               event="cta_click"
@@ -196,9 +191,16 @@ export default async function LandingPage() {
               View on GitHub
             </TrackedAnchor>
           </div>
+         </div>
 
+          <div className="min-w-0 animate-fade-in [animation-delay:400ms]">
+            <LandingTerminalHero className="mx-auto w-full max-w-xl lg:mx-0" />
+          </div>
         </div>
       </section>
+
+      {/* Install the CLI — right below the terminal hero */}
+      <CliInstallSection />
 
       {/* How it works */}
       <section id="how-it-works" className="relative z-10 scroll-mt-20 px-4 pb-6 sm:px-8 md:px-12">
@@ -206,9 +208,6 @@ export default async function LandingPage() {
           <LandingStats initial={landingStats} />
         </div>
         <div className="relative mx-auto max-w-6xl overflow-hidden rounded-3xl border border-white/[0.06] bg-[#161616] px-6 py-20 md:px-12 md:py-28">
-          <div className="absolute right-4 top-4 z-10 md:right-6 md:top-6">
-            <WebGLToggleButton />
-          </div>
           <div className="mx-auto max-w-5xl">
             <div className="mx-auto max-w-2xl text-center">
               <span className="text-xs font-semibold uppercase tracking-[0.2em] text-[#555]">How it works</span>
@@ -248,11 +247,6 @@ export default async function LandingPage() {
               />
             </div>
 
-            {/* CLI Quick Install (embedded) */}
-            <div className="mt-16 border-t border-white/[0.06] pt-12">
-              <CliInstallSection embedded />
-            </div>
-
           </div>
         </div>
       </section>
@@ -264,147 +258,109 @@ export default async function LandingPage() {
         </div>
       </section>
 
-      {/* Open Source */}
-      <section id="open-source" className="relative z-10 scroll-mt-20 px-4 py-6 sm:px-8 md:px-12">
+      {/* Two ways to run — Cloud vs Self-Host */}
+      <section id="cloud-or-self-host" className="relative z-10 scroll-mt-20 px-4 py-6 sm:px-8 md:px-12">
         <div className="mx-auto max-w-6xl overflow-hidden rounded-3xl border border-white/[0.06] bg-[#161616] px-6 py-20 md:px-12 md:py-28">
           <div className="mx-auto max-w-5xl">
             <div className="mx-auto max-w-2xl text-center">
-              <span className="text-xs font-semibold uppercase tracking-[0.2em] text-[#555]">Open Source</span>
+              <span className="text-xs font-semibold uppercase tracking-[0.2em] text-[#555]">Cloud or self-host</span>
               <h2 className="mt-4 text-3xl font-bold tracking-tight text-white sm:text-4xl">
-                Fully open source,
-                <br />
-                built in the open
+                Two ways to run Octopus
               </h2>
               <p className="mt-4 text-[#666] sm:text-lg">
-                100% open source under the MIT license. Inspect the code,
-                self-host on your own infrastructure, or contribute.
+                Start reviewing in two minutes on our managed cloud, or run the
+                entire platform on your own infrastructure.
               </p>
-
-              {/* Open Source Launch Countdown */}
-              <div className="mt-10 rounded-2xl border border-white/[0.06] bg-white/[0.02] px-6 py-8">
-                <p className="mb-5 text-sm font-medium text-[#888]">
-                  Core codebase goes public on <span className="text-white">March 23, 2026 — 15:00 UTC</span>
-                </p>
-                <LaunchCountdown />
-              </div>
             </div>
 
-            <div className="mt-12 grid gap-3 sm:grid-cols-3">
-              <div className="rounded-xl border border-white/[0.06] p-6 text-center transition-colors hover:border-white/[0.12]">
-                <div className="mx-auto flex size-10 items-center justify-center rounded-lg bg-white/[0.04] text-[#888]">
-                  <IconCode className="size-5" />
+            <div className="mt-12 grid gap-5 md:grid-cols-2">
+              {/* Cloud — primary */}
+              <div className="relative flex flex-col rounded-2xl border border-[#10D8BE]/30 bg-gradient-to-b from-[#10D8BE]/[0.06] to-transparent p-8">
+                <span className="absolute right-6 top-6 rounded-full border border-[#10D8BE]/30 bg-[#10D8BE]/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wider text-[#10D8BE]">
+                  Recommended
+                </span>
+                <div className="flex size-11 items-center justify-center rounded-xl bg-[#10D8BE]/10 text-[#10D8BE]">
+                  <IconCloud className="size-6" />
                 </div>
-                <h3 className="mt-4 font-semibold text-white">MIT Licensed</h3>
-                <p className="mt-2 text-sm text-[#666]">
-                  Use it however you want — personal, commercial, or enterprise.
-                </p>
-              </div>
-              <div className="rounded-xl border border-white/[0.06] p-6 text-center transition-colors hover:border-white/[0.12]">
-                <div className="mx-auto flex size-10 items-center justify-center rounded-lg bg-white/[0.04] text-[#888]">
-                  <IconBrandGithub className="size-5" />
+                <h3 className="mt-5 text-xl font-semibold text-white">Cloud</h3>
+                <p className="mt-1.5 text-sm text-[#888]">Hosted for you. Nothing to run or maintain.</p>
+                <ul className="mt-6 space-y-3 text-sm text-[#bbb]">
+                  {[
+                    "Auto-reviews every PR via the GitHub App",
+                    "Free credits to start — usage-based after, no card",
+                    "Managed updates, backups and scaling",
+                    "Private: your code is never stored long-term or trained on",
+                  ].map((t) => (
+                    <li key={t} className="flex items-start gap-2.5">
+                      <IconCheck className="mt-0.5 size-4 shrink-0 text-[#10D8BE]" />
+                      <span>{t}</span>
+                    </li>
+                  ))}
+                </ul>
+                <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:items-center">
+                  <TrackedLink
+                    href="/login"
+                    event="cta_click"
+                    eventParams={{ location: "cloud_or_self_host", label: "cloud_get_started" }}
+                    className="inline-flex items-center justify-center gap-2 rounded-full bg-[#10D8BE] px-5 py-2.5 text-sm font-medium text-[#0c0c0c] transition-colors hover:bg-[#0fbfa8]"
+                  >
+                    Get started free
+                    <IconArrowRight className="size-4" />
+                  </TrackedLink>
+                  <TrackedLink
+                    href="/docs/pricing"
+                    event="cta_click"
+                    eventParams={{ location: "cloud_or_self_host", label: "see_pricing" }}
+                    className="text-sm text-[#888] transition-colors hover:text-white"
+                  >
+                    See pricing
+                  </TrackedLink>
                 </div>
-                <h3 className="mt-4 font-semibold text-white">Community Driven</h3>
-                <p className="mt-2 text-sm text-[#666]">
-                  PRs welcome. Report bugs, request features, or build integrations.
-                </p>
               </div>
-              <div className="rounded-xl border border-white/[0.06] p-6 text-center transition-colors hover:border-white/[0.12]">
-                <div className="mx-auto flex size-10 items-center justify-center rounded-lg bg-white/[0.04] text-[#888]">
-                  <IconShieldCheck className="size-5" />
+
+              {/* Self-Host — secondary */}
+              <div className="flex flex-col rounded-2xl border border-white/[0.06] bg-white/[0.01] p-8">
+                <div className="flex size-11 items-center justify-center rounded-xl bg-white/[0.04] text-[#999]">
+                  <IconServer className="size-6" />
                 </div>
-                <h3 className="mt-4 font-semibold text-white">Self-Host Ready</h3>
-                <p className="mt-2 text-sm text-[#666]">
-                  Deploy on your own servers. Your code never leaves your infrastructure.
-                </p>
+                <h3 className="mt-5 text-xl font-semibold text-white">Self-host</h3>
+                <p className="mt-1.5 text-sm text-[#888]">Run it on your own servers. Free and source-available.</p>
+                <ul className="mt-6 space-y-3 text-sm text-[#bbb]">
+                  {[
+                    "Free & source-available (Modified MIT License)",
+                    "One Docker Compose file — up in minutes",
+                    "Your code never leaves your network",
+                    "Bring your own AI keys or run local models",
+                  ].map((t) => (
+                    <li key={t} className="flex items-start gap-2.5">
+                      <IconCheck className="mt-0.5 size-4 shrink-0 text-[#666]" />
+                      <span>{t}</span>
+                    </li>
+                  ))}
+                </ul>
+                <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:items-center">
+                  <TrackedLink
+                    href="/docs/self-hosting"
+                    event="cta_click"
+                    eventParams={{ location: "cloud_or_self_host", label: "self_host_guide" }}
+                    className="inline-flex items-center justify-center gap-2 rounded-full border border-white/[0.12] px-5 py-2.5 text-sm font-medium text-[#ccc] transition-colors hover:border-white/[0.2] hover:text-white"
+                  >
+                    Read the self-host guide
+                    <IconArrowRight className="size-4" />
+                  </TrackedLink>
+                  <TrackedAnchor
+                    href="https://github.com/octopusreview"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    event="cta_click"
+                    eventParams={{ location: "cloud_or_self_host", label: "star_on_github" }}
+                    className="inline-flex items-center gap-1.5 text-sm text-[#888] transition-colors hover:text-white"
+                  >
+                    <IconBrandGithub className="size-4" />
+                    GitHub
+                  </TrackedAnchor>
+                </div>
               </div>
-            </div>
-
-            <div className="mt-8 flex justify-center">
-              <TrackedAnchor
-                href="https://github.com/octopusreview"
-                target="_blank"
-                rel="noopener noreferrer"
-                event="cta_click"
-                eventParams={{ location: "open_source_section", label: "star_on_github" }}
-                className="inline-flex items-center gap-2 rounded-full border border-white/[0.1] px-6 py-3 text-sm font-medium text-[#999] transition-colors hover:text-white"
-              >
-                <IconBrandGithub className="size-4" />
-                Star us on GitHub
-              </TrackedAnchor>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* Free for Open Source — promo banner */}
-      <section id="oss-program" className="relative z-10 scroll-mt-20 px-4 py-6 sm:px-8 md:px-12">
-        <div className="relative mx-auto max-w-6xl overflow-hidden rounded-3xl border border-[#10D8BE]/25 bg-gradient-to-br from-[#10D8BE]/[0.06] via-[#161616] to-[#161616] px-6 py-20 md:px-12 md:py-24">
-          <div
-            className="pointer-events-none absolute inset-0 opacity-40"
-            aria-hidden="true"
-            style={{
-              backgroundImage:
-                "radial-gradient(circle at 15% 20%, rgba(16,216,190,0.15) 0%, transparent 45%)",
-            }}
-          />
-          <div className="relative grid gap-10 lg:grid-cols-[1.05fr_1fr] lg:items-center">
-            <div>
-              <div className="inline-flex items-center gap-2 rounded-full border border-[#10D8BE]/30 bg-[#10D8BE]/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.2em] text-[#a4f3e6]">
-                <IconHeartHandshake className="size-3.5" />
-                New · Open Source Program
-              </div>
-              <h2 className="mt-5 text-3xl font-bold tracking-tight text-white sm:text-4xl">
-                Free, unlimited reviews
-                <br />
-                for open source projects
-              </h2>
-              <p className="mt-4 max-w-xl text-[#aaa] sm:text-lg">
-                If your repository is public and OSI-licensed, Octopus reviews
-                every pull request — forever, on us. No credit card, no monthly
-                quota. Maintainers deserve great tooling.
-              </p>
-
-              <ul className="mt-6 space-y-2.5 text-sm text-[#bbb]">
-                <li className="flex items-start gap-2">
-                  <IconChecks className="mt-0.5 size-4 shrink-0 text-[#10D8BE]" />
-                  <span>Unlimited PR reviews on every public repo</span>
-                </li>
-                <li className="flex items-start gap-2">
-                  <IconChecks className="mt-0.5 size-4 shrink-0 text-[#10D8BE]" />
-                  <span>One-file setup with a GitHub Action</span>
-                </li>
-                <li className="flex items-start gap-2">
-                  <IconChecks className="mt-0.5 size-4 shrink-0 text-[#10D8BE]" />
-                  <span>Source-backed inline comments with severity levels</span>
-                </li>
-              </ul>
-
-              <div className="mt-8 flex flex-col items-start gap-3 sm:flex-row sm:items-center">
-                <TrackedLink
-                  href="/open-source"
-                  event="cta_click"
-                  eventParams={{ location: "oss_program", label: "learn_more" }}
-                  className="inline-flex items-center gap-2 rounded-full bg-[#10D8BE] px-5 py-2.5 text-sm font-medium text-[#0c0c0c] transition-colors hover:bg-[#0fbfa8]"
-                >
-                  Learn more
-                  <IconArrowRight className="size-4" />
-                </TrackedLink>
-                <TrackedAnchor
-                  href="https://github.com/marketplace/actions/octopus-review"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  event="cta_click"
-                  eventParams={{ location: "oss_program", label: "marketplace" }}
-                  className="inline-flex items-center gap-2 rounded-full border border-white/[0.1] px-5 py-2.5 text-sm font-medium text-[#bbb] transition-colors hover:text-white"
-                >
-                  <IconBrandGithub className="size-4" />
-                  GitHub Marketplace
-                </TrackedAnchor>
-              </div>
-            </div>
-
-            <div className="relative">
-              <LandingOssWorkflowSnippet />
             </div>
           </div>
         </div>
@@ -519,7 +475,7 @@ export default async function LandingPage() {
             <br />
             code review workflow?
           </h2>
-          <p className="mt-4 text-[#666] sm:text-lg">Open source, free forever. Set up in under 2 minutes.</p>
+          <p className="mt-4 text-[#666] sm:text-lg">Start reviewing in two minutes on our managed cloud — free credits, no card.</p>
           <div className="mt-10 flex flex-col items-center gap-4 sm:flex-row sm:justify-center">
             <TrackedLink
               href="/login"
@@ -531,7 +487,7 @@ export default async function LandingPage() {
               <IconArrowRight className="size-4" />
             </TrackedLink>
           </div>
-          <p className="mt-6 text-xs text-[#444]">No credit card required. Self-host or use our cloud.</p>
+          <p className="mt-6 text-xs text-[#444]">No credit card required. Or self-host for free.</p>
         </div>
       </section>
 
@@ -540,7 +496,7 @@ export default async function LandingPage() {
         <div className="mx-auto max-w-2xl text-center">
           <h2 className="text-lg font-semibold text-white">Stay in the loop</h2>
           <p className="mt-2 text-sm text-[#666]">
-            Get notified about new features, updates, and the open source launch.
+            Get notified about new features and product updates.
           </p>
           <div className="mt-6">
             <NewsletterForm />

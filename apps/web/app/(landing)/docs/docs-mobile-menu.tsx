@@ -22,16 +22,22 @@ const sections: MenuSection[] = [
     title: "Get Started",
     items: [
       { href: "/docs/getting-started", label: "Introduction" },
-      { href: "/docs/open-source", label: "Free for Open Source" },
       { href: "/docs/pricing", label: "Pricing" },
     ],
   },
   {
-    title: "Setup & Integrations",
+    title: "Cloud Setup",
     items: [
       { href: "/docs/github-action", label: "GitHub Action" },
       { href: "/docs/integrations", label: "Integrations" },
+    ],
+  },
+  {
+    title: "Self-Host",
+    items: [
       { href: "/docs/self-hosting", label: "Self-Hosting" },
+      { href: "/docs/github-app", label: "GitHub App (self-host)" },
+      { href: "/docs/oauth-setup", label: "Google & GitHub Login" },
     ],
   },
   {

@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { constructWebhookEvent, getStripe } from "@/lib/stripe";
-import { addCredits, deductCredits } from "@/lib/credits";
+import { addCredits, addFreeCredits, deductCredits, grantPurchaseFromPaymentIntent } from "@/lib/credits";
+import { grantSubscriptionPeriod, addOneMonth } from "@/lib/subscription";
+import { isPaidPlanTier, volumeBonusUsd } from "@/lib/plans";
 import { prisma } from "@octopus/db";
 
 async function getReceiptUrl(paymentIntentId: string | null): Promise<string | null> {
@@ -11,6 +13,14 @@ async function getReceiptUrl(paymentIntentId: string | null): Promise<string | n
   } catch {
     return null;
   }
+}
+
+// A duplicate webhook delivery hits a UNIQUE constraint on the ledger row
+// (stripeSessionId for purchases, stripeRefundId for refunds), which Prisma
+// surfaces as error code P2002. That means "already processed" — safe to ACK.
+// Detect it structurally by code, not by matching the (unstable) message text.
+function isDuplicateLedgerError(err: unknown): boolean {
+  return (err as { code?: string } | null)?.code === "P2002";
 }
 
 export async function POST(req: NextRequest) {
@@ -29,70 +39,162 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid signature" }, { status: 400 });
   }
 
-  if (event.type === "checkout.session.completed") {
-    const session = event.data.object;
-    const orgId = session.metadata?.orgId;
-    const type = session.metadata?.type;
-    const amountUsd = Number(session.metadata?.amountUsd || 0);
+  // NOTE on Stripe API versions: the SDK pin in lib/stripe.ts governs OUTBOUND
+  // calls, but webhook event payload SHAPES are set by the endpoint's version
+  // configured in the Stripe dashboard — the two are independent. This handler
+  // reads only version-stable fields (metadata, object ids, amounts,
+  // payment_intent, payment_status), so an SDK/dashboard version skew (e.g.
+  // after an SDK major bump) does not affect it. If you start reading a
+  // version-sensitive field, first align the dashboard endpoint version.
 
-    if (orgId && type === "credit_purchase" && amountUsd > 0) {
-      try {
-        await addCredits(
-          orgId,
-          amountUsd,
-          "purchase",
-          `Credit purchase — $${amountUsd}`,
-          session.id,
-        );
+  // Single retry contract for value-bearing work: a duplicate delivery (P2002)
+  // is ACKed with 200 (idempotent skip); ANY other failure returns 500 so Stripe
+  // retries — otherwise a transient DB/Stripe error would silently drop a paid
+  // customer's credits, since we'd have ACKed 200 and Stripe never re-delivers.
+  try {
+    if (event.type === "checkout.session.completed") {
+      const session = event.data.object;
+      const orgId = session.metadata?.orgId;
+      const type = session.metadata?.type;
+      const amountUsd = Number(session.metadata?.amountUsd || 0);
 
-        // Fetch and store receipt URL
-        const receiptUrl = await getReceiptUrl(
-          typeof session.payment_intent === "string" ? session.payment_intent : null,
-        );
-        if (receiptUrl) {
-          await prisma.creditTransaction.update({
-            where: { stripeSessionId: session.id },
-            data: { receiptUrl },
-          });
-        }
-      } catch (err: unknown) {
-        if (
-          err instanceof Error &&
-          err.message.includes("Unique constraint")
-        ) {
-          console.log("[stripe-webhook] Duplicate session, skipping:", session.id);
-        } else {
-          console.error("[stripe-webhook] Failed to add credits:", err);
-        }
-      }
-    }
-  }
+      // checkout.session.completed fires even when payment is still pending
+      // (async payment methods); only grant once Stripe reports it paid.
+      // Cards — the only method we accept — are always "paid" at completion.
+      const isPaid = session.payment_status === "paid";
 
-  if (event.type === "charge.refunded") {
-    const charge = event.data.object;
-    const paymentIntentId = typeof charge.payment_intent === "string" ? charge.payment_intent : null;
-
-    if (paymentIntentId) {
-      // Find the original transaction by looking up the checkout session tied to this payment intent
-      const sessions = await getStripe().checkout.sessions.list({ payment_intent: paymentIntentId, limit: 1 });
-      const checkoutSession = sessions.data[0];
-      const orgId = checkoutSession?.metadata?.orgId;
-      const amountRefunded = charge.amount_refunded / 100;
-
-      if (orgId && amountRefunded > 0) {
+      if (isPaid && orgId && type === "credit_purchase" && amountUsd > 0) {
         try {
-          await deductCredits(orgId, amountRefunded, `Refund — $${amountRefunded}`);
-          console.log(`[stripe-webhook] Refund processed: $${amountRefunded} for org ${orgId}`);
+          await addCredits(
+            orgId,
+            amountUsd,
+            "purchase",
+            `Credit purchase — $${amountUsd}`,
+            session.id,
+          );
         } catch (err) {
-          console.error("[stripe-webhook] Failed to process refund:", err);
+          if (isDuplicateLedgerError(err)) {
+            console.log("[stripe-webhook] Duplicate session, skipping:", session.id);
+            return NextResponse.json({ received: true });
+          }
+          throw err;
+        }
+
+        // Volume bonus on top of the paid amount (separate free_credit row so
+        // it never inflates the "purchased"/revenue figure). Reached only on
+        // the first, non-duplicate delivery — a redelivery returns early above.
+        // Best-effort: the purchase is already committed, so a bonus failure
+        // must not 500 and re-drive the purchase (which would then skip the
+        // bonus on retry). A rare lost bonus is logged, not double-granted.
+        const bonusUsd = volumeBonusUsd(amountUsd);
+        if (bonusUsd > 0) {
+          try {
+            await addFreeCredits(orgId, bonusUsd, `Volume bonus — $${bonusUsd} on $${amountUsd} purchase`);
+          } catch (err) {
+            console.error("[stripe-webhook] Volume bonus grant failed (non-fatal):", err);
+          }
+        }
+
+        // Best-effort receipt backfill — the credits are already committed, so a
+        // failure here must NOT turn into a 500 that re-drives the grant.
+        try {
+          const receiptUrl = await getReceiptUrl(
+            typeof session.payment_intent === "string" ? session.payment_intent : null,
+          );
+          if (receiptUrl) {
+            await prisma.creditTransaction.update({
+              where: { stripeSessionId: session.id },
+              data: { receiptUrl },
+            });
+          }
+        } catch (err) {
+          console.error("[stripe-webhook] Receipt URL backfill failed (non-fatal):", err);
         }
       }
     }
-  }
 
-  if (event.type === "payment_intent.payment_failed") {
-    const intent = event.data.object;
-    console.error("[stripe-webhook] Payment failed:", intent.id, intent.last_payment_error?.message);
+    if (event.type === "checkout.session.completed") {
+      const session = event.data.object;
+      const orgId = session.metadata?.orgId;
+      const tier = session.metadata?.tier;
+
+      const isPaid = session.payment_status === "paid";
+
+      if (isPaid && session.metadata?.type === "subscription_start" && orgId && tier && isPaidPlanTier(tier)) {
+        // Idempotent: the grant is keyed on session.id; a redelivery re-runs
+        // grantSubscriptionPeriod, which treats the duplicate ledger row as
+        // already-granted and re-stamps the same plan state.
+        await grantSubscriptionPeriod(orgId, tier, session.id, addOneMonth(new Date()));
+      }
+    }
+
+    if (event.type === "charge.refunded") {
+      const charge = event.data.object;
+      const paymentIntentId = typeof charge.payment_intent === "string" ? charge.payment_intent : null;
+
+      if (paymentIntentId) {
+        // Find the org: Checkout purchases carry orgId on the session, but
+        // off-session charges (auto-reload, subscription, direct top-ups) have
+        // no session — those carry orgId on the PaymentIntent metadata. Try the
+        // session first, then fall back to the intent so every charge's refund
+        // is attributable.
+        const sessions = await getStripe().checkout.sessions.list({ payment_intent: paymentIntentId, limit: 1 });
+        let orgId = sessions.data[0]?.metadata?.orgId;
+        if (!orgId) {
+          const intent = await getStripe().paymentIntents.retrieve(paymentIntentId);
+          orgId = intent.metadata?.orgId;
+        }
+
+        if (orgId) {
+          // Deduct each refund INDIVIDUALLY, keyed on its own id, using the
+          // per-refund amount — NOT charge.amount_refunded, which is the running
+          // cumulative total (deducting that on every delivery, or on a second
+          // partial refund, would over-debit). The unique stripeRefundId makes a
+          // redelivered event a no-op (P2002 → rolled back). Auto-paginate so a
+          // charge with >100 refunds is fully covered, and only act on refunds
+          // that actually moved money — pending/failed/canceled refunds still
+          // carry a nonzero `amount` but must not debit the balance.
+          for await (const refund of getStripe().refunds.list({ charge: charge.id })) {
+            const amount = refund.amount / 100;
+            if (refund.status !== "succeeded" || amount <= 0) continue;
+            try {
+              await deductCredits(orgId, amount, `Refund — $${amount}`, refund.id);
+              console.log(`[stripe-webhook] Refund processed: $${amount} for org ${orgId} (${refund.id})`);
+            } catch (err) {
+              if (isDuplicateLedgerError(err)) {
+                console.log("[stripe-webhook] Duplicate refund, skipping:", refund.id);
+                continue;
+              }
+              throw err;
+            }
+          }
+        }
+      }
+    }
+
+    // Authoritative grant for off-session direct credit purchases. The server
+    // action grants inline for instant feedback, but if that process dies
+    // between charge and grant the customer would be charged with no credits —
+    // this webhook is the guarantee. Keyed on the PI id, so the inline grant
+    // and this one collapse to exactly one (P2002-idempotent). Only OUR direct
+    // off-session PIs carry metadata.type="credit_purchase"; Checkout PIs don't
+    // (their grant runs on checkout.session.completed), so no double-grant.
+    if (event.type === "payment_intent.succeeded") {
+      const intent = event.data.object;
+      const orgId = intent.metadata?.orgId;
+      const amountUsd = Number(intent.metadata?.amountUsd || 0);
+      if (intent.metadata?.type === "credit_purchase" && orgId && amountUsd > 0) {
+        await grantPurchaseFromPaymentIntent(orgId, amountUsd, intent.id, intent.latest_charge);
+      }
+    }
+
+    if (event.type === "payment_intent.payment_failed") {
+      const intent = event.data.object;
+      console.error("[stripe-webhook] Payment failed:", intent.id, intent.last_payment_error?.message);
+    }
+  } catch (err) {
+    console.error("[stripe-webhook] Processing failed — returning 500 so Stripe retries:", err);
+    return NextResponse.json({ error: "processing failed" }, { status: 500 });
   }
 
   return NextResponse.json({ received: true });

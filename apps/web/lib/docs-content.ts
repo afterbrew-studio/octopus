@@ -21,9 +21,9 @@ export const docsContent: DocsDocument[] = [
     sections: [
       {
         heading: "Hero",
-        text: `Octopus — Your AI code reviewer that never sleeps.
+        text: `Octopus — Review every PR with repo context.
 Octopus reviews every pull request with deep context awareness. Catch bugs, enforce standards, and ship with confidence.
-Octopus is an open-source, AI-powered code review tool.`,
+Octopus is a source-available, AI-powered code review tool.`,
       },
       {
         heading: "How It Works",
@@ -32,11 +32,12 @@ Step 2: AI Learns Your Code — Octopus indexes your codebase, creating vector e
 Step 3: Reviews on Autopilot — Every pull request is automatically reviewed. Octopus posts findings as inline comments with severity levels: Critical, Major, Minor, Suggestion, and Tip.`,
       },
       {
+        heading: "Cloud or Self-Host",
+        text: `Two ways to run Octopus. Cloud (recommended): a fully managed service — nothing to run or maintain. Auto-reviews every PR via the GitHub App, free credits to start with usage-based pricing after (no card required), managed updates, backups, and scaling, and your code is never stored long-term or used for training. Self-host: run the entire platform on your own infrastructure with one Docker Compose file — free and source-available (Modified MIT License), your code never leaves your network, and you can bring your own AI keys or run local models.`,
+      },
+      {
         heading: "Stats",
-        text: `10x Faster reviews compared to manual code review.
-85% Bugs caught before they reach production.
-Less than 2 minutes average review time.
-24/7 Always on — reviews happen any time, day or night.`,
+        text: `The homepage displays four live, real-time platform counters, computed dynamically from the production database: Code Chunks indexed, Findings posted, PR Reviews completed, and Repositories connected. These figures update in real time and are not fixed marketing numbers. Octopus does not advertise a specific speed multiplier, bug-catch percentage, or average review time.`,
       },
       {
         heading: "Features",
@@ -44,14 +45,13 @@ Less than 2 minutes average review time.
 CLI Tool — Review PRs, chat with your codebase, and manage knowledge from your terminal. Command: octp review --pr 142.
 Codebase Indexing — Your entire codebase is chunked, embedded, and indexed for semantic search. Embeddings are created using OpenAI text-embedding-3-large with 3072 dimensions.
 Knowledge Base — Add custom documents, guidelines, and rules that Octopus references during reviews. Enforce your team's standards automatically.
-Team Sharing — Share chat conversations with your team. Collaborate on code understanding in real-time.
+Team — Share one setup. Org rules, repositories, and reviewer settings stay aligned across your team.
 Analytics — Track review activity, time to merge, token usage, and costs across your organization.`,
       },
       {
-        heading: "Open Source",
-        text: `Octopus is open source under the MIT License.
-Community Driven — Contributions welcome. Open issues, submit PRs, and help shape the future of AI code review.
-Self-Host Ready — Run Octopus on your own infrastructure with Docker. Your code never leaves your servers.`,
+        heading: "Source-Available",
+        text: `Octopus is source-available under a Modified MIT License and free to self-host.
+Self-Host Ready — Run Octopus on your own infrastructure with one Docker Compose file. Your code never leaves your servers. Bring your own AI keys or run local models.`,
       },
       {
         heading: "FAQ",
@@ -59,7 +59,7 @@ Self-Host Ready — Run Octopus on your own infrastructure with Docker. Your cod
 A: Octopus is an AI-powered code review tool that connects to GitHub, GitLab, and Bitbucket, indexes your codebase for deep context, and automatically reviews every pull request (and GitLab merge request) — posting findings as inline comments with severity levels.
 
 Q: How does the automated review work?
-A: When a pull request is opened, Octopus fetches the diff, retrieves relevant context from your indexed codebase using vector search, and sends it to an LLM (Claude or OpenAI) for analysis. Findings are posted directly on the PR with severity ratings: Critical, Major, Minor, Suggestion, and Tip.
+A: When a pull request is opened, Octopus fetches the diff, retrieves relevant context from your indexed codebase using vector search, and sends it to an LLM (Claude, OpenAI, or Google Gemini) for analysis. Findings are posted directly on the PR with severity ratings: Critical, Major, Minor, Suggestion, and Tip.
 
 Q: Which programming languages are supported?
 A: Octopus is language-agnostic. It reviews any text-based code file — TypeScript, Python, Go, Rust, Java, C#, Ruby, PHP, Swift, Kotlin, and more.
@@ -104,21 +104,21 @@ The review pipeline: Webhook receives PR event → Octopus fetches the diff → 
       {
         heading: "3. Understanding Findings",
         text: `Each finding includes a severity level to help you prioritize:
-🔴 Critical — Security vulnerabilities, data loss risks, breaking changes that must be fixed.
-🟠 Major — Bugs, logic errors, performance issues that should be addressed.
-🟡 Minor — Code quality issues, minor improvements, style concerns.
-🔵 Suggestion — Best practice recommendations, alternative approaches.
-💡 Tip — Educational insights, helpful context, nice-to-know information.`,
+🔴 Critical — Security vulnerabilities, data loss risks, broken functionality. Blocks merge.
+🟠 Major — Bugs, logic errors, performance issues, and missing error handling.
+🟡 Minor — Code quality, maintainability, and best-practice concerns.
+🔵 Suggestion — Optional improvements, alternative approaches, and ideas.
+💡 Tip — Informational notes about the code, documentation, or conventions.`,
       },
       {
         heading: "4. Use the CLI",
         text: `Install the Octopus CLI for terminal-based workflows:
-npm install -g @octp/cli (or bun add -g @octp/cli)
-Key commands: octopus chat (chat with your codebase), octopus pr review <number> (review a specific PR), octopus index (re-index a repository), octopus knowledge add (add knowledge documents).`,
+curl -fsSL https://octopus-review.ai/install.sh | bash (macOS/Linux) or powershell -c "irm https://octopus-review.ai/install.ps1 | iex" (Windows)
+Key commands: octp chat (chat with your codebase), octp review --pr <number> (review a specific PR), octp repo index (re-index a repository), octp knowledge add (add knowledge documents).`,
       },
       {
         heading: "5. Customize Your Setup",
-        text: `AI Provider: Choose between Claude (Anthropic) and OpenAI for reviews and chat. Or bring your own API keys.
+        text: `AI Provider: Choose between Claude (Anthropic), OpenAI, and Google Gemini for reviews and chat. Or bring your own API keys.
 Knowledge Base: Upload documents, coding guidelines, and architecture decisions. Octopus references these during reviews.
 .octopusignore: Exclude files and directories from indexing and review (same syntax as .gitignore).
 Spend Limits: Set monthly spending caps per organization to control costs.
@@ -135,55 +135,55 @@ Notifications: Configure Slack and Linear integration for review events.`,
       {
         heading: "Installation",
         text: `Install the Octopus CLI globally:
-npm install -g @octp/cli
-or: bun add -g @octp/cli
-After installing, authenticate with: octopus login
-Verify your session with: octopus whoami`,
+curl -fsSL https://octopus-review.ai/install.sh | bash
+Windows: powershell -c "irm https://octopus-review.ai/install.ps1 | iex"
+After installing, authenticate with: octp login
+Verify your session with: octp whoami`,
       },
       {
         heading: "Repository Commands",
-        text: `octopus repos — List all connected repositories.
-octopus status — Show indexing status for a repository.
-octopus index — Re-index the current repository (or specify a repo).
-octopus analyze — Run AI analysis on a repository.
-octopus chat — Start an interactive chat session about your codebase.`,
+        text: `octp repo list — List all connected repositories.
+octp repo status — Show indexing status for a repository.
+octp repo index — Re-index the current repository (or specify a repo).
+octp repo analyze — Run AI analysis on a repository.
+octp chat — Start an interactive chat session about your codebase.`,
       },
       {
         heading: "Pull Request Commands",
-        text: `octopus pr review <number> — Review a specific pull request.
-You can also pass a full PR URL: octopus pr review https://github.com/org/repo/pull/142
+        text: `octp review --pr <number> — Review a specific pull request.
+You can also pass a full PR URL: octp review --pr https://github.com/org/repo/pull/142
 The CLI streams the review in real-time and posts findings to the PR.`,
       },
       {
         heading: "Dependency Analysis",
-        text: `octopus analyze-deps <repo-url> — Analyze dependencies for a repository.
+        text: `octp analyze-deps <repo-url> — Analyze dependencies for a repository.
 Checks for outdated packages, known vulnerabilities, and license compatibility.`,
       },
       {
         heading: "Knowledge Base",
-        text: `octopus knowledge list — List all knowledge documents.
-octopus knowledge add <file> — Add a document to the knowledge base.
-octopus knowledge remove <id> — Remove a knowledge document.
+        text: `octp knowledge list — List all knowledge documents.
+octp knowledge add <file> — Add a document to the knowledge base.
+octp knowledge remove <id> — Remove a knowledge document.
 Knowledge documents are referenced during code reviews for custom rules and guidelines.`,
       },
       {
         heading: "Local Agent",
-        text: `octopus watch — Start a local file watcher agent.
-octopus start — Start the local agent with semantic search (requires ripgrep or Claude CLI).
+        text: `octp agent serve — Run the local agent (Ollama LLM tasks + code search).
+octp agent watch [path] — Watch a repo directory so cloud chat can search it locally.
 The local agent monitors your project and provides real-time assistance.`,
       },
       {
         heading: "Skills",
-        text: `octopus skills list — List available automation skills.
-octopus skills install <name> — Install a skill for Claude Code or Codex.
+        text: `octp skills list — List available automation skills.
+octp skills install <name> — Install a skill for Claude Code or Codex.
 Skills are pre-built automation workflows like "Split and Ship" and "Octopus Fix".`,
       },
       {
         heading: "Configuration",
-        text: `octopus config list — Show current configuration.
-octopus config set <key> <value> — Set a configuration value.
-octopus usage — View token and credit usage.
-octopus logout — End your session.
+        text: `octp config list — Show current configuration.
+octp config set <key> <value> — Set a configuration value.
+octp usage — View token and credit usage.
+octp logout — End your session.
 Multiple profiles are supported for switching between accounts.`,
       },
     ],
@@ -207,13 +207,18 @@ This is ideal for teams that already have API agreements with AI providers or wa
       },
       {
         heading: "Model Pricing",
-        text: `Octopus supports multiple AI models:
-Claude Sonnet 4.6 — Primary review model. High quality, fast.
-Claude Haiku — Used for lightweight tasks like title generation.
-OpenAI GPT-4o — Alternative review model.
-OpenAI text-embedding-3-large — Used for creating embeddings (3072 dimensions).
-Cohere rerank-v3.5 — Used for re-ranking search results.
-Prompt caching reduces costs: cached reads cost 10% of the normal input price.`,
+        text: `Octopus supports multiple AI models. A 20% platform fee is applied on top of provider costs. Base prices per 1M tokens:
+Claude Fable 5 — $10 input / $50 output. Anthropic's Claude 5 frontier model; the top opt-in tier for the most demanding reviews.
+Claude Opus 5 — $5 input / $25 output. Premium, opt-in review model for a deeper read on tricky pull requests.
+Claude Opus 4.8 — $5 input / $25 output. The default review model on Octopus Cloud.
+Claude Opus 4 — $15 input / $75 output. Legacy high-quality review model.
+Claude Sonnet 4.6 and Claude Sonnet 4 — $3 input / $15 output. High quality and fast; Sonnet 4.6 is the default for self-hosted installs.
+Claude Haiku 4.5 — $1 input / $5 output. Lightweight tasks like title generation.
+Gemini 2.5 Pro — $1.25 input / $10 output. Gemini 2.5 Flash — $0.15 input / $0.60 output.
+GPT-5.3 Codex — $1.75 input / $14 output.
+Embeddings: text-embedding-3-large ($0.13) and text-embedding-3-small ($0.02).
+Cohere rerank is used for re-ranking search results.
+Prompt caching reduces costs: cached reads are billed at 10% of the input price.`,
       },
       {
         heading: "Spend Limits & Billing",
@@ -284,24 +289,25 @@ Anthropic API key for Claude (reviews and chat).`,
       {
         heading: "Quick Start with Docker",
         text: `1. Clone the repository: git clone https://github.com/octopusreview/octopus.git
-2. Create a .env file with your configuration (an auto-generator is provided on the docs page).
-3. Run with Docker Compose: docker compose up -d --build
-4. Run database migrations: docker compose exec octopus bun run db:migrate
-5. Access Octopus at http://localhost:3000
-Docker Compose includes PostgreSQL and Qdrant containers.`,
+2. Create a .env file with your configuration (an auto-generator is provided on the docs page). Pin OCTOPUS_VERSION to the release tag you want to run.
+3. Pull the prebuilt self-host image: docker compose -f docker-compose.selfhost.yml pull
+4. Start the stack: docker compose -f docker-compose.selfhost.yml up -d
+5. Run database migrations from a repo checkout matching OCTOPUS_VERSION (the runtime image does not ship the Prisma CLI or migration files): cd packages/db && DATABASE_URL=postgresql://octopus:octopus@localhost:43332/octopus bunx prisma migrate deploy
+6. Access Octopus at http://localhost:43300 (set OCTOPUS_PORT to override the default 43300).
+The self-host compose file includes PostgreSQL and Qdrant containers.`,
       },
       {
         heading: "Environment Variables",
-        text: `Required: DATABASE_URL, QDRANT_URL, OPENAI_API_KEY, ANTHROPIC_API_KEY, BETTER_AUTH_SECRET, BETTER_AUTH_URL.
-Optional: COHERE_API_KEY (for re-ranking), GITHUB_APP_ID, GITHUB_PRIVATE_KEY, GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET, SLACK_BOT_TOKEN, LINEAR_API_KEY, STRIPE_SECRET_KEY.
+        text: `Required: DATABASE_URL, QDRANT_URL, OPENAI_API_KEY, ANTHROPIC_API_KEY, BETTER_AUTH_SECRET, BETTER_AUTH_URL, GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY, GITHUB_WEBHOOK_SECRET.
+Optional: GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET (for GitHub login), COHERE_API_KEY (for re-ranking), GOOGLE_API_KEY (Gemini models), STRIPE_SECRET_KEY (for billing).
 The self-hosting docs page includes an interactive env generator.`,
       },
       {
         heading: "GitHub App Setup",
         text: `Create a GitHub App for your self-hosted instance:
 Set the webhook URL to your instance's /api/github/webhook endpoint.
-Required permissions: Repository contents (read), Pull requests (read/write), Issues (read/write), Checks (read/write), Metadata (read).
-Subscribe to events: Pull request, Push, Installation.`,
+Required permissions: Contents (read), Pull requests (read/write), Checks (read/write), Metadata (read).
+Subscribe to events: Pull request, Pull request review.`,
       },
       {
         heading: "Production Tips",
@@ -322,10 +328,10 @@ Running without Docker: Install Bun, set up PostgreSQL and Qdrant locally, run b
       {
         heading: "General",
         text: `Q: What is Octopus?
-A: Octopus is an open-source, AI-powered code review tool that indexes your codebase and automatically reviews pull requests with context-aware findings.
+A: Octopus is a source-available, AI-powered code review tool that indexes your codebase and automatically reviews pull requests with context-aware findings.
 
 Q: How does Octopus review code?
-A: When a PR is opened, Octopus fetches the diff, retrieves relevant code context via vector search, and uses an LLM (Claude or OpenAI) to analyze changes. Findings are posted as inline PR comments.
+A: When a PR is opened, Octopus fetches the diff, retrieves relevant code context via vector search, and uses an LLM (Claude, OpenAI, or Google Gemini) to analyze changes. Findings are posted as inline PR comments.
 
 Q: What languages does Octopus support?
 A: Octopus is language-agnostic. It supports TypeScript, JavaScript, Python, Go, Rust, Java, C#, Ruby, PHP, Swift, Kotlin, Scala, C, C++, Vue, Svelte, Astro, HTML, CSS, SQL, GraphQL, and more.
@@ -345,10 +351,10 @@ Q: Can I self-host Octopus?
 A: Yes. Octopus is fully self-hostable with Docker. Your code never leaves your infrastructure.
 
 Q: Which AI models are used?
-A: Claude (Anthropic) and OpenAI GPT-4o for reviews and chat. OpenAI text-embedding-3-large for embeddings. Cohere rerank-v3.5 for search re-ranking.
+A: Claude (Anthropic), OpenAI (GPT), and Google Gemini are all supported review/chat models, selectable per organization — and you can bring your own key for any of them (a Google Gemini API key works for reviews, not just embeddings). OpenAI text-embedding-3-large is used for embeddings. Cohere Rerank is used for search re-ranking.
 
 Q: Is my code used for AI training?
-A: No. Neither Anthropic nor OpenAI use API inputs for training. Your code is never used to train AI models.`,
+A: No. Anthropic, OpenAI, and Google do not use API inputs to train their models. Your code is never used to train AI models.`,
       },
       {
         heading: "Integrations",
@@ -368,7 +374,7 @@ Q: Does Octopus support monorepos?
 A: Yes. Octopus indexes the entire repository including all packages in a monorepo.
 
 Q: Is there a CLI?
-A: Yes. Install with npm install -g @octp/cli. Use it to review PRs, chat with your codebase, and manage knowledge.`,
+A: Yes. Install with curl -fsSL https://octopus-review.ai/install.sh | bash. Use it to review PRs, chat with your codebase, and manage knowledge.`,
       },
       {
         heading: "Pricing & Billing",
@@ -425,15 +431,15 @@ Embeddings: Numerical vector representations of text. Octopus uses OpenAI text-e
 
 Knowledge Base: Custom documents uploaded to an organization (coding guidelines, architecture decisions, style guides) that Octopus references during reviews.
 
-LLM (Large Language Model): AI models like Claude (Anthropic) and GPT-4o (OpenAI) that analyze code and generate review findings.
+LLM (Large Language Model): AI models like Claude (Anthropic), GPT (OpenAI), and Gemini (Google) that analyze code and generate review findings.
 
 .octopusignore: A file in your repository root (same syntax as .gitignore) that tells Octopus which files to skip during indexing and review.
 
 Qdrant: The vector database used by Octopus to store and search code embeddings. Collections: code_chunks, knowledge_chunks, review_chunks, chat_chunks, flowchart_chunks.
 
-Reranking: A second-pass ranking step using Cohere rerank-v3.5 that re-orders search results by relevance to the query, improving the quality of retrieved context.
+Reranking: A second-pass ranking step using Cohere Rerank that re-orders search results by relevance to the query, improving the quality of retrieved context.
 
-Severity Levels: Finding priority ratings — 🔴 Critical (must fix), 🟠 Major (should fix), 🟡 Minor (nice to fix), 🔵 Suggestion (consider), 💡 Tip (informational).
+Severity Levels: Finding priority ratings — 🔴 Critical (security, data loss, or broken functionality; blocks merge), 🟠 Major (bugs, logic errors, performance), 🟡 Minor (code quality, maintainability), 🔵 Suggestion (optional improvement), 💡 Tip (informational).
 
 Spend Limit: A monthly cost cap per organization. When reached, AI operations are paused until the next billing cycle or limit increase.
 
@@ -464,9 +470,15 @@ Rules: Each file belongs to exactly one category. User confirms before proceedin
       {
         heading: "Octopus Fix",
         text: `The Octopus Fix skill discovers open PRs with review comments, presents a summary, and applies fixes.
-Workflow: 1) Discover open PRs 2) Check for review comments 3) Present summary to user 4) Apply fixes 5) Return to original branch 6) Report.
-Review handling: Thumbs up for valid suggestions, thumbs down for false positives.
-Rules: Never force-push. Show proposed fixes before applying. Make minimal changes. Ask on unclear comments. Handle merge conflicts. Preserve git history.`,
+Workflow: 1) Discover open PRs 2) Check reviews (fetch comments/threads; automatically skip PRs whose latest bot review shows 0 findings) 3) Present summary and get confirmation 4) Apply fixes (checkout branch, minimal changes, commit, push) 5) Report.
+Review handling: Thumbs up for valid suggestions (fixed with a reply describing the change), thumbs down for false positives (with an explanation). Review threads are resolved after fixes, and a final PR comment tags @octopusreview to signal updates are ready.
+Rules: Never force-push. Show proposed fixes and get confirmation before committing. Make minimal changes. Ask on unclear comments. Stop on merge conflicts. Preserve git history — no squash, rebase, or amend.`,
+      },
+      {
+        heading: "Octopus Changelog",
+        text: `The Octopus Changelog skill reads your git history since the last tag, categorizes commits using the Keep a Changelog standard, and updates CHANGELOG.md for a new release.
+Workflow: 1) Determine version (detect the latest git tag and suggest the next, or use the version you provide) 2) Gather commits since the last tag and parse conventional-commit prefixes 3) Categorize into Added, Fixed, Changed, Removed, Deprecated, Security (skipping dependency bumps and trivial changes) 4) Review draft — present the formatted entries for approval 5) Update file — insert the new version section into CHANGELOG.md with comparison links.
+Rules: Never commits or pushes — only updates the file. Always shows a draft and gets confirmation before writing. Skips dependency bumps, trivial refactors, and CI-only changes. Groups related commits into single entries.`,
       },
     ],
   },
@@ -482,18 +494,18 @@ Rules: Never force-push. Show proposed fixes before applying. Make minimal chang
 Octopus is not a toy — it's a serious tool built by an independent developer who cares about code quality and developer experience.`,
       },
       {
-        heading: "Open Source Principles",
-        text: `Transparency: The entire codebase is open. You can read, audit, and understand exactly how your code is processed.
+        heading: "Source-Available Principles",
+        text: `Transparency: The full source is available. You can read, audit, and understand exactly how your code is processed.
 No vendor lock-in: Self-host on your own infrastructure. Bring your own API keys.
 Community driven: Contributions are welcome. Open issues, submit PRs, and help shape the future.
-Free forever: The open-source core will always be free.`,
+Free to self-host: run the source-available core on your own infrastructure at no cost. The managed cloud is a paid, credit-based service with free credits to start.`,
       },
       {
         heading: "Tech Stack",
         text: `Next.js (App Router, React 19) for the web application.
 Prisma with PostgreSQL for the database.
 Qdrant for vector storage and semantic search.
-Claude (Anthropic) and OpenAI for AI operations.
+Claude (Anthropic), OpenAI, and Google Gemini for AI operations.
 Tailwind CSS 4 for styling.
 TypeScript throughout.
 Turborepo for monorepo management.`,

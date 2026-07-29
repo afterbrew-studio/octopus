@@ -21,8 +21,21 @@ model User {
   bannedAt     DateTime?
   bannedReason String?
 
+  // Set true for seeded admin accounts (self-host first-boot) so the user is
+  // forced to change the password before any other UI renders. Cleared when
+  // they submit a new password via /change-password. Always false on the SaaS.
+  mustChangePassword Boolean @default(false)
+
   welcomeEmailSentAt    DateTime?
   marketingEmailsEnabled Boolean @default(true)
+
+  // Signup abuse signals. signupIp is captured at the first session and drives
+  // Sybil velocity scoring; welcomeGrantedAt stamps the one-time welcome bonus
+  // so it can't be re-farmed (leak-proof — survives org soft- OR hard-delete).
+  signupIp         String?
+  welcomeGrantedAt DateTime?
+
+  @@index([signupIp])
 
   emailSends EmailSend[]
   devices    UserDevice[]
@@ -40,6 +53,7 @@ model User {
   packageAnalyses       PackageAnalysis[]
   safePackageRequests   SafePackageRequest[]
   packageDeepDives      PackageDeepDive[]
+  presences             UserPresence[]
 
   @@map("users")
 }
@@ -100,18 +114,58 @@ model Organization {
   anthropicApiKey      String?
   cohereApiKey         String?
   googleApiKey         String?
+  grokApiKey           String?
+  openrouterApiKey     String?
+  // Custom Ollama base URL — overrides OLLAMA_SERVER_URL env when set. Used
+  // for self-hosted Octopus instances pointing at a non-default Ollama host
+  // (a different container, a different machine on the LAN, etc.).
+  ollamaBaseUrl        String?
+  // ACPX gateway — base URL + bearer token. SSRF-validated via
+  // url-validation.ts at use time. Both required to enable the provider;
+  // when null the provider raises a clear "not configured" error.
+  acpBaseUrl           String?
+  acpApiKey            String?
+  // OpenCode gateway — same shape as ACPX, separate config.
+  opencodeBaseUrl      String?
+  opencodeApiKey       String?
+  // Claude Code provider config (self-host / per-org). authMode is
+  // "subscription" (local `claude` CLI via the agent bridge) or "api-key"
+  // (Anthropic SDK with claudeCodeApiKey, falling back to anthropicApiKey).
+  // The key is encrypted at rest like the other BYOK keys when set.
+  claudeCodeAuthMode   String?  // "subscription" | "api-key"
+  claudeCodeApiKey     String?
   defaultModelId       String?
   defaultEmbedModelId  String?
+  // Per-org thinking-model effort override (low|medium|high|xhigh|max);
+  // null = inherit the platform default (SystemConfig.defaultReviewEffort).
+  reviewEffort         String?
   monthlySpendLimitUsd    Float?
   checkFailureThreshold   String   @default("critical") // "critical" | "high" | "medium" | "none"
   reviewsPaused           Boolean  @default(false)
+  // Live telemetry (real-time presence + activity). Opt-in, paid-only.
+  // liveTelemetryEnabled: org owner surfaces members'/agents' live presence +
+  // activity to the org's own admins. allowVendorMemberVisibility: a SEPARATE
+  // opt-in letting Octopus staff see member-level detail in the vendor console
+  // (otherwise that console sees org-level aggregates only).
+  liveTelemetryEnabled        Boolean  @default(false)
+  allowVendorMemberVisibility Boolean  @default(false)
   blockedAuthors          Json     @default("[]") // string[] of PR author usernames to skip review
   defaultReviewConfig     Json     @default("{}")
   reviewLanguage          String   @default("en") // BCP-47 code; review prose output language
   stripeCustomerId        String?  @unique
   creditBalance           Decimal  @default(0) @db.Decimal(12, 4)
-  freeCreditBalance       Decimal  @default(150) @db.Decimal(12, 4)
+  freeCreditBalance       Decimal  @default(0) @db.Decimal(12, 4)
   billingEmail            String?
+
+  // Welcome-bonus risk decision recorded when this org was the user's first
+  // (null = never evaluated). Non-null score with 0 free credits = withheld.
+  welcomeRiskScore        Int?
+  welcomeRiskReason       String?
+  // Monthly subscription plan (charged off-session against the saved card;
+  // grants non-expiring credits each period). "free" | "pro" | "team".
+  planTier              String    @default("free")
+  planRenewsAt          DateTime?
+  planCancelAtPeriodEnd Boolean   @default(false)
   githubMarketplacePlanId   Int?
   githubMarketplacePlanName String?
   githubMarketplaceAccountId Int?     @unique
@@ -145,12 +199,36 @@ model Organization {
   apiTokens          OrgApiToken[]
   localAgents        LocalAgent[]
   agentSearchTasks   AgentSearchTask[]
+  agentLlmTasks      AgentLlmTask[]
   packageAnalyses       PackageAnalysis[]
   safePackageRequests   SafePackageRequest[]
   packageDeepDives      PackageDeepDive[]
   couponRedemptions     CouponRedemption[]
+  userPresences         UserPresence[]
+  activityEvents        ActivityEvent[]
+  incidentComms         IncidentComm[]
 
   @@map("organizations")
+}
+
+// One row per (incident, organization) admin communication — the idempotency
+// spine for `octp admin incidents notify`: the unique constraint guarantees a
+// re-run of the same incidentKey can never re-email or re-grant an org. Rows
+// are created as a claim before sending and deleted if that org's send fails,
+// so a partial run can be safely retried.
+model IncidentComm {
+  id               String   @id @default(cuid())
+  incidentKey      String
+  emailsSent       Int      @default(0)
+  creditGrantedUsd Float    @default(0)
+  createdAt        DateTime @default(now())
+
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([incidentKey, organizationId])
+  @@index([incidentKey])
+  @@map("incident_comms")
 }
 
 model OrganizationMember {
@@ -158,6 +236,11 @@ model OrganizationMember {
   role      String    @default("member")
   createdAt DateTime  @default(now())
   deletedAt DateTime?
+  // Per-member opt-out from live telemetry: when true, no presence/activity is
+  // collected for or attributed to this member (privacy surface for the
+  // live-monitoring feature). Default false = tracked-by-default, mirroring
+  // User.marketingEmailsEnabled.
+  telemetryOptedOut Boolean @default(false)
 
   organizationId String
   organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
@@ -306,6 +389,13 @@ model ReviewIssue {
   feedbackBy     String?
   createdAt      DateTime  @default(now())
 
+  // Content-derived signature for cross-review merging. When a PR is re-reviewed,
+  // findings whose signatures match a prior finding inherit its user-triage state
+  // (acknowledgedAt, feedback*, *IssueId, *CommentId, createdAt) so the dev does
+  // not have to re-triage the same issue on every push. Nullable for legacy rows
+  // that predate the introduction of signatures.
+  signature String?
+
   linearIssueId  String?
   linearIssueUrl String?
   jiraIssueKey   String?
@@ -318,6 +408,7 @@ model ReviewIssue {
   pullRequest   PullRequest @relation(fields: [pullRequestId], references: [id], onDelete: Cascade)
 
   @@index([pullRequestId])
+  @@index([pullRequestId, signature])
   @@map("review_issues")
 }
 
@@ -538,6 +629,12 @@ model AiUsage {
   cacheReadTokens  Int      @default(0)
   cacheWriteTokens Int      @default(0)
   usedOwnKey       Boolean  @default(false)
+  // Cost snapshot (USD) charged at record time for platform-key usage — the
+  // marked-up amount deducted from credits. Null for own-key rows (we charge
+  // nothing) and for rows predating this column. Recording it means historical
+  // margin no longer drifts when AvailableModel prices change; the recompute
+  // path (lib/cost.ts) stays as the fallback for null rows.
+  chargedCostUsd Float?
   createdAt      DateTime @default(now())
 
   organizationId String
@@ -662,6 +759,7 @@ model CreditTransaction {
   type                  String   // "purchase" | "usage" | "free_credit" | "refund" | "auto_reload" | "coupon"
   description           String?
   stripeSessionId       String?  @unique
+  stripeRefundId        String?  @unique
   receiptUrl            String?
   balanceAfter          Decimal  @db.Decimal(12, 4)
   createdAt             DateTime @default(now())
@@ -740,12 +838,34 @@ model AvailableModel {
   @@map("available_models")
 }
 
+/// Tracks `ollama pull` model downloads triggered from Settings → Models.
+/// Instance-level: Ollama is one server per deployment, shared across all
+/// orgs, so this is intentionally NOT org-scoped. `model` is unique — a
+/// re-pull updates the same row rather than creating a duplicate.
+model OllamaModelPull {
+  id         String   @id @default(cuid())
+  model      String   @unique // ollama tag, e.g. "qwen2.5-coder:7b"
+  status     String   @default("queued") // queued | pulling | completed | failed
+  statusText String? // latest ollama status line, e.g. "pulling manifest"
+  progress   Int      @default(0) // 0-100, current layer
+  error      String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@map("ollama_model_pulls")
+}
+
 model SystemConfig {
   id        String   @id @default("singleton")
   defaultReviewConfig Json @default("{}")
+  // Platform default thinking-model effort (low|medium|high|xhigh|max);
+  // null = the built-in code default (DEFAULT_THINKING_EFFORT = medium).
+  defaultReviewEffort String?
   blockedAuthors      Json @default("[]") // string[] of globally blocked PR author usernames
   queueConfig         Json @default("{}") // { reviewTimeoutSeconds, reviewConcurrency }
   announcements       Json @default("[]") // landing-page announcement bar entries (see lib/announcements types)
+  latestRelease       Json?    // cached latest GitHub release for the self-hosted Updates page (see lib/releases.ts)
+  blogAudioVoiceId    String?  // selected ElevenLabs voice id for blog read-aloud (see lib/elevenlabs.ts)
   updatedAt DateTime @updatedAt
 
   @@map("system_config")
@@ -871,21 +991,33 @@ model BlogPost {
   publishedAt   DateTime?
   authorId      String
   authorName    String
+  tags          String[]  @default([])
+  category      String?
+  readingTime   Int? // whole minutes, precomputed on write
+  audioUrl      String? // read-aloud MP3 (R2), generated in CI
   deletedAt     DateTime?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
   @@index([status, publishedAt])
+  @@index([status, category])
   @@map("blog_posts")
 }
 
-model BlogApiToken {
+// Platform-global service token (external apps: Claude/MCP/other) with scopes.
+// Physically the same `blog_api_tokens` table (model renamed from BlogApiToken
+// with @@map unchanged → zero DDL for the rename; only the scope/expiry/createdBy
+// columns are added). Org-scoped resources use OrgApiToken instead.
+model ServiceToken {
   id          String    @id @default(cuid())
   name        String
   tokenHash   String    @unique
   tokenPrefix String
+  scopes      String[]  @default([]) // e.g. ["blog:read","blog:create","blog:update"]
+  expiresAt   DateTime?
+  createdBy   String? // super-admin user id, or "cli"/"seed"
   lastUsedAt  DateTime?
-  deletedAt   DateTime?
+  deletedAt   DateTime? // soft-delete = revoked
   createdAt   DateTime  @default(now())
 
   @@index([tokenHash])
@@ -910,10 +1042,37 @@ model LocalAgent {
   apiToken       OrgApiToken @relation(fields: [apiTokenId], references: [id], onDelete: Cascade)
 
   agentSearchTasks AgentSearchTask[]
+  agentLlmTasks    AgentLlmTask[]
 
   @@unique([organizationId, name])
   @@index([organizationId, status])
   @@map("local_agents")
+}
+
+model AgentLlmTask {
+  id             String    @id @default(cuid())
+  status         String    @default("pending") // "pending" | "claimed" | "completed" | "failed" | "timeout"
+  modelId        String
+  system         String?   @db.Text
+  messages       Json      // { role, content }[]
+  maxTokens      Int
+  resultText     String?   @db.Text
+  resultUsage    Json?     // { inputTokens, outputTokens, ... }
+  errorMessage   String?
+  timeoutMs      Int       @default(300000) // 5 minutes
+  claimedAt      DateTime?
+  completedAt    DateTime?
+  createdAt      DateTime  @default(now())
+
+  agentId        String?
+  agent          LocalAgent? @relation(fields: [agentId], references: [id], onDelete: SetNull)
+
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, status])
+  @@index([agentId, status])
+  @@map("agent_llm_tasks")
 }
 
 model AgentSearchTask {
@@ -1069,6 +1228,49 @@ model AuditLog {
   @@map("audit_logs")
 }
 
+// ── Live Telemetry (real-time presence + activity) ───────────────────────────
+// Powers the per-org live-activity dashboard and the vendor cross-org console.
+// Collection is gated on a paid org with liveTelemetryEnabled (+ per-user
+// opt-out); see lib/entitlements.ts. Both tables cascade-delete with the org
+// (hard delete); soft-delete + member-removal purge is handled explicitly in
+// the deletion flows.
+
+model UserPresence {
+  id              String   @id @default(cuid())
+  lastSeenAt      DateTime // last heartbeat; "online" := lastSeenAt >= now - PRESENCE_STALE_MS
+  currentActivity String?  // COARSE route category only (e.g. "Repositories") — never URLs/content
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  userId         String
+  user           User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, organizationId])
+  @@index([organizationId, lastSeenAt])
+  @@map("user_presences")
+}
+
+model ActivityEvent {
+  id         String   @id @default(cuid())
+  actorType  String   // "user" | "agent" | "system"
+  actorId    String?  // userId or agentId (null for system); denormalized like AuditLog.actorId
+  actorLabel String?  // denormalized display name (coarse)
+  action     String   // e.g. "review.completed", "repo.indexed", "chat.message"
+  target     String?  // COARSE target label only (repo display name) — never PR titles/URLs/file names
+  metadata   Json     @default("{}")
+  createdAt  DateTime @default(now())
+
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, createdAt])
+  @@index([createdAt])
+  @@map("activity_events")
+}
+
 // ── Organization Type History ────────────────────────────────────────────────
 
 model OrgTypeChange {
@@ -1134,6 +1336,9 @@ model UserDevice {
 
   @@unique([userId, fingerprint])
   @@index([userId])
+  // Global index so we can ask "how many distinct users share this
+  // fingerprint" — the multi-account (Sybil) signal.
+  @@index([fingerprint])
   @@map("user_devices")
 }
 

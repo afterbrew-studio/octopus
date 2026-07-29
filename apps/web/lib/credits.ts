@@ -1,6 +1,122 @@
 import { prisma } from "@octopus/db";
-import { getStripe } from "./stripe";
+import { getStripe, getOffSessionPaymentMethodId } from "./stripe";
 import { eventBus } from "./events/bus";
+import { volumeBonusUsd } from "./plans";
+
+export type OffSessionPurchaseResult =
+  | { status: "succeeded"; paymentIntentId: string }
+  | { status: "no_card" }
+  | { status: "failed"; reason?: string };
+
+function isDuplicateLedgerError(err: unknown): boolean {
+  return (err as { code?: string } | null)?.code === "P2002";
+}
+
+/**
+ * Grant credits for a succeeded off-session credit-purchase PaymentIntent:
+ * the purchase amount plus the volume bonus, keyed on the PI id so it runs
+ * AT MOST ONCE across the inline fast-path and the webhook backfill. Safe to
+ * call from either; a second call (already granted) is a P2002 no-op.
+ */
+export async function grantPurchaseFromPaymentIntent(
+  orgId: string,
+  amountUsd: number,
+  paymentIntentId: string,
+  latestCharge: string | { id: string } | null,
+): Promise<void> {
+  try {
+    await addCredits(orgId, amountUsd, "purchase", `Credit purchase — $${amountUsd}`, paymentIntentId);
+  } catch (err) {
+    if (isDuplicateLedgerError(err)) return; // already granted for this PI
+    throw err;
+  }
+
+  // Reached only on the first (non-duplicate) grant, so the bonus lands once.
+  const bonus = volumeBonusUsd(amountUsd);
+  if (bonus > 0) {
+    await addFreeCredits(orgId, bonus, `Volume bonus — $${bonus} on $${amountUsd} purchase`);
+  }
+
+  // Best-effort receipt backfill — credits already committed.
+  const chargeId = typeof latestCharge === "string" ? latestCharge : latestCharge?.id;
+  if (chargeId) {
+    try {
+      const chargeObj = await getStripe().charges.retrieve(chargeId);
+      if (chargeObj.receipt_url) {
+        await prisma.creditTransaction.update({
+          where: { stripeSessionId: paymentIntentId },
+          data: { receiptUrl: chargeObj.receipt_url },
+        });
+      }
+    } catch {
+      /* non-critical */
+    }
+  }
+}
+
+/**
+ * Charge the org's saved card off-session for a one-off credit top-up and
+ * grant the credits inline — no Stripe Checkout redirect. Mirrors the
+ * auto-reload/subscription off-session charge. There is no
+ * payment_intent.succeeded webhook, so the grant MUST happen here; it is
+ * keyed on the PaymentIntent id (unique stripeSessionId) so it can't
+ * double-grant. Returns "no_card" when there's nothing saved (caller falls
+ * back to Checkout), "failed" on decline/Stripe error.
+ */
+export async function chargeCreditsOffSession(
+  orgId: string,
+  amountUsd: number,
+  // Deterministic per user-initiated purchase: the Stripe SDK reuses it across
+  // its own network retries of the create() call, so a blip can't double-charge.
+  // Distinct clicks pass distinct keys, so intentional repeat purchases still go
+  // through.
+  idempotencyKey: string,
+): Promise<OffSessionPurchaseResult> {
+  const org = await prisma.organization.findUnique({
+    where: { id: orgId },
+    select: { stripeCustomerId: true },
+  });
+  if (!org?.stripeCustomerId) return { status: "no_card" };
+
+  let paymentMethod: string | null;
+  try {
+    paymentMethod = await getOffSessionPaymentMethodId(org.stripeCustomerId);
+  } catch {
+    return { status: "failed" };
+  }
+  if (!paymentMethod) return { status: "no_card" };
+
+  let paymentIntent;
+  try {
+    paymentIntent = await getStripe().paymentIntents.create(
+      {
+        amount: Math.round(amountUsd * 100),
+        currency: "usd",
+        customer: org.stripeCustomerId,
+        payment_method: paymentMethod,
+        off_session: true,
+        confirm: true,
+        metadata: { orgId, type: "credit_purchase", amountUsd: String(amountUsd) },
+      },
+      { idempotencyKey },
+    );
+  } catch (err) {
+    const code = (err as { code?: unknown } | null)?.code;
+    console.error("[credits] Off-session purchase charge failed:", err);
+    return { status: "failed", reason: typeof code === "string" ? code : undefined };
+  }
+  if (paymentIntent.status !== "succeeded") return { status: "failed" };
+
+  // Grant inline for instant feedback. This is a FAST PATH: the authoritative
+  // guarantee is the payment_intent.succeeded webhook, which grants the same
+  // amount keyed on the same PI id (P2002-idempotent). So if this process dies
+  // between charge and grant, the webhook still delivers the credits — the
+  // customer can never be charged without receiving them. A duplicate here
+  // (webhook already granted) is a benign no-op.
+  await grantPurchaseFromPaymentIntent(orgId, amountUsd, paymentIntent.id, paymentIntent.latest_charge);
+
+  return { status: "succeeded", paymentIntentId: paymentIntent.id };
+}
 
 export async function getOrgBalance(orgId: string) {
   const org = await prisma.organization.findUniqueOrThrow({
@@ -73,6 +189,11 @@ export async function deductCredits(
   orgId: string,
   amount: number,
   description: string,
+  // When set (refund path), the ledger row carries this id under a UNIQUE
+  // column so a replayed/duplicate refund event hits a constraint violation and
+  // the whole transaction rolls back instead of debiting twice. Left undefined
+  // for ordinary usage deductions (which are intentionally non-unique).
+  stripeRefundId?: string,
 ): Promise<void> {
   if (amount <= 0) return;
 
@@ -116,6 +237,7 @@ export async function deductCredits(
         amount: -amount,
         type: "usage",
         description,
+        stripeRefundId,
         balanceAfter: totalAfter,
         organizationId: orgId,
       },
@@ -213,11 +335,17 @@ async function triggerAutoReloadIfNeeded(
   if (recentReload) return;
 
   try {
-    // Create a PaymentIntent and confirm immediately using the customer's default payment method
+    // Cards saved via Checkout are attached but not the customer default, and
+    // an off-session confirm does not fall back to attached cards — resolve
+    // the payment method explicitly or the reload silently no-ops.
+    const paymentMethod = await getOffSessionPaymentMethodId(org.stripeCustomerId);
+    if (!paymentMethod) return;
+
     const paymentIntent = await getStripe().paymentIntents.create({
       amount: Math.round(reloadAmount * 100),
       currency: "usd",
       customer: org.stripeCustomerId,
+      payment_method: paymentMethod,
       off_session: true,
       confirm: true,
       metadata: {
@@ -253,8 +381,20 @@ async function triggerAutoReloadIfNeeded(
       console.log(`[credits] Auto-reload $${reloadAmount} for org ${orgId}`);
     }
   } catch (err) {
-    // Payment failed (no default payment method, card declined, etc.)
+    // Payment failed (card declined, expired, etc.). Post-paid metering means
+    // the in-flight review already spent the tokens; the actionable signal is
+    // to the owner — their card failed and reviews will stop once the balance
+    // is exhausted. A silent console.error left them blind (#506).
     console.error("[credits] Auto-reload payment failed:", err);
+    const code = (err as { code?: unknown } | null)?.code;
+    const reason = typeof code === "string" ? code : undefined;
+    eventBus.emit({
+      type: "auto-reload-failed",
+      orgId,
+      reloadAmount,
+      remainingBalance: currentBalance,
+      reason,
+    });
   }
 }
 

@@ -9,14 +9,28 @@ import { ResultsSummary } from "./results-summary";
 import { ResultsList } from "./results-list";
 import { AnalysisHistory, type AnalysisHistoryItem } from "./analysis-history";
 
+/**
+ * Normalize a GitHub URL to a comparable owner/repo key so trivial differences
+ * (trailing slash, `.git`, case, whitespace) don't stop us from recognizing the
+ * prefilled repo and sending its repositoryId.
+ */
+function repoKey(url: string): string {
+  return url
+    .trim()
+    .toLowerCase()
+    .replace(/\.git$/, "")
+    .replace(/\/+$/, "");
+}
+
 interface PackageAnalyzerClientProps {
   authenticated?: boolean;
   history?: AnalysisHistoryItem[];
   defaultUrl?: string;
+  repositoryId?: string;
   autoStart?: boolean;
 }
 
-export function PackageAnalyzerClient({ authenticated, history, defaultUrl, autoStart }: PackageAnalyzerClientProps) {
+export function PackageAnalyzerClient({ authenticated, history, defaultUrl, repositoryId, autoStart }: PackageAnalyzerClientProps) {
   const router = useRouter();
   const [isLoading, setIsLoading] = useState(false);
   const [progressEntries, setProgressEntries] = useState<ProgressEntry[]>([]);
@@ -43,10 +57,14 @@ export function PackageAnalyzerClient({ authenticated, history, defaultUrl, auto
     redirectingRef.current = false;
 
     try {
+      // Send repositoryId only when analyzing the exact repo it belongs to
+      // (the prefilled URL) — if the user edits the URL to another repo, the
+      // id no longer matches, so omit it and let the server resolve by org.
+      const sendRepoId = !!repositoryId && repoKey(repoUrl) === repoKey(defaultUrl ?? "");
       const resp = await fetch("/api/analyze-deps", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ repoUrl }),
+        body: JSON.stringify(sendRepoId ? { repoUrl, repositoryId } : { repoUrl }),
       });
 
       if (!resp.ok) {
@@ -131,7 +149,7 @@ export function PackageAnalyzerClient({ authenticated, history, defaultUrl, auto
         setIsLoading(false);
       }
     }
-  }, [addProgress, router]);
+  }, [addProgress, router, repositoryId, defaultUrl]);
 
   return (
     <div className="space-y-6">

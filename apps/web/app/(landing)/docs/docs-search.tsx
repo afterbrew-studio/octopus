@@ -14,7 +14,6 @@ import {
   IconCookie,
   IconQuestionMark,
   IconSearch,
-  IconHeartHandshake,
   IconBrandGithub,
 } from "@tabler/icons-react";
 import {
@@ -27,13 +26,6 @@ import {
 } from "@/components/ui/command";
 
 const docsPages = [
-  {
-    href: "/docs/open-source",
-    label: "Free for Open Source",
-    description: "Unlimited AI reviews for public OSS repos via the GitHub Action.",
-    icon: IconHeartHandshake,
-    keywords: ["open source", "oss", "free", "github action", "workflow", "yaml", "public repo", "maintainer"],
-  },
   {
     href: "/docs/self-hosting",
     label: "Self-Hosting",
@@ -49,6 +41,20 @@ const docsPages = [
     keywords: ["github action", "workflow", "yaml", "ci", "pr", "pull request", "octopus-api-key", "community", "free"],
   },
   {
+    href: "/docs/github-app",
+    label: "GitHub App Setup",
+    description: "Create and install the GitHub App that powers PR webhooks and review comments.",
+    icon: IconBrandGithub,
+    keywords: ["github app", "webhook", "app id", "private key", "self-host", "install", "review comments"],
+  },
+  {
+    href: "/docs/oauth-setup",
+    label: "Google & GitHub Login",
+    description: "Configure Google, GitHub, and Microsoft OAuth sign-in for self-hosted deployments.",
+    icon: IconShieldLock,
+    keywords: ["oauth", "login", "sso", "google", "github", "microsoft", "social", "sign in", "auth", "self-host"],
+  },
+  {
     href: "/docs/integrations",
     label: "Integrations",
     description: "GitHub, Bitbucket, Slack, Linear connections and webhooks.",
@@ -60,7 +66,7 @@ const docsPages = [
     label: "CLI",
     description: "Installation, commands, authentication, and profiles.",
     icon: IconTerminal2,
-    keywords: ["terminal", "command", "npm", "bun", "login", "review", "index", "chat"],
+    keywords: ["terminal", "command", "install", "curl", "octp", "login", "review", "index", "chat"],
   },
   {
     href: "/docs/octopusignore",

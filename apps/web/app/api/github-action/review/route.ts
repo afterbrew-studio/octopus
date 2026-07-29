@@ -194,7 +194,11 @@ export async function POST(request: NextRequest) {
     const todayCount = await getCommunityReviewCountToday(orgId);
     if (todayCount >= communityDailyLimit) {
       return Response.json(
-        { error: "Daily review limit reached (community tier). Add octopus-api-key for unlimited reviews." },
+        {
+          error:
+            "Daily review limit reached (community tier). Add an octopus-api-key for unlimited reviews, or see pricing to upgrade: https://octopus-review.ai/docs/pricing",
+          upgradeUrl: "https://octopus-review.ai/docs/pricing",
+        },
         { status: 429 },
       );
     }

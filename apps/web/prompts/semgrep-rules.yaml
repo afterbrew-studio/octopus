@@ -1,0 +1,44 @@
+# Curated, OFFLINE semgrep ruleset for the deterministic tool pre-pass (#643).
+# Local-only (referenced via --config <this file>) so semgrep never touches the
+# network. Intentionally small + high-precision — ground-truth findings only.
+# Keep in sync conceptually with lib/rulepacks/security.ts.
+rules:
+  - id: octo-eval-usage
+    languages: [javascript, typescript, python]
+    severity: WARNING
+    message: >
+      Use of eval() on dynamic input can enable code injection (CWE-95). Prefer a
+      safe parser (e.g. JSON.parse) and validate the result.
+    pattern: eval(...)
+
+  - id: octo-js-exec-shell
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >
+      child_process.exec()/execSync() runs a shell; with interpolated input this
+      risks command injection (CWE-78). Use execFile/spawn with an argv array.
+    patterns:
+      - pattern-either:
+          - pattern: exec($CMD, ...)
+          - pattern: execSync($CMD, ...)
+      - metavariable-pattern:
+          metavariable: $CMD
+          patterns:
+            - pattern-not: '"..."'
+
+  - id: octo-py-subprocess-shell-true
+    languages: [python]
+    severity: ERROR
+    message: >
+      subprocess with shell=True on dynamic input risks command injection
+      (CWE-78). Pass an argv list and shell=False.
+    patterns:
+      - pattern: subprocess.$FN(..., shell=True, ...)
+
+  - id: octo-py-yaml-load
+    languages: [python]
+    severity: WARNING
+    message: >
+      yaml.load without SafeLoader can execute arbitrary objects (CWE-502). Use
+      yaml.safe_load.
+    pattern: yaml.load($X)

@@ -10,11 +10,81 @@ import { enqueueAfter } from "./queue";
 import { reasonToMessage, validateEmailForSignup } from "./email-validator";
 import { normalizeEmail } from "./email-normalize";
 
+// Email/password sign-in + sign-up (and the first-boot admin seed) are a
+// self-hosted opt-in. On the multi-tenant SaaS, sign-in is OAuth + magic-link.
+const IS_SELF_HOSTED = process.env.NEXT_PUBLIC_OCTOPUS_SELF_HOSTED === "true";
+
 export const auth = betterAuth({
   trustedOrigins: [process.env.BETTER_AUTH_URL!],
+  // Resolve the client IP from the edge-set, hard-to-spoof header first, then
+  // fall back through the proxy chain. This IP feeds audit logs and the
+  // signup-abuse (Sybil) signal, so the source must not be the client-set first
+  // x-forwarded-for hop. On the SaaS, Cloudflare overwrites cf-connecting-ip so
+  // it's authoritative. Self-host operators MUST ensure their reverse proxy
+  // sets/overwrites these headers (same caveat as lib/request-ip.ts); an
+  // untrusted proxy makes any of them client-spoofable and only weakens the
+  // best-effort signal (it can't grant more than the once-per-user bonus).
+  advanced: {
+    ipAddress: {
+      ipAddressHeaders: ["cf-connecting-ip", "x-real-ip", "x-forwarded-for"],
+    },
+  },
   database: prismaAdapter(prisma, {
     provider: "postgresql",
   }),
+  // The ENTIRE emailAndPassword block is omitted on the SaaS — not merely
+  // `enabled: false`. Better Auth gates request/reset-password on the presence
+  // of `sendResetPassword`, so leaving the block in (even disabled) would keep
+  // those endpoints live. Omitting it keeps all password endpoints fully off.
+  ...(IS_SELF_HOSTED
+    ? {
+        emailAndPassword: {
+          enabled: true,
+          // Auto-sign-in after sign-up — Better Auth creates the session in the
+          // same response, matching the magic-link UX.
+          autoSignIn: true,
+          // Default is 8; go to 10 so we're not the weakest link self-hosted.
+          minPasswordLength: 10,
+          sendResetPassword: async ({
+            user,
+            url,
+          }: {
+            user: { id: string; email: string };
+            url: string;
+          }) => {
+            const result = await renderEmailTemplate("magic-link", {
+              magicLinkUrl: url,
+            });
+            await sendEmail({
+              to: user.email,
+              subject: "Reset your Octopus password",
+              html:
+                result?.html ??
+                `<p>Click <a href="${url}">here</a> to reset your Octopus password. The link expires in 1 hour.</p>`,
+            });
+            await writeAuditLog({
+              action: "email.password_reset_sent",
+              category: "email",
+              actorEmail: user.email,
+              targetType: "user",
+              targetId: user.id,
+              metadata: { recipient: user.email },
+            });
+          },
+        },
+        // Default rate limiting is on in production; tighten the unauthenticated
+        // password endpoints (self-host only) to curb reset-email spam and
+        // credential stuffing. The SaaS is untouched (whole block omitted there).
+        rateLimit: {
+          customRules: {
+            "/request-password-reset": { window: 60, max: 3 },
+            "/reset-password": { window: 60, max: 5 },
+            "/sign-in/email": { window: 60, max: 10 },
+            "/sign-up/email": { window: 3600, max: 5 },
+          },
+        },
+      }
+    : {}),
   databaseHooks: {
     session: {
       create: {
@@ -23,6 +93,19 @@ export const auth = betterAuth({
             where: { id: session.userId },
             select: { email: true },
           });
+
+          // Record the IP of the user's first session as a Sybil signal.
+          // updateMany with `signupIp: null` sets it exactly once, race-free.
+          if (session.ipAddress) {
+            await prisma.user
+              .updateMany({
+                where: { id: session.userId, signupIp: null },
+                data: { signupIp: session.ipAddress },
+              })
+              .catch((err) =>
+                console.error("[auth] failed to record signup IP:", err),
+              );
+          }
 
           await writeAuditLog({
             action: "auth.login",

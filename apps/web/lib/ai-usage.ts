@@ -3,7 +3,7 @@ import { calcCost, getModelPricing } from "./cost";
 import { deductCredits } from "./credits";
 
 type LogAiUsageParams = {
-  provider: "anthropic" | "openai" | "google" | "cohere";
+  provider: "anthropic" | "openai" | "google" | "cohere" | "grok" | "openrouter" | "ollama" | "local" | "acp" | "opencode" | "claude-code" | "mock" | "mock-fail";
   model: string;
   operation: string;
   inputTokens: number;
@@ -18,7 +18,16 @@ export async function logAiUsage(params: LogAiUsageParams): Promise<void> {
     // Determine key ownership before recording usage
     const org = await prisma.organization.findUnique({
       where: { id: params.organizationId },
-      select: { anthropicApiKey: true, openaiApiKey: true, cohereApiKey: true, googleApiKey: true },
+      select: {
+        anthropicApiKey: true,
+        openaiApiKey: true,
+        cohereApiKey: true,
+        googleApiKey: true,
+        grokApiKey: true,
+        openrouterApiKey: true,
+        claudeCodeApiKey: true,
+        claudeCodeAuthMode: true,
+      },
     });
 
     if (!org) {
@@ -30,9 +39,45 @@ export async function logAiUsage(params: LogAiUsageParams): Promise<void> {
       (params.provider === "anthropic" && !!org.anthropicApiKey) ||
       (params.provider === "openai" && !!org.openaiApiKey) ||
       (params.provider === "google" && !!org.googleApiKey) ||
-      (params.provider === "cohere" && !!org.cohereApiKey);
+      (params.provider === "cohere" && !!org.cohereApiKey) ||
+      (params.provider === "grok" && !!org.grokApiKey) ||
+      (params.provider === "openrouter" && !!org.openrouterApiKey) ||
+      // Claude Code: api-key mode bills against the org key; subscription mode
+      // shells out to the local `claude` CLI (the user's own auth) — own-key.
+      (params.provider === "claude-code" &&
+        (!!org.claudeCodeApiKey || org.claudeCodeAuthMode === "subscription")) ||
+      // Ollama / ACPX / OpenCode run on operator-configured infra/gateways and
+      // the local-agent bridge runs on the user's laptop — never bill platform.
+      params.provider === "ollama" ||
+      params.provider === "local" ||
+      params.provider === "acp" ||
+      params.provider === "opencode" ||
+      // Test doubles — zero cost.
+      params.provider === "mock" ||
+      params.provider === "mock-fail";
 
-    await prisma.aiUsage.create({
+    // Compute the platform charge up front (needed for both the deduction and
+    // the cost snapshot). Own-key usage is never charged.
+    let cost = 0;
+    if (!hasOwnKey) {
+      const pricing = await getModelPricing();
+      cost = calcCost(
+        pricing,
+        params.model,
+        params.inputTokens,
+        params.outputTokens,
+        params.cacheReadTokens ?? 0,
+        params.cacheWriteTokens ?? 0,
+      );
+    }
+
+    // Record the usage row FIRST (usage happened regardless of billing), with
+    // chargedCostUsd left null. We stamp the snapshot only AFTER a successful
+    // deduction, so the field always reflects what we actually charged — a
+    // failed deduction leaves it null ("usage served, charged nothing"), never
+    // a phantom charge. Recording the snapshot means historical margin no
+    // longer drifts when model prices change later.
+    const usage = await prisma.aiUsage.create({
       data: {
         provider: params.provider,
         model: params.model,
@@ -48,16 +93,6 @@ export async function logAiUsage(params: LogAiUsageParams): Promise<void> {
 
     // Only deduct credits for orgs without their own API key
     if (!hasOwnKey) {
-      const pricing = await getModelPricing();
-      const cost = calcCost(
-        pricing,
-        params.model,
-        params.inputTokens,
-        params.outputTokens,
-        params.cacheReadTokens ?? 0,
-        params.cacheWriteTokens ?? 0,
-      );
-
       console.log(
         `[ai-usage] ${params.operation} model=${params.model} cost=$${cost.toFixed(6)} org=${params.organizationId} hasOwnKey=${hasOwnKey}`,
       );
@@ -69,6 +104,12 @@ export async function logAiUsage(params: LogAiUsageParams): Promise<void> {
           `${params.operation} — ${params.model}`,
         );
       }
+
+      // Deduction committed (or was $0) — now stamp the cost snapshot.
+      await prisma.aiUsage.update({
+        where: { id: usage.id },
+        data: { chargedCostUsd: cost },
+      });
     }
   } catch (err) {
     console.error("[ai-usage] Failed to log:", err);

@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { prisma } from "@octopus/db";
+import { prisma, type Prisma } from "@octopus/db";
 import { pubby } from "@/lib/pubby";
 import {
   searchSimilarChunks,
@@ -13,14 +13,16 @@ import {
   searchFeedbackPatterns,
   ensureFeedbackCollection,
   upsertFeedbackPattern,
+  searchReviewChunks,
 } from "@/lib/qdrant";
 import { extractAllMermaidBlocks, extractNodeLabels, DIAGRAM_TYPE_LABELS, sanitizeMermaidInMarkdown } from "@/lib/mermaid-utils";
-import { loadQueueConfig, computeStaleReclaimMs, enqueue } from "@/lib/queue";
+import { loadQueueConfig, computeStaleReclaimMs, enqueue, enqueueAfter } from "@/lib/queue";
 import { createEmbeddings } from "@/lib/embeddings";
 import { generateSparseVector } from "@/lib/sparse-vector";
 import { substitutePromptVars } from "@/lib/prompt-substitute";
 import { rerankDocuments } from "@/lib/reranker";
 import { resolveReviewLanguage } from "@/lib/review-language";
+import { findingSignature, mergeFindingsBySignature, inheritReviewIssueTriage } from "@/lib/finding-merge";
 import { getAlwaysIncludeKnowledge, mergeKnowledgeChunks } from "@/lib/knowledge-context";
 import {
   fetchRepoConfigFile,
@@ -30,6 +32,7 @@ import {
 } from "@/lib/repo-config";
 import {
   getPullRequestDiff as ghGetPullRequestDiff,
+  getPullRequestDetails as ghGetPullRequestDetails,
   LargePrError,
   createPullRequestComment as ghCreatePullRequestComment,
   updatePullRequestComment as ghUpdatePullRequestComment,
@@ -66,9 +69,16 @@ import {
   generateVerificationQueries,
   resolveIndexClaimWait,
   normalizeScoreDenominators,
+  shouldFailReviewCheck,
+  formatPastReviews,
+  formatPrIntent,
+  buildRetrievalQuery,
+  filterByConfidence,
+  resolveConfidenceThreshold,
 } from "@/lib/review-helpers";
+import { selectRulePacks } from "@/lib/rulepacks";
+import { toolPrePassEnabled, runSemgrepPrePass, formatToolFindings, filterToChangedLines } from "@/lib/deterministic-tools";
 import type { ReviewConfig } from "@/lib/review-helpers";
-import { getCategoryConfidenceThreshold } from "@/lib/review-categories";
 import {
   gatherCrossFileContext,
   gatherVerificationContext,
@@ -93,9 +103,9 @@ import { summarizeRepository } from "@/lib/summarizer";
 import { analyzeRepository } from "@/lib/analyzer";
 import { writeSyncLog, deleteSyncLogs } from "@/lib/elasticsearch";
 import { logAiUsage } from "@/lib/ai-usage";
-import { getReviewModel } from "@/lib/ai-client";
+import { resolveReviewModel } from "@/lib/review-routing";
 import { createAiMessage } from "@/lib/ai-router";
-import { isOrgOverSpendLimit } from "@/lib/cost";
+import { isOrgOverSpendLimit, shouldGuardConcurrency } from "@/lib/cost";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -153,6 +163,11 @@ async function emitReviewStatus(orgId: string, event: ReviewEvent) {
 // --- LLM-based reply intent classification ---
 
 const FEEDBACK_CLASSIFICATION_MODEL = "claude-sonnet-4-6";
+
+// GitLab commit-status context name — the merge-gating check GitLab MRs can
+// require. Kept as one constant so every finalize path uses the same name
+// (GitLab keys statuses by name; a mismatch would leave a stale "running" one).
+const GITLAB_STATUS_NAME = "octopus";
 
 type ReplyIntent = "dismissed" | "accepted" | "unclear";
 
@@ -689,6 +704,22 @@ export async function processReview(pullRequestId: string): Promise<void> {
         ? gitlab.getPullRequestDiff(org.id, projectPath, prNumber)
         : bitbucket.getPullRequestDiff(org.id, owner, repoName, prNumber);
 
+  // PR description/body — used only to give the reviewer the change's intent.
+  // Best-effort: never block a review if the metadata fetch fails.
+  const providerGetPrBody = async (prNumber: number): Promise<string> => {
+    try {
+      const details = isGitHub
+        ? await ghGetPullRequestDetails(installationId!, owner, repoName, prNumber)
+        : isGitlab
+          ? await gitlab.getPullRequestDetails(org.id, projectPath, prNumber)
+          : await bitbucket.getPullRequestDetails(org.id, owner, repoName, prNumber);
+      return details.body ?? "";
+    } catch (err) {
+      console.warn(`[reviewer] Could not fetch PR body for intent:`, err);
+      return "";
+    }
+  };
+
   const providerCreateComment = (prNumber: number, body: string) =>
     isGitHub
       ? ghCreatePullRequestComment(installationId!, owner, repoName, prNumber, body)
@@ -822,6 +853,16 @@ export async function processReview(pullRequestId: string): Promise<void> {
     }
   }
 
+  // GitLab: post a running commit status so the MR shows the review in flight.
+  // This is the merge-gating primitive — a project can require the "octopus"
+  // status to pass before merge. Best-effort; a status failure never blocks the
+  // review itself.
+  if (pr.headSha && isGitlab) {
+    await gitlab
+      .setCommitStatus(org.id, projectPath, pr.headSha, "running", GITLAB_STATUS_NAME, "Octopus review in progress")
+      .catch((err) => console.error("[reviewer] Failed to set GitLab running status:", err));
+  }
+
   // Pre-review: sync feedback from GitHub before generating new findings
   if (isGitHub && installationId) {
     try {
@@ -903,6 +944,13 @@ export async function processReview(pullRequestId: string): Promise<void> {
                 reviewCommentId,
                 "> 🐙 **Octopus Review** — Repository indexing failed and could not be recovered.\n>\n> Please re-trigger the review by commenting `@octopusreview`.",
               );
+            }
+            // Terminal — the review won't run, so finalize the GitLab status
+            // (leaving "running" would strand the MR).
+            if (pr.headSha && isGitlab) {
+              await gitlab
+                .setCommitStatus(org.id, projectPath, pr.headSha, "failed", GITLAB_STATUS_NAME, "Repository indexing failed.")
+                .catch((e) => console.error("[reviewer] Failed to set GitLab status:", e));
             }
             return;
           }
@@ -1065,10 +1113,6 @@ export async function processReview(pullRequestId: string): Promise<void> {
       }
     }
 
-    // Resolve the model to use for this org (with repo-level override)
-    const reviewModel = await getReviewModel(org.id, repo.id);
-    console.log(`[reviewer] Using model: ${reviewModel}`);
-
     // Spend limit check
     const overLimit = await isOrgOverSpendLimit(org.id);
     if (overLimit) {
@@ -1083,10 +1127,58 @@ export async function processReview(pullRequestId: string): Promise<void> {
         where: { id: pr.id },
         data: { status: "failed", errorMessage: "Monthly spend limit reached" },
       });
+      // Finalize the GitLab status as success — a billing limit is not a code
+      // problem, so it must not block the MR merge (and leaving "running" would
+      // strand it). GitHub uses no check here for the same reason.
+      if (pr.headSha && isGitlab) {
+        await gitlab
+          .setCommitStatus(org.id, projectPath, pr.headSha, "success", GITLAB_STATUS_NAME, "Review skipped — monthly usage limit reached.")
+          .catch((e) => console.error("[reviewer] Failed to set GitLab status:", e));
+      }
       return;
     }
 
-    // Step 1: Mark as reviewing
+    // Low-balance concurrency guard (#506): post-paid metering means N reviews
+    // admitted at once can each pass the balance check and collectively
+    // overspend. When a nearly-empty platform-billed org already has a review
+    // in flight, re-queue this one to run after that finishes (and the balance
+    // is re-checked), serializing spend down to one review at a time. Bounded:
+    // the in-flight review completes → this retries and either runs or hits the
+    // spend-limit block above once credits hit zero; stale reviews are reclaimed
+    // by the existing stuck-review sweeper.
+    if (await shouldGuardConcurrency(org.id)) {
+      // Admission must be ATOMIC — a plain count-then-mark is check-then-act:
+      // N parallel workers each see 0 in-flight (none marked yet) and all admit.
+      // A transaction-scoped advisory lock keyed on the org serializes the
+      // count+mark so exactly one review per org is admitted at a time. The
+      // lock is held only for this fast count/update, not the whole review.
+      const admitted = await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${org.id}))`;
+        const inFlight = await tx.pullRequest.count({
+          where: {
+            repository: { organizationId: org.id },
+            status: "reviewing",
+            id: { not: pr.id },
+          },
+        });
+        if (inFlight > 0) return false;
+        await tx.pullRequest.update({ where: { id: pr.id }, data: { status: "reviewing" } });
+        return true;
+      });
+      if (!admitted) {
+        console.log(
+          `[reviewer] Low balance + in-flight review for org ${org.id} — re-queuing PR ${pr.id}`,
+        );
+        await prisma.pullRequest.update({
+          where: { id: pr.id },
+          data: { status: "queued", updatedAt: new Date() },
+        });
+        await enqueueAfter("process-review", { pullRequestId: pr.id }, 30);
+        return;
+      }
+    }
+
+    // Step 1: Mark as reviewing (idempotent — the guard may have set it already)
     await prisma.pullRequest.update({
       where: { id: pr.id },
       data: { status: "reviewing" },
@@ -1184,6 +1276,13 @@ export async function processReview(pullRequestId: string): Promise<void> {
     const diffFiles = extractDiffFiles(diff);
     const filesChanged = diffFiles.size;
 
+    // Resolve the review model now that the diff is known: explicit repo/org
+    // pins still win; otherwise mechanical diffs (lockfiles, generated, docs,
+    // tests, tiny edits) downshift to a cheaper model. Never emits an unpriced
+    // model. Substantive diffs keep the default.
+    const reviewModel = await resolveReviewModel({ orgId: org.id, repoId: repo.id, diff });
+    console.log(`[reviewer] Using model: ${reviewModel}`);
+
     // Merge PR diff files into the repo tree so new files added by the PR
     // are visible in the file tree — prevents false positives about "missing" modules.
     const treeSet = new Set(repoTree);
@@ -1217,6 +1316,12 @@ export async function processReview(pullRequestId: string): Promise<void> {
           summary: "The diff is empty — there are no reviewable code changes.",
         });
       }
+      // GitLab has no "neutral" — an empty diff shouldn't block a merge, so pass.
+      if (pr.headSha && isGitlab) {
+        await gitlab
+          .setCommitStatus(org.id, projectPath, pr.headSha, "success", GITLAB_STATUS_NAME, "No reviewable code changes.")
+          .catch((e) => console.error("[reviewer] Failed to set GitLab status:", e));
+      }
 
       console.log(`[reviewer] Skipped PR #${pr.number} — empty diff`);
       return;
@@ -1229,21 +1334,73 @@ export async function processReview(pullRequestId: string): Promise<void> {
       step: "searching-context",
     });
 
-    // Take first 8000 chars of diff as search query
-    const searchText = diff.slice(0, 8000);
+    // Retrieval query composed from title + changed paths + hunk headers +
+    // identifiers (not raw +/- churn), so every changed file is represented
+    // regardless of diff size (#651). Bounded (<=4000 chars) — no cost increase
+    // vs the old 8000-char slice.
+    const searchText = buildRetrievalQuery(diff, pr.title);
+    console.log(`[reviewer] Retrieval query: ${searchText.length} chars from ${diffFiles.size} changed files`);
     const [queryVector] = await createEmbeddings([searchText], {
       organizationId: org.id,
       operation: "embedding",
       repositoryId: repo.id,
     });
 
-    // Over-fetch from Qdrant, then rerank with Cohere
-    const rerankQuery = `${pr.title}\n${diff.slice(0, 2000)}`;
+    // Over-fetch from Qdrant, then rerank with Cohere (same composed query).
+    const rerankQuery = searchText;
 
-    const [rawCodeChunks, rawKnowledgeChunks, alwaysIncludeKnowledge] = await Promise.all([
+    // Deterministic tool pre-pass (#643): opt-in per repo, no-op without the
+    // semgrep binary. Fetches the changed files' new content and runs a curated
+    // OFFLINE semgrep ruleset, returning a ground-truth findings block for the
+    // prompt. Best-effort — any failure yields "" and the LLM review proceeds.
+    const runToolPrePass = async (): Promise<string> => {
+      if (!toolPrePassEnabled(reviewConfig)) return "";
+      try {
+        const ref = pr.headSha ?? repo.defaultBranch ?? "main";
+        const fetchContent = (p: string): Promise<string> =>
+          isGitHub
+            ? ghGetFileContent(installationId!, owner, repoName, ref, p).then((c) => c ?? "")
+            : isGitlab
+              ? gitlab.getFileContent(org.id, projectPath, ref, p)
+              : bitbucket.getFileContent(org.id, owner, repoName, ref, p);
+        const paths = [...diffFiles].slice(0, 200);
+        // Bounded concurrency so a large PR can't fire hundreds of parallel
+        // content fetches at the provider API.
+        const files: { path: string; content: string }[] = [];
+        const FETCH_CONCURRENCY = 8;
+        for (let i = 0; i < paths.length; i += FETCH_CONCURRENCY) {
+          const batch = await Promise.all(
+            paths.slice(i, i + FETCH_CONCURRENCY).map(async (p) => ({ path: p, content: await fetchContent(p).catch(() => "") })),
+          );
+          for (const f of batch) if (f.content) files.push(f);
+        }
+        const rulesPath = path.join(process.cwd(), "prompts", "semgrep-rules.yaml");
+        const raw = await runSemgrepPrePass(files, rulesPath);
+        // Scope to lines actually visible in the diff — semgrep scans whole
+        // files, so a finding on unchanged code the PR never touched is dropped.
+        const findings = filterToChangedLines(raw, parseDiffLines(diff));
+        if (findings.length) console.log(`[reviewer] Tool pre-pass: ${findings.length}/${raw.length} semgrep finding(s) on changed lines`);
+        return formatToolFindings(findings);
+      } catch (err) {
+        console.warn("[reviewer] Tool pre-pass failed, continuing:", err);
+        return "";
+      }
+    };
+
+    const [rawCodeChunks, rawKnowledgeChunks, alwaysIncludeKnowledge, rawPastReviews, prBody, toolFindingsBlock] = await Promise.all([
       searchSimilarChunks(repo.id, queryVector, 50, rerankQuery),
       searchKnowledgeChunks(org.id, queryVector, 25, rerankQuery).catch(() => [] as { title: string; text: string; score: number }[]),
       getAlwaysIncludeKnowledge(org.id).catch(() => []),
+      // Past reviews on similar code — reuses the query vector (no extra
+      // embedding/LLM cost) and runs in parallel with the other retrievals.
+      searchReviewChunks(org.id, queryVector, 6, rerankQuery).catch(() => []),
+      // PR description — gives the reviewer the change's intent. Runs in
+      // parallel; best-effort (empty on failure).
+      providerGetPrBody(pr.number),
+      // Deterministic tool pre-pass (#643) — opt-in per repo, default off, and a
+      // no-op unless the semgrep binary is present. Runs in parallel with
+      // retrieval so it adds no latency on the critical path.
+      runToolPrePass(),
     ]);
 
     const [contextChunks, similarityKnowledgeChunks] = await Promise.all([
@@ -1275,6 +1432,19 @@ export async function processReview(pullRequestId: string): Promise<void> {
     const knowledgeContext = knowledgeChunks.length > 0
       ? knowledgeChunks.map((c) => c.text).join("\n\n---\n\n")
       : "";
+
+    // Format past reviews retrieved above (in the parallel batch) into the
+    // prompt block; excludes this PR's own prior review, caps and score-floors.
+    const pastReviewsContext = formatPastReviews(rawPastReviews, pr.number, repo.fullName);
+
+    // The change's intent (title + description + linked issues) so the reviewer
+    // can flag "does not accomplish stated goal" / missing-requirement / scope
+    // creep. Author-controlled → treated as untrusted in the prompt.
+    const prIntent = formatPrIntent(pr.title, prBody);
+
+    // Curated anti-pattern rulepacks for the languages in this diff + the
+    // always-on security pack (#649). Deterministic dispatch, no retrieval cost.
+    const patternRules = selectRulePacks(diff);
 
     await emitReviewStatus(org.id, {
       ...baseEvent,
@@ -1584,6 +1754,10 @@ export async function processReview(pullRequestId: string): Promise<void> {
       CODEBASE_CONTEXT: codebaseContext,
       FILE_TREE: fileTree,
       KNOWLEDGE_CONTEXT: knowledgeContext,
+      PAST_REVIEWS_CONTEXT: pastReviewsContext,
+      PR_INTENT: prIntent,
+      PATTERN_RULES: patternRules,
+      TOOL_FINDINGS: toolFindingsBlock,
       PR_NUMBER: String(pr.number),
       USER_INSTRUCTION: userInstruction,
       PROVIDER: isGitHub ? "GitHub" : isBitbucket ? "Bitbucket" : isGitlab ? "GitLab" : repo.provider,
@@ -1811,27 +1985,25 @@ Rules:
     // Filter out findings below confidence threshold (per-category: high-risk
     // categories like Security/Bug get a relaxed threshold so genuine issues
     // are not silently dropped — see review-categories.ts).
-    const confidenceThreshold =
-      typeof reviewConfig.confidenceThreshold === "number"
-        ? reviewConfig.confidenceThreshold
-        : reviewConfig.confidenceThreshold === "HIGH"
-          ? 85
-          : 70;
-    const allFindings = findings;
-    findings = findings.filter(
-      (f) => f.confidence >= getCategoryConfidenceThreshold(f.category, confidenceThreshold),
-    );
-    if (allFindings.length !== findings.length) {
-      console.log(`[reviewer] Filtered out ${allFindings.length - findings.length} findings below per-category confidence threshold (base ${confidenceThreshold})`);
+    const confidenceThreshold = resolveConfidenceThreshold(reviewConfig);
+    // #647: run confidence filter, category filter, suppression AND validation on
+    // the FULL parsed union — not just the inline subset — so the summary table
+    // and persisted DB rows carry post-validation confidence and never show a
+    // finding the validator/threshold would drop. Inline vs summary is derived
+    // from this single validated set further below.
+    const beforeConfidence = allParsedFindings.length;
+    allParsedFindings = filterByConfidence(allParsedFindings, confidenceThreshold);
+    if (beforeConfidence !== allParsedFindings.length) {
+      console.log(`[reviewer] Filtered out ${beforeConfidence - allParsedFindings.length} findings below per-category confidence threshold (base ${confidenceThreshold})`);
     }
 
     // Filter out disabled categories
     if (reviewConfig.disabledCategories && reviewConfig.disabledCategories.length > 0) {
       const disabled = new Set(reviewConfig.disabledCategories.map((c) => c.toLowerCase()));
-      const before = findings.length;
-      findings = findings.filter((f) => !disabled.has(f.category.toLowerCase()));
-      if (findings.length !== before) {
-        console.log(`[reviewer] Filtered out ${before - findings.length} findings from disabled categories`);
+      const before = allParsedFindings.length;
+      allParsedFindings = allParsedFindings.filter((f) => !disabled.has(f.category.toLowerCase()));
+      if (allParsedFindings.length !== before) {
+        console.log(`[reviewer] Filtered out ${before - allParsedFindings.length} findings from disabled categories`);
       }
     }
 
@@ -1860,28 +2032,19 @@ Rules:
         }
 
         if (suppressedAllIndexes.size > 0) {
-          // Filter allParsedFindings so dismissed findings don't appear in the summary table
+          // Suppress dismissed-pattern findings from the union (single source).
           allParsedFindings = allParsedFindings.filter((_, i) => !suppressedAllIndexes.has(i));
-
-          // Also filter the inline findings list using the same suppressed set mapped to current findings
-          const suppressedFindingKeys = new Set(
-            [...suppressedAllIndexes].map((i) => allFindingTexts[i]),
-          );
-          const beforeCount = findings.length;
-          findings = findings.filter((f) => !suppressedFindingKeys.has(`${f.title} ${f.description}`));
-
-          const totalSuppressed = suppressedAllIndexes.size;
-          const inlineSuppressed = beforeCount - findings.length;
-          console.log(`[reviewer] Suppressed ${totalSuppressed} findings via semantic feedback matching (${inlineSuppressed} inline, ${totalSuppressed - inlineSuppressed} summary-only)`);
+          console.log(`[reviewer] Suppressed ${suppressedAllIndexes.size} findings via semantic feedback matching`);
         }
       }
     } catch (err) {
       console.warn("[reviewer] Semantic feedback matching failed, continuing:", err);
     }
 
-    // Two-pass validation: use Haiku to re-score confidence on all findings
-    // with cross-file context for verifying function signatures, types, etc.
-    if (findings.length > 0) {
+    // Two-pass validation: re-score confidence on the FULL union with cross-file
+    // context. Runs once on allParsedFindings so both the summary table and the
+    // inline subset carry validated confidence (#647).
+    if (allParsedFindings.length > 0) {
       try {
         const fileContentFetcher: FileContentFetcher | undefined =
           isGitHub && installationId && pr.headSha
@@ -1894,7 +2057,7 @@ Rules:
 
         // Phase 1: Cross-file context (existing — function signatures, types, APIs)
         let crossFileContext = "";
-        const crossFileQueries = extractCrossFileQueries(findings, diff);
+        const crossFileQueries = extractCrossFileQueries(allParsedFindings, diff);
         if (crossFileQueries.length > 0) {
           crossFileContext = await gatherCrossFileContext(crossFileQueries, repo.id, org.id, fileContentFetcher);
           if (crossFileContext) {
@@ -1904,7 +2067,7 @@ Rules:
 
         // Phase 2: Verification context (new — verify each finding's claims via Qdrant)
         let verificationContext: Map<number, string> | undefined;
-        const verificationQueries = generateVerificationQueries(findings);
+        const verificationQueries = generateVerificationQueries(allParsedFindings);
         if (verificationQueries.length > 0) {
           verificationContext = await gatherVerificationContext(verificationQueries, repo.id, org.id, fileContentFetcher);
           if (verificationContext.size > 0) {
@@ -1912,11 +2075,14 @@ Rules:
           }
         }
 
-        findings = await validateFindings(findings, diff, org.id, confidenceThreshold, crossFileContext || undefined, "[reviewer]", verificationContext, fileTree);
+        allParsedFindings = await validateFindings(allParsedFindings, diff, org.id, confidenceThreshold, crossFileContext || undefined, "[reviewer]", verificationContext, fileTree);
       } catch (err) {
         console.warn("[reviewer] Two-pass validation failed, keeping all findings:", err);
       }
     }
+
+    // Inline vs summary are both derived from the validated union from here on.
+    findings = [...allParsedFindings];
 
     // Hard dedup: remove findings that match prior bot comments, summary table findings,
     // or dismissed DB findings by file proximity + keyword overlap.
@@ -2042,12 +2208,10 @@ Rules:
     const hasMedium = findings.some((f) => f.severity === "🟡");
 
     const threshold = org.checkFailureThreshold || "critical";
-    const shouldRequestChanges =
-      threshold !== "none" && (
-        hasCritical ||
-        (threshold !== "critical" && hasHigh) ||
-        (threshold === "medium" && hasMedium)
-      );
+    const shouldRequestChanges = shouldFailReviewCheck(
+      { hasCritical, hasHigh, hasMedium },
+      threshold,
+    );
     const reviewEvent = shouldRequestChanges ? "REQUEST_CHANGES" : "COMMENT";
 
     // Track the actual number of findings visible to the user (inline + summary table)
@@ -2228,12 +2392,21 @@ Rules:
     }
 
     // Step 6: Persist parsed findings as ReviewIssue records (ALL findings, not just capped/inline)
-    // Clear previous findings first (re-review idempotency)
-    await prisma.reviewIssue.deleteMany({
+    // Fetch prior findings BEFORE clearing so that on a re-review, a finding whose
+    // content signature is unchanged inherits its user-triage state (acknowledgement,
+    // feedback, tracker links, original createdAt) instead of resurfacing as brand-new.
+    // This exact-signature inheritance complements the earlier fuzzy (keyword +
+    // line-proximity) dedup rather than replacing it — see lib/finding-merge.ts.
+    const priorIssues = await prisma.reviewIssue.findMany({
       where: { pullRequestId: pr.id },
     });
 
-    // Persist all parsed findings (pre-filter) for dashboard/scoring
+    // Persist all parsed findings (pre-filter) for dashboard/scoring. The
+    // delete+create replacement happens in ONE transaction below so a failure
+    // mid-way can never wipe prior findings (and their triage state) without
+    // writing the replacements.
+    let mergedIssues: Prisma.ReviewIssueCreateManyInput[] = [];
+    let inheritedCount = 0;
     const allPersistFindings = allParsedFindings;
     if (allPersistFindings.length > 0) {
       const severityMap: Record<string, string> = {
@@ -2244,18 +2417,42 @@ Rules:
         "💡": "low",
       };
 
-      await prisma.reviewIssue.createMany({
-        data: allPersistFindings.map((f) => ({
-          title: f.title.replace(/^(CRITICAL|HIGH|MEDIUM|LOW|INFO)\s*—\s*/i, "").trim(),
+      const current: Prisma.ReviewIssueCreateManyInput[] = allPersistFindings.map((f) => {
+        const title = f.title.replace(/^(CRITICAL|HIGH|MEDIUM|LOW|INFO)\s*—\s*/i, "").trim();
+        return {
+          title,
           description: f.description || f.category,
           severity: severityMap[f.severity] ?? "medium",
           filePath: f.filePath || null,
           lineNumber: f.startLine || null,
           confidence: f.confidence ? String(f.confidence) : null,
           pullRequestId: pr.id,
-        })),
+          signature: findingSignature({ filePath: f.filePath || "", category: f.category, title }),
+        };
       });
-      console.log(`[reviewer] Saved ${allPersistFindings.length} review issues to DB`);
+
+      const { merged, inherited } = mergeFindingsBySignature<Prisma.ReviewIssueCreateManyInput>({
+        prior: priorIssues,
+        current,
+        inherit: inheritReviewIssueTriage,
+      });
+      mergedIssues = merged;
+      inheritedCount = inherited;
+    }
+
+    // Atomic replace: clear + insert together (re-review idempotency without
+    // a window where triage-bearing rows are deleted but replacements unwritten).
+    await prisma.$transaction([
+      prisma.reviewIssue.deleteMany({ where: { pullRequestId: pr.id } }),
+      ...(mergedIssues.length > 0
+        ? [prisma.reviewIssue.createMany({ data: mergedIssues })]
+        : []),
+    ]);
+    if (mergedIssues.length > 0) {
+      console.log(
+        `[reviewer] Saved ${mergedIssues.length} review issues to DB` +
+          (inheritedCount > 0 ? ` (${inheritedCount} inherited prior triage state)` : ""),
+      );
     }
 
     // Step 7: Mark as completed + update check run
@@ -2267,37 +2464,38 @@ Rules:
       },
     });
 
+    // Merge-gating result, computed once and applied to whichever provider
+    // supports a status check (GitHub check-run, GitLab commit status).
+    const checkShouldFail = shouldFailReviewCheck(
+      { hasCritical, hasHigh, hasMedium },
+      threshold,
+    );
+    const summaryText = checkShouldFail
+      ? hasCritical
+        ? "Critical issues found that must be fixed before merge."
+        : hasHigh
+          ? "High severity issues found that should be fixed before merge."
+          : "Medium severity issues found that should be fixed before merge."
+      : effectiveFindingsCount > 0
+        ? "Review complete. No issues above the configured threshold."
+        : "Review complete. No issues found.";
+    const checkTitle = `${filesChanged} file${filesChanged !== 1 ? "s" : ""} reviewed, ${effectiveFindingsCount} finding${effectiveFindingsCount !== 1 ? "s" : ""}`;
+
     if (checkRunId && isGitHub && installationId) {
-      const checkShouldFail =
-        threshold !== "none" && (
-          hasCritical ||
-          (threshold !== "critical" && hasHigh) ||
-          (threshold === "medium" && hasMedium)
-        );
       const conclusion = checkShouldFail ? "failure" : "success";
-
-      const summaryText = checkShouldFail
-        ? hasCritical
-          ? "Critical issues found that must be fixed before merge."
-          : hasHigh
-            ? "High severity issues found that should be fixed before merge."
-            : "Medium severity issues found that should be fixed before merge."
-        : effectiveFindingsCount > 0
-          ? "Review complete. No issues above the configured threshold."
-          : "Review complete. No issues found.";
-
-      await ghUpdateCheckRun(
-        installationId,
-        owner,
-        repoName,
-        checkRunId,
-        conclusion,
-        {
-          title: `${filesChanged} file${filesChanged !== 1 ? "s" : ""} reviewed, ${effectiveFindingsCount} finding${effectiveFindingsCount !== 1 ? "s" : ""}`,
-          summary: summaryText,
-        },
-      );
+      await ghUpdateCheckRun(installationId, owner, repoName, checkRunId, conclusion, {
+        title: checkTitle,
+        summary: summaryText,
+      });
       console.log(`[reviewer] Check run updated — conclusion: ${conclusion} (threshold: ${threshold})`);
+    }
+
+    if (pr.headSha && isGitlab) {
+      const state = checkShouldFail ? "failed" : "success";
+      await gitlab
+        .setCommitStatus(org.id, projectPath, pr.headSha, state, GITLAB_STATUS_NAME, summaryText)
+        .catch((err) => console.error("[reviewer] Failed to set GitLab commit status:", err));
+      console.log(`[reviewer] GitLab commit status set — state: ${state} (threshold: ${threshold})`);
     }
 
     // Step 7: Store review in vector DB for timeline/search
@@ -2422,6 +2620,13 @@ Rules:
           summary: `Octopus Review encountered an error: ${errorMessage}`,
         },
       ).catch((e) => console.error("[reviewer] Failed to update check run:", e));
+    }
+    // GitLab: mark the status failed on a review error so a gated MR isn't left
+    // hanging on a "running" status forever.
+    if (pr.headSha && isGitlab) {
+      await gitlab
+        .setCommitStatus(org.id, projectPath, pr.headSha, "failed", GITLAB_STATUS_NAME, `Review error: ${errorMessage}`.slice(0, 255))
+        .catch((e) => console.error("[reviewer] Failed to set GitLab failed status:", e));
     }
 
     // If indexing was in progress, mark it as failed (check current DB state, not stale in-memory value)

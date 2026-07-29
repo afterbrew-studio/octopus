@@ -3,6 +3,7 @@ import {
   IconRocket,
   IconBrandGithub,
   IconBrandBitbucket,
+  IconBrandGitlab,
   IconGitPullRequest,
   IconAlertTriangle,
   IconAlertCircle,
@@ -16,12 +17,13 @@ import {
   IconServer,
   IconWand,
   IconBrain,
+  IconCloud,
 } from "@tabler/icons-react";
 
 export const metadata = {
   title: "Getting Started | Octopus Docs",
   description:
-    "Connect your repo in two minutes and get AI code reviews on every pull request. Step-by-step setup guide for GitHub and Bitbucket, with examples.",
+    "Connect your repo in two minutes and get AI code reviews on every pull request. Step-by-step setup guide for GitHub, GitLab, and Bitbucket, with examples.",
   alternates: {
     canonical: "https://octopus-review.ai/docs/getting-started",
   },
@@ -66,7 +68,38 @@ export default function GettingStartedPage() {
           <FeatureCard
             icon={<IconPlugConnected className="size-4" />}
             title="Works With Your Tools"
-            description="GitHub, Bitbucket, Slack, Linear. Fits into your existing workflow."
+            description="GitHub, GitLab, Bitbucket, Slack, Linear, Jira. Fits into your existing workflow."
+          />
+        </div>
+      </Section>
+
+      {/* Choose your path */}
+      <Section title="Choose Your Path">
+        <Paragraph>
+          Octopus comes two ways. Most teams use{" "}
+          <strong className="text-white">Cloud</strong> — fully hosted and set
+          up in minutes. If you&apos;d rather run everything on your own
+          infrastructure, the source-available{" "}
+          <strong className="text-white">Self-Host</strong> path is free.
+        </Paragraph>
+        <div className="mb-4 grid gap-3 sm:grid-cols-2">
+          <PathCard
+            recommended
+            icon={<IconCloud className="size-5" />}
+            eyebrow="Cloud · Free to start"
+            title="Hosted for you"
+            description="Sign in, install the GitHub App, and Octopus reviews every pull request automatically. No servers to run, no maintenance."
+            links={[
+              { href: "/login", label: "Install the GitHub App" },
+              { href: "/docs/pricing", label: "View pricing" },
+            ]}
+          />
+          <PathCard
+            icon={<IconServer className="size-5" />}
+            eyebrow="Self-Host · Free"
+            title="Run it yourself"
+            description="Deploy Octopus with Docker on your own infrastructure. Free and source-available — you keep full control of your data."
+            links={[{ href: "/docs/self-hosting", label: "Self-hosting guide" }]}
           />
         </div>
       </Section>
@@ -74,15 +107,20 @@ export default function GettingStartedPage() {
       {/* Step 1: Connect */}
       <Section title="1. Connect Your Repository">
         <Paragraph>
-          Start by connecting your GitHub or Bitbucket account from the
-          dashboard. Octopus will install as a GitHub App or set up Bitbucket
-          OAuth to receive webhook events from your repositories.
+          Start by connecting your GitHub, GitLab, or Bitbucket account from the
+          dashboard. Octopus installs as a GitHub App, or connects to GitLab and
+          Bitbucket via OAuth, to receive webhook events from your repositories.
         </Paragraph>
-        <div className="mb-4 grid gap-3 sm:grid-cols-2">
+        <div className="mb-4 grid gap-3 sm:grid-cols-3">
           <ProviderCard
             icon={<IconBrandGithub className="size-5" />}
             name="GitHub"
             description="Install the GitHub App, select repositories, and you're ready to go."
+          />
+          <ProviderCard
+            icon={<IconBrandGitlab className="size-5" />}
+            name="GitLab"
+            description="Connect via OAuth (gitlab.com or self-managed); Octopus reviews every merge request."
           />
           <ProviderCard
             icon={<IconBrandBitbucket className="size-5" />}
@@ -160,31 +198,31 @@ export default function GettingStartedPage() {
             icon={<IconCircleDot className="size-4" />}
             color="text-red-400"
             label="Critical"
-            description="Bugs, security vulnerabilities, data loss risks. Blocks merge."
+            description="Security vulnerabilities, data loss risks, broken functionality. Blocks merge."
           />
           <SeverityRow
             icon={<IconAlertTriangle className="size-4" />}
             color="text-orange-400"
-            label="Warning"
-            description="Logic errors, performance issues, potential edge cases."
+            label="Major"
+            description="Bugs, logic errors, performance issues, and missing error handling."
           />
           <SeverityRow
             icon={<IconAlertCircle className="size-4" />}
             color="text-yellow-400"
-            label="Caution"
+            label="Minor"
             description="Code quality, maintainability, and best practice concerns."
           />
           <SeverityRow
             icon={<IconInfoCircle className="size-4" />}
             color="text-blue-400"
-            label="Info"
-            description="Informational notes about the code, documentation, or conventions."
+            label="Suggestion"
+            description="Optional improvements, alternative approaches, and ideas."
           />
           <SeverityRow
             icon={<IconBulb className="size-4" />}
             color="text-purple-400"
-            label="Suggestion"
-            description="Optional improvements, alternative approaches, and ideas."
+            label="Tip"
+            description="Informational notes about the code, documentation, or conventions."
           />
         </div>
       </Section>
@@ -200,19 +238,19 @@ export default function GettingStartedPage() {
         </Paragraph>
         <div className="mb-4 space-y-2">
           <CommandRow
-            command="octopus repo chat"
+            command="octp chat"
             description="Start an interactive chat session about your codebase. Ask questions, explore architecture."
           />
           <CommandRow
-            command="octopus pr review 42"
+            command="octp review --pr 42"
             description="Trigger an AI review on any pull request by number or URL."
           />
           <CommandRow
-            command="octopus repo index"
+            command="octp repo index"
             description="Index your repository for code search and review context."
           />
           <CommandRow
-            command="octopus knowledge add docs/api.md"
+            command="octp knowledge add docs/api.md"
             description="Add custom documents to your org's knowledge base for richer reviews."
           />
         </div>
@@ -224,18 +262,18 @@ export default function GettingStartedPage() {
         </Paragraph>
         <div className="mb-4 space-y-2">
           <CommandRow
-            command="octopus agent watch"
+            command="octp agent watch"
             description="Add the current repo to the agent's watch list. Detects the repo from the git remote URL."
           />
           <CommandRow
-            command="octopus agent start"
+            command="octp agent serve"
             description="Start the local agent. Listens for search requests from Octopus Chat and responds with real-time code results."
           />
         </div>
         <Paragraph>
           Install with{" "}
-          <Code>npm install -g @octp/cli</Code> and run{" "}
-          <Code>octopus login</Code> to get started. See the full{" "}
+          <Code>curl -fsSL https://octopus-review.ai/install.sh | bash</Code> and run{" "}
+          <Code>octp login</Code> to get started. See the full{" "}
           <DocLink href="/docs/cli">CLI reference</DocLink> for all commands.
         </Paragraph>
       </Section>
@@ -277,7 +315,7 @@ export default function GettingStartedPage() {
             href="/docs/integrations"
             icon={<IconPlugConnected className="size-4" />}
             title="Integrations"
-            description="Connect GitHub, Bitbucket, Slack, and Linear"
+            description="Connect GitHub, GitLab, Bitbucket, Slack, Linear, and Jira"
           />
           <NextStepCard
             href="/docs/cli"
@@ -392,6 +430,76 @@ function ProviderCard({
         <p className="mt-0.5 text-xs leading-relaxed text-[#666]">
           {description}
         </p>
+      </div>
+    </div>
+  );
+}
+
+function PathCard({
+  icon,
+  eyebrow,
+  title,
+  description,
+  links,
+  recommended = false,
+}: {
+  icon: React.ReactNode;
+  eyebrow: string;
+  title: string;
+  description: string;
+  links: { href: string; label: string }[];
+  recommended?: boolean;
+}) {
+  return (
+    <div
+      className={`flex flex-col rounded-lg border p-5 ${
+        recommended
+          ? "border-[#10D8BE]/40 bg-[#10D8BE]/[0.04]"
+          : "border-white/[0.06] bg-white/[0.02]"
+      }`}
+    >
+      <div className="mb-3 flex items-center justify-between">
+        <div
+          className={`flex size-9 items-center justify-center rounded-lg ${
+            recommended
+              ? "bg-[#10D8BE]/10 text-[#10D8BE]"
+              : "bg-white/[0.06] text-[#888]"
+          }`}
+        >
+          {icon}
+        </div>
+        {recommended && (
+          <span className="rounded-full bg-[#10D8BE]/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#10D8BE]">
+            Recommended
+          </span>
+        )}
+      </div>
+      <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-[#555]">
+        {eyebrow}
+      </div>
+      <h3 className="text-base font-semibold text-white">{title}</h3>
+      <p className="mb-4 mt-1 text-xs leading-relaxed text-[#888]">
+        {description}
+      </p>
+      <div className="mt-auto flex flex-wrap items-center gap-x-4 gap-y-1">
+        {links.map((link, i) => (
+          <Link
+            key={link.href}
+            href={link.href}
+            className={
+              i === 0
+                ? `inline-flex items-center gap-1 text-sm font-medium transition-colors ${
+                    recommended
+                      ? "text-[#10D8BE] hover:text-[#10D8BE]/80"
+                      : "text-white hover:text-white/80"
+                  }`
+                : "text-xs text-[#888] underline decoration-white/20 underline-offset-2 transition-colors hover:text-white"
+            }
+          >
+            {link.label}
+            {i === 0 && <IconArrowRight className="size-3.5" />}
+          </Link>
+        ))}
       </div>
     </div>
   );

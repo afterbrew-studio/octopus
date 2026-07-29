@@ -1,7 +1,8 @@
 import { prisma } from "@octopus/db";
 import { toBaseSlug, randomSlugSuffix } from "@/lib/slug";
-import { canUserCreateOrg } from "@/lib/org-limits";
-import { MAX_OWNED_ORGS_PER_USER } from "@/lib/constants";
+import { canUserCreateOrg, hasEverOwnedOrg } from "@/lib/org-limits";
+import { assessWelcomeCredit } from "@/lib/welcome-credit";
+import { MAX_OWNED_ORGS_PER_USER, WELCOME_FREE_CREDITS } from "@/lib/constants";
 
 /**
  * Creates an organization for a user. Pure DB operation — no cookie setting,
@@ -41,6 +42,10 @@ export async function createOrgForUser(userId: string, userName: string) {
     slug = `${baseSlug}-${randomSlugSuffix()}`;
   }
 
+  // Assess welcome-bonus risk before the tx (reads only); the tx confirms
+  // first-org atomically.
+  const welcome = await assessWelcomeCredit(userId);
+
   // Re-check limit and create atomically to prevent TOCTOU race
   const org = await prisma.$transaction(async (tx) => {
     const ownedCount = await tx.organizationMember.count({
@@ -50,7 +55,23 @@ export async function createOrgForUser(userId: string, userName: string) {
       throw new Error(`Organization limit reached (max ${MAX_OWNED_ORGS_PER_USER}).`);
     }
 
-    const firstOrg = ownedCount === 0;
+    // First org = bonus not yet granted (leak-proof stamp) AND never owned an
+    // org (soft-delete-safe). `ownedCount` above is active-only (drives the cap).
+    const firstOrg = welcome.eligible && !(await hasEverOwnedOrg(tx, userId));
+
+    // Consume the one-time bonus on the first org: stamp welcomeGrantedAt
+    // exactly once (updateMany where null → only one tx wins, so concurrent
+    // creates can't double-grant). A WITHHELD first org still consumes the
+    // bonus, so it can't be retried after an org hard-delete. Credits are added
+    // only when the claim wins AND the risk score clears.
+    let grantBonus = false;
+    if (firstOrg) {
+      const claim = await tx.user.updateMany({
+        where: { id: userId, welcomeGrantedAt: null },
+        data: { welcomeGrantedAt: new Date() },
+      });
+      grantBonus = claim.count === 1 && welcome.grant;
+    }
 
     return tx.organization.create({
       data: {
@@ -63,12 +84,17 @@ export async function createOrgForUser(userId: string, userName: string) {
           },
         },
         ...(firstOrg && {
+          welcomeRiskScore: welcome.score,
+          welcomeRiskReason: welcome.reason,
+        }),
+        ...(grantBonus && {
+          freeCreditBalance: WELCOME_FREE_CREDITS,
           creditTransactions: {
             create: {
-              amount: 150,
+              amount: WELCOME_FREE_CREDITS,
               type: "free_credit",
-              description: "Welcome bonus — $150 free credits",
-              balanceAfter: 150,
+              description: `Welcome bonus — $${WELCOME_FREE_CREDITS} free credits`,
+              balanceAfter: WELCOME_FREE_CREDITS,
             },
           },
         }),

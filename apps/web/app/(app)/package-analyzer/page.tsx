@@ -29,6 +29,9 @@ export default async function PackageAnalyzerPage({
   const params = await searchParams;
   const defaultUrl = params.repo ?? undefined;
   const autoStart = !!defaultUrl;
+  // Pass the registered repo id through so the analyzer can resolve GitHub
+  // access via the repo's own installation (robust to a stale org binding).
+  const repositoryId = params.repoId ?? undefined;
 
   // Fetch history
   const history = await prisma.packageAnalysis.findMany({
@@ -63,6 +66,7 @@ export default async function PackageAnalyzerPage({
       <PackageAnalyzerClient
         authenticated={true}
         defaultUrl={defaultUrl}
+        repositoryId={repositoryId}
         autoStart={autoStart}
         history={history.map((h) => ({
           ...h,
