@@ -3,7 +3,7 @@ import { cookies, headers } from "next/headers";
 import { auth } from "@/lib/auth";
 import { prisma } from "@octopus/db";
 import { decryptJson } from "@/lib/crypto";
-import { saveGithubAppConfig } from "@/lib/github-app-config";
+import { saveGithubAppConfig, hasDbGithubApp } from "@/lib/github-app-config";
 import { signInstallState } from "@/lib/github-install-state";
 import {
   GITHUB_MANIFEST_STATE_COOKIE,
@@ -67,6 +67,12 @@ export async function GET(request: NextRequest) {
     select: { organizationId: true },
   });
   if (!membership) return errorRedirect("forbidden");
+
+  // Re-check (fresh, non-memoized DB read) that no App has been provisioned
+  // since this flow started — never clobber existing credentials (TOCTOU guard).
+  // If one now exists, the app just created on GitHub is a harmless orphan the
+  // admin can delete there.
+  if (await hasDbGithubApp()) return errorRedirect("already_configured");
 
   // Exchange the one-time code for the new App's credentials. The code itself
   // authorizes this call, so no JWT/token is needed.
