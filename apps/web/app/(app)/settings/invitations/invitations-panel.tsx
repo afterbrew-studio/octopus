@@ -28,7 +28,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { IconX } from "@tabler/icons-react";
+import { IconX, IconLogout } from "@tabler/icons-react";
 import { toast } from "sonner";
 import { InviteModal } from "./invite-modal";
 
@@ -89,6 +89,7 @@ export function InvitationsPanel({ orgId, isAdmin }: InvitationsPanelProps) {
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [roleChanging, setRoleChanging] = useState<string | null>(null);
   const [removeTarget, setRemoveTarget] = useState<Member | null>(null);
+  const [revokeSessionsTarget, setRevokeSessionsTarget] = useState<Member | null>(null);
 
   const fetchMembers = useCallback(async () => {
     setMembersLoading(true);
@@ -187,7 +188,41 @@ export function InvitationsPanel({ orgId, isAdmin }: InvitationsPanelProps) {
     }
   }
 
+  async function handleRevokeSessions() {
+    if (!revokeSessionsTarget || actionLoading === revokeSessionsTarget.id) return;
+    const target = revokeSessionsTarget;
+    setActionLoading(target.id);
+    try {
+      const res = await fetch(
+        `/api/orgs/${orgId}/members/${target.id}/revoke-sessions`,
+        { method: "POST" },
+      );
+      // Parse defensively: an error response may not be JSON (e.g. a 500/edge page).
+      const data = await res.json().catch(() => ({}) as { error?: string; count?: number });
+      if (!res.ok) {
+        toast.error(data.error || "Failed to revoke sessions");
+        return;
+      }
+      toast.success(
+        `Signed out ${target.user.name || target.user.email} (${data.count ?? 0} session${data.count === 1 ? "" : "s"}).`,
+      );
+    } catch {
+      toast.error("Failed to revoke sessions");
+    } finally {
+      setActionLoading(null);
+      setRevokeSessionsTarget(null);
+    }
+  }
+
   function canRemoveMember(target: Member): boolean {
+    if (!isAdmin) return false;
+    if (target.user.id === callerUserId) return false;
+    if (target.role === "owner") return false;
+    return true;
+  }
+
+  // Same gate as removal: admins can sign out anyone but the owner and themselves.
+  function canRevokeSessions(target: Member): boolean {
     if (!isAdmin) return false;
     if (target.user.id === callerUserId) return false;
     if (target.role === "owner") return false;
@@ -274,6 +309,18 @@ export function InvitationsPanel({ orgId, isAdmin }: InvitationsPanelProps) {
               </SelectContent>
             </Select>
           )}
+          {canRevokeSessions(m) && (
+            <Button
+              size="icon"
+              variant="ghost"
+              className="size-7 text-muted-foreground hover:text-foreground"
+              onClick={() => setRevokeSessionsTarget(m)}
+              disabled={isBusy}
+              title="Sign this member out (revoke all sessions)"
+            >
+              <IconLogout className="size-4" />
+            </Button>
+          )}
           {canRemoveMember(m) && (
             <Button
               size="icon"
@@ -281,6 +328,7 @@ export function InvitationsPanel({ orgId, isAdmin }: InvitationsPanelProps) {
               className="size-7 text-muted-foreground hover:text-destructive"
               onClick={() => setRemoveTarget(m)}
               disabled={isBusy}
+              title="Remove member"
             >
               <IconX className="size-4" />
             </Button>
@@ -409,6 +457,24 @@ export function InvitationsPanel({ orgId, isAdmin }: InvitationsPanelProps) {
             <AlertDialogAction onClick={handleRevoke}>
               {revokeTarget?.status === "accepted" ? "Remove" : "Revoke"}
             </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={!!revokeSessionsTarget}
+        onOpenChange={(o) => !o && setRevokeSessionsTarget(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Sign Out Member</AlertDialogTitle>
+            <AlertDialogDescription>
+              Revoke all sessions for <strong>{revokeSessionsTarget?.user.name || revokeSessionsTarget?.user.email}</strong>? They&apos;ll have to sign in again. This signs them out of Octopus entirely — across every organization and device, not just this one. They remain a member.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={handleRevokeSessions}>Sign out</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
