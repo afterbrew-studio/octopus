@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import { prisma } from "@octopus/db";
 import { decryptStringMaybeLegacy } from "@/lib/crypto";
 import { resolveThinking } from "./thinking";
+import { stripLoneSurrogates } from "./sanitize";
 import type { Provider, AiCreateParams, AiResponse } from "./index";
 
 // Mirror the main anthropic provider's per-call ceiling (kept local so the two
@@ -144,16 +145,23 @@ async function runAnthropicApi(params: AiCreateParams, apiKey: string | null): P
       max_tokens: maxTokens,
       ...(thinking ? { thinking } : {}),
       ...(outputConfig ? { output_config: outputConfig } : {}),
+      // Strip lone UTF-16 surrogates: a diff/file body truncated mid-emoji can
+      // leave an unpaired surrogate, which serializes to invalid UTF-8 and makes
+      // Anthropic 400 the whole request ("no low surrogate"). Same guard as the
+      // main anthropic provider.
       system: params.system
         ? [
             {
               type: "text" as const,
-              text: params.system,
+              text: stripLoneSurrogates(params.system),
               ...(params.cacheSystem ? { cache_control: { type: "ephemeral" as const } } : {}),
             },
           ]
         : undefined,
-      messages: params.messages.map((m) => ({ role: m.role, content: m.content })),
+      messages: params.messages.map((m) => ({
+        role: m.role,
+        content: stripLoneSurrogates(m.content),
+      })),
       ...(useTool
         ? {
             tools: [
