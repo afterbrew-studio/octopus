@@ -190,20 +190,24 @@ export function InvitationsPanel({ orgId, isAdmin }: InvitationsPanelProps) {
 
   async function handleRevokeSessions() {
     if (!revokeSessionsTarget) return;
-    setActionLoading(revokeSessionsTarget.id);
+    const target = revokeSessionsTarget;
+    setActionLoading(target.id);
     try {
       const res = await fetch(
-        `/api/orgs/${orgId}/members/${revokeSessionsTarget.id}/revoke-sessions`,
+        `/api/orgs/${orgId}/members/${target.id}/revoke-sessions`,
         { method: "POST" },
       );
-      const data = await res.json();
+      // Parse defensively: an error response may not be JSON (e.g. a 500/edge page).
+      const data = await res.json().catch(() => ({}) as { error?: string; count?: number });
       if (!res.ok) {
         toast.error(data.error || "Failed to revoke sessions");
         return;
       }
       toast.success(
-        `Signed out ${revokeSessionsTarget.user.name || revokeSessionsTarget.user.email} (${data.count} session${data.count === 1 ? "" : "s"}).`,
+        `Signed out ${target.user.name || target.user.email} (${data.count ?? 0} session${data.count === 1 ? "" : "s"}).`,
       );
+    } catch {
+      toast.error("Failed to revoke sessions");
     } finally {
       setActionLoading(null);
       setRevokeSessionsTarget(null);
