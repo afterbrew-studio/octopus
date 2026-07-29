@@ -348,9 +348,20 @@ export function ChatProvider({
     };
   }, [orgId, loadConversations]);
 
-  // Fetch connected agents on mount and periodically
+  // Fetch connected agents on mount and periodically.
+  // Self-scheduling with exponential backoff: a healthy session polls every 30s,
+  // but on failure (e.g. a 401 from a stale tab whose session expired) the delay
+  // doubles up to a 10-min cap instead of hammering the endpoint every 30s
+  // forever. Recovers to 30s automatically once a request succeeds again.
   useEffect(() => {
+    const BASE_MS = 30_000;
+    const MAX_MS = 10 * 60_000;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let delay = BASE_MS;
+
     const fetchAgents = async () => {
+      if (stopped) return;
       try {
         const res = await fetch(`/api/agent/status?orgId=${orgId}`);
         if (res.ok) {
@@ -363,12 +374,21 @@ export function ChatProvider({
               capabilities: a.capabilities,
             })),
           );
+          delay = BASE_MS;
+        } else {
+          delay = Math.min(delay * 2, MAX_MS);
         }
-      } catch {}
+      } catch {
+        delay = Math.min(delay * 2, MAX_MS);
+      }
+      if (!stopped) timer = setTimeout(fetchAgents, delay);
     };
+
     fetchAgents();
-    const interval = setInterval(fetchAgents, 30_000);
-    return () => clearInterval(interval);
+    return () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+    };
   }, [orgId]);
 
   const createNewChat = useCallback(() => {
