@@ -109,8 +109,13 @@ export type SaveGithubAppInput = {
   clientSecret?: string | null;
 };
 
-/** Persist manifest-provisioned App credentials (secrets encrypted) + clear the memo. */
-export async function saveGithubAppConfig(input: SaveGithubAppInput): Promise<void> {
+/**
+ * Persist manifest-provisioned App credentials (secrets encrypted). Writes
+ * CONDITIONALLY — only when no App is configured yet — so a concurrent second
+ * manifest flow can never clobber the first (a plain upsert would overwrite).
+ * Returns true if it wrote, false if an App already existed. Clears the memo on write.
+ */
+export async function saveGithubAppConfig(input: SaveGithubAppInput): Promise<boolean> {
   const data = {
     githubAppId: String(input.appId),
     githubAppSlug: input.slug,
@@ -120,10 +125,32 @@ export async function saveGithubAppConfig(input: SaveGithubAppInput): Promise<vo
     githubAppWebhookSecretEnc: input.webhookSecret ? encryptString(input.webhookSecret) : null,
     githubAppClientSecretEnc: input.clientSecret ? encryptString(input.clientSecret) : null,
   };
-  await prisma.systemConfig.upsert({
-    where: { id: "singleton" },
-    update: data,
-    create: { id: "singleton", ...data },
+
+  // Atomic guard: update the singleton only while githubAppId is still null.
+  const updated = await prisma.systemConfig.updateMany({
+    where: { id: "singleton", githubAppId: null },
+    data,
   });
-  clearGithubAppConfigCache();
+  if (updated.count > 0) {
+    clearGithubAppConfigCache();
+    return true;
+  }
+
+  // count 0 → the singleton row is missing, or an App is already set.
+  const existing = await prisma.systemConfig.findUnique({
+    where: { id: "singleton" },
+    select: { githubAppId: true },
+  });
+  if (existing?.githubAppId) return false; // already configured — never clobber
+  if (!existing) {
+    try {
+      await prisma.systemConfig.create({ data: { id: "singleton", ...data } });
+      clearGithubAppConfigCache();
+      return true;
+    } catch {
+      // lost the create race on the singleton PK → someone else configured it.
+      return false;
+    }
+  }
+  return false;
 }

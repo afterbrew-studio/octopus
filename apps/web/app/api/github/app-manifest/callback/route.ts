@@ -112,8 +112,9 @@ export async function GET(request: NextRequest) {
     return errorRedirect("failed");
   }
 
+  let saved: boolean;
   try {
-    await saveGithubAppConfig({
+    saved = await saveGithubAppConfig({
       appId: conv.id,
       slug: conv.slug,
       htmlUrl: conv.html_url ?? null,
@@ -126,6 +127,8 @@ export async function GET(request: NextRequest) {
     console.error("[app-manifest] failed to persist app config:", err);
     return errorRedirect("failed");
   }
+  // Conditional write lost to a concurrent flow — an App is already configured.
+  if (!saved) return errorRedirect("already_configured");
 
   // Auto-continue: send the user to install the freshly-created App on their
   // repos. The install callback binds the installation to the org as usual.

@@ -191,26 +191,28 @@ export function GitHubIntegrationCard({
                   account, or enter a GitHub organization to create it there (needed
                   if your repos live in an org).
                 </p>
-                <Input
-                  value={manifestOrg}
-                  onChange={(e) => setManifestOrg(e.target.value)}
-                  placeholder="GitHub organization (optional)"
-                  aria-label="GitHub organization (optional)"
-                />
-                <Button asChild>
-                  <a
-                    href={createAppHref}
-                    onClick={() =>
-                      trackEvent("cta_click", {
-                        location: "settings_integrations",
-                        label: "create_github_app_manifest",
-                      })
-                    }
-                  >
+                <form
+                  className="space-y-3"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    trackEvent("cta_click", {
+                      location: "settings_integrations",
+                      label: "create_github_app_manifest",
+                    });
+                    window.location.href = createAppHref;
+                  }}
+                >
+                  <Input
+                    value={manifestOrg}
+                    onChange={(e) => setManifestOrg(e.target.value)}
+                    placeholder="GitHub organization (optional)"
+                    aria-label="GitHub organization (optional)"
+                  />
+                  <Button type="submit">
                     <IconBrandGithub className="mr-2 size-4" />
                     Create GitHub App
-                  </a>
-                </Button>
+                  </Button>
+                </form>
                 <p className="text-xs">
                   <a
                     href="/docs/github-app"
