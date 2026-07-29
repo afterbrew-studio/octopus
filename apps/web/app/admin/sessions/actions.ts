@@ -4,6 +4,13 @@ import { revalidatePath } from "next/cache";
 import { prisma } from "@octopus/db";
 import { getSuperAdmin } from "@/lib/superadmin";
 import { writeAuditLog } from "@/lib/audit";
+import { normalizeEmail } from "@/lib/email-normalize";
+
+// The vendor console is inert on self-host (single-tenant); mirror the page's
+// self-host 404 in the actions so they can't be invoked directly there either.
+function selfHostBlocked(): boolean {
+  return process.env.NEXT_PUBLIC_OCTOPUS_SELF_HOSTED === "true";
+}
 
 /**
  * Revoke ALL sessions of a single user (by email) — forces them to re-login
@@ -14,17 +21,28 @@ export async function revokeUserSessionsByEmail(
   _prev: { error?: string; success?: boolean; count?: number; email?: string },
   formData: FormData,
 ): Promise<{ error?: string; success?: boolean; count?: number; email?: string }> {
+  if (selfHostBlocked()) return { error: "Not authorized." };
   const sa = await getSuperAdmin();
   if (!sa) return { error: "Not authorized." };
 
-  const email = ((formData.get("email") as string) ?? "").trim().toLowerCase();
-  if (!email) return { error: "Email is required." };
+  const raw = ((formData.get("email") as string) ?? "").trim().toLowerCase();
+  if (!raw) return { error: "Email is required." };
 
-  const user = await prisma.user.findUnique({
-    where: { email },
+  // User.email is stored in canonical (normalized) form, so look up the
+  // normalized address first, then fall back to the raw form for legacy
+  // accounts created before normalization landed (mirrors lib/auth.ts).
+  const normalized = normalizeEmail(raw);
+  let user = await prisma.user.findUnique({
+    where: { email: normalized },
     select: { id: true, email: true },
   });
-  if (!user) return { error: `No user found for ${email}.` };
+  if (!user && raw !== normalized) {
+    user = await prisma.user.findUnique({
+      where: { email: raw },
+      select: { id: true, email: true },
+    });
+  }
+  if (!user) return { error: `No user found for ${raw}.` };
 
   const { count } = await prisma.session.deleteMany({ where: { userId: user.id } });
 
@@ -51,6 +69,7 @@ export async function revokeAllSessions(
   _prev: { error?: string; success?: boolean; count?: number },
   formData: FormData,
 ): Promise<{ error?: string; success?: boolean; count?: number }> {
+  if (selfHostBlocked()) return { error: "Not authorized." };
   const sa = await getSuperAdmin();
   if (!sa) return { error: "Not authorized." };
 

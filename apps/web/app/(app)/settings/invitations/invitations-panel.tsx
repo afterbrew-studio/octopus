@@ -189,7 +189,7 @@ export function InvitationsPanel({ orgId, isAdmin }: InvitationsPanelProps) {
   }
 
   async function handleRevokeSessions() {
-    if (!revokeSessionsTarget) return;
+    if (!revokeSessionsTarget || actionLoading === revokeSessionsTarget.id) return;
     const target = revokeSessionsTarget;
     setActionLoading(target.id);
     try {
