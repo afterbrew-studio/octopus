@@ -384,7 +384,7 @@ export function ChatProvider({
       if (!stopped) timer = setTimeout(fetchAgents, delay);
     };
 
-    fetchAgents();
+    void fetchAgents();
     return () => {
       stopped = true;
       if (timer) clearTimeout(timer);
