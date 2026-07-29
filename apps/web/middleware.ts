@@ -30,6 +30,9 @@ const publicPrefixes = [
   "/api/analyze-deps",
   "/api/blog",
   "/api/ask-octopus",
+  // Token-less OSS bot-review trigger — called by a zero-permission action with
+  // no session; gated by allowlist + consent file + rate limit in the handler.
+  "/api/oss-review",
   "/api/status",
   "/api/health",
   "/api/ready",
