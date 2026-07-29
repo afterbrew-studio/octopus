@@ -3,7 +3,12 @@ import Anthropic from "@anthropic-ai/sdk";
 import { spawn } from "node:child_process";
 import { prisma } from "@octopus/db";
 import { decryptStringMaybeLegacy } from "@/lib/crypto";
+import { resolveThinking } from "./thinking";
 import type { Provider, AiCreateParams, AiResponse } from "./index";
+
+// Mirror the main anthropic provider's per-call ceiling (kept local so the two
+// providers stay decoupled).
+const ANTHROPIC_CALL_TIMEOUT_MS = 14 * 60 * 1000;
 
 /**
  * Claude Code — Anthropic's coding-agent CLI. Two auth modes, selectable
@@ -112,41 +117,85 @@ async function runAnthropicApi(params: AiCreateParams, apiKey: string | null): P
 
   const client = getAnthropicClient(apiKey);
 
+  // The Anthropic API model id (strip the "claude-code:" routing prefix). Pass
+  // the bare id to resolveThinking so always-thinking models (Fable/Mythos/
+  // Opus 5) are recognised and get the floor + adaptive thinking treatment.
+  const apiModel = params.model.startsWith("claude-code:")
+    ? params.model.slice(12)
+    : params.model;
+
   const useTool = params.responseSchema !== undefined;
-  const response = await client.messages.create({
-    model: params.model.startsWith("claude-code:") ? params.model.slice(12) : params.model,
-    max_tokens: params.maxTokens,
-    system: params.system
-      ? [
-          {
-            type: "text" as const,
-            text: params.system,
-            ...(params.cacheSystem ? { cache_control: { type: "ephemeral" as const } } : {}),
-          },
-        ]
-      : undefined,
-    messages: params.messages.map((m) => ({ role: m.role, content: m.content })),
-    ...(useTool
-      ? {
-          tools: [
+
+  // Same fix as the main anthropic provider (#682): always-thinking models
+  // spend max_tokens on thinking before any text, so a small budget yields an
+  // empty response. Raise to the floor and, on the text path, use adaptive
+  // thinking + effort. Streaming is REQUIRED once max_tokens hits the floor —
+  // the SDK rejects a non-streaming create with a large max_tokens.
+  const { maxTokens, thinking, outputConfig } = resolveThinking(
+    apiModel,
+    params.maxTokens,
+    useTool,
+    params.effort,
+  );
+
+  const stream = client.messages.stream(
+    {
+      model: apiModel,
+      max_tokens: maxTokens,
+      ...(thinking ? { thinking } : {}),
+      ...(outputConfig ? { output_config: outputConfig } : {}),
+      system: params.system
+        ? [
             {
-              name: params.responseSchema!.name,
-              description: `Return the response as a ${params.responseSchema!.name} object.`,
-              input_schema: params.responseSchema!.schema as Anthropic.Tool.InputSchema,
+              type: "text" as const,
+              text: params.system,
+              ...(params.cacheSystem ? { cache_control: { type: "ephemeral" as const } } : {}),
             },
-          ],
-          tool_choice: { type: "tool" as const, name: params.responseSchema!.name },
-        }
-      : {}),
-  });
+          ]
+        : undefined,
+      messages: params.messages.map((m) => ({ role: m.role, content: m.content })),
+      ...(useTool
+        ? {
+            tools: [
+              {
+                name: params.responseSchema!.name,
+                description: `Return the response as a ${params.responseSchema!.name} object.`,
+                input_schema: params.responseSchema!.schema as Anthropic.Tool.InputSchema,
+              },
+            ],
+            tool_choice: { type: "tool" as const, name: params.responseSchema!.name },
+          }
+        : {}),
+    },
+    { signal: AbortSignal.timeout(ANTHROPIC_CALL_TIMEOUT_MS) },
+  );
+
+  let response: Anthropic.Message;
+  try {
+    response = await stream.finalMessage();
+  } catch (err) {
+    if (
+      err instanceof Anthropic.APIUserAbortError ||
+      (err instanceof Error && (err.name === "AbortError" || err.name === "TimeoutError"))
+    ) {
+      throw new Error(
+        `Claude Code (api-key) call timed out after ${ANTHROPIC_CALL_TIMEOUT_MS / 1000}s (model: ${params.model})`,
+      );
+    }
+    throw err;
+  }
 
   let text = "";
   if (useTool) {
     const toolUse = response.content.find((c) => c.type === "tool_use");
     if (toolUse?.type === "tool_use") text = JSON.stringify(toolUse.input);
   } else {
-    const textBlock = response.content[0];
-    text = textBlock?.type === "text" ? textBlock.text : "";
+    // Thinking models prepend a thinking block, so the text is not necessarily
+    // content[0] — collect every text block.
+    text = response.content
+      .filter((block) => block.type === "text")
+      .map((block) => block.text)
+      .join("");
   }
 
   return {
