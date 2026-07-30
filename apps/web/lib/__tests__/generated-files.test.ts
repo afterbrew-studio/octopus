@@ -27,7 +27,7 @@ describe("splitDiffByIgnore (default generated patterns)", () => {
 });
 
 describe("parseGitattributesGenerated", () => {
-  it("picks up linguist-generated / -diff markers and ignores =false", () => {
+  it("picks up linguist-generated / -diff markers and emits negations for =false", () => {
     const content = [
       "src/gen/*.ts linguist-generated=true",
       "docs/api.md -diff",
@@ -36,7 +36,16 @@ describe("parseGitattributesGenerated", () => {
       "vendored/keep.ts linguist-generated=false",
     ].join("\n");
     const pats = parseGitattributesGenerated(content);
-    expect(pats).toEqual(["src/gen/*.ts", "docs/api.md"]);
+    expect(pats).toEqual(["src/gen/*.ts", "docs/api.md", "!vendored/keep.ts"]);
+  });
+
+  it("=false re-includes a file that a default pattern would exclude", () => {
+    const diff = section("keep.snap") + section("other.snap");
+    // Defaults exclude *.snap; the repo un-marks keep.snap → it stays in review.
+    const ig = buildGeneratedMatcher("keep.snap linguist-generated=false");
+    const { kept, skipped } = splitDiffByIgnore(diff, ig);
+    expect(kept).toContain("keep.snap");
+    expect(skipped).toContain("other.snap");
   });
 
   it("a .gitattributes-marked file is excluded on top of defaults", () => {

@@ -56,11 +56,15 @@ export function parseGitattributesGenerated(content: string): string[] {
     if (!line || line.startsWith("#")) continue;
     const [pattern, ...attrs] = line.split(/\s+/);
     if (!pattern) continue;
+    const unsets = attrs.some((a) => a === "linguist-generated=false" || a === "linguist-generated=");
     const marksGenerated = attrs.some(
       (a) => a === "linguist-generated" || a === "linguist-generated=true" || a === "-diff",
     );
-    const unsets = attrs.some((a) => a === "linguist-generated=false" || a === "linguist-generated=");
-    if (marksGenerated && !unsets) patterns.push(pattern);
+    // `=false` un-marks a file (e.g. re-include one file matched by a broader
+    // rule or a default). Emit an `ignore` negation so it's kept in review.
+    // Order is preserved so a later negation overrides an earlier match.
+    if (unsets) patterns.push(`!${pattern}`);
+    else if (marksGenerated) patterns.push(pattern);
   }
   return patterns;
 }
