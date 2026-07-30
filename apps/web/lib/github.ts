@@ -337,6 +337,12 @@ export async function getPullRequestDiff(
 
   if (res.ok) {
     const diff = await res.text();
+    // Intentional: the internal-cli (clone + git diff) handoff now triggers at
+    // the raw-fetch ceiling (MAX_FETCH_DIFF_CHARS), not the review cap. Below the
+    // ceiling the standard path fetches the whole diff, excludes generated /
+    // ignored files, THEN caps to MAX_DIFF_CHARS — which reviews most large PRs
+    // fully (better than the summary-only large-PR path). internal-cli is
+    // reserved for genuinely enormous raw diffs.
     if (diff.length > MAX_FETCH_DIFF_CHARS) {
       if (isInternalCliEnabled()) {
         throw new LargePrError(

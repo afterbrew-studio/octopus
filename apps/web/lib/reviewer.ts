@@ -52,7 +52,13 @@ import * as gitlab from "@/lib/gitlab";
 import { getGithubAppConfig } from "@/lib/github-app-config";
 import { parseOctopusIgnore, filterDiff, detectBadCommits } from "@/lib/octopus-ignore";
 import { buildGeneratedMatcher, splitDiffByIgnore } from "@/lib/generated-files";
-import { MAX_DIFF_CHARS, truncateDiff } from "@/lib/diff-truncate";
+import {
+  MAX_DIFF_CHARS,
+  MAX_FETCH_DIFF_CHARS,
+  TRUNCATION_MARKER,
+  truncateDiff,
+  truncationNotice,
+} from "@/lib/diff-truncate";
 import type { ReviewComment } from "@/lib/github";
 import { eventBus } from "@/lib/events";
 import {
@@ -1313,6 +1319,13 @@ export async function processReview(pullRequestId: string): Promise<void> {
       const before = diff.length;
       diff = truncateDiff(diff);
       console.log(`[reviewer] Capped filtered diff ${before} → ${diff.length} chars`);
+    }
+
+    // If the raw diff hit the fetch ceiling (truncated), keep that signal even
+    // when section-filtering dropped the fetch marker (rare: the last raw file
+    // was excluded). Length check — not marker sniffing.
+    if (rawDiff.length >= MAX_FETCH_DIFF_CHARS && !diff.includes(TRUNCATION_MARKER)) {
+      diff += truncationNotice(MAX_FETCH_DIFF_CHARS);
     }
 
     const diffFiles = extractDiffFiles(diff);
