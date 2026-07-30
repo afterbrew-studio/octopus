@@ -51,6 +51,8 @@ import * as bitbucket from "@/lib/bitbucket";
 import * as gitlab from "@/lib/gitlab";
 import { getGithubAppConfig } from "@/lib/github-app-config";
 import { parseOctopusIgnore, filterDiff, detectBadCommits } from "@/lib/octopus-ignore";
+import { buildGeneratedMatcher, splitDiffByIgnore } from "@/lib/generated-files";
+import { MAX_DIFF_CHARS, truncateDiff } from "@/lib/diff-truncate";
 import type { ReviewComment } from "@/lib/github";
 import { eventBus } from "@/lib/events";
 import {
@@ -1251,8 +1253,39 @@ export async function processReview(pullRequestId: string): Promise<void> {
       console.log(`[reviewer] Detected ${badFiles.length} build artifact / dependency files in diff`);
     }
 
-    // Fetch .octopusignore if it exists in the repo
     let diff = rawDiff;
+
+    // Exclude generated files (built-in defaults + the repo's .gitattributes
+    // linguist-generated markers) BEFORE the review cap, so a large generated
+    // file (e.g. an ORM snapshot) can't consume the budget and crowd real,
+    // hand-written files out of the review (#1429).
+    let skippedGenerated: string[] = [];
+    {
+      let gitattributes: string | null = null;
+      if (repoTree.includes(".gitattributes")) {
+        try {
+          gitattributes = isGitHub && installationId
+            ? await ghGetFileContent(installationId, owner, repoName, repo.defaultBranch, ".gitattributes")
+            : isBitbucket
+              ? await bitbucket.getFileContent(org.id, owner, repoName, repo.defaultBranch, ".gitattributes")
+              : isGitlab
+                ? await gitlab.getFileContent(org.id, projectPath, repo.defaultBranch, ".gitattributes")
+                : null;
+        } catch (err) {
+          console.warn("[reviewer] Failed to fetch .gitattributes, using default generated patterns only:", err);
+        }
+      }
+      const { kept, skipped } = splitDiffByIgnore(diff, buildGeneratedMatcher(gitattributes));
+      diff = kept;
+      skippedGenerated = skipped;
+      if (skippedGenerated.length > 0) {
+        console.log(
+          `[reviewer] Excluded ${skippedGenerated.length} generated file(s) from review: ${skippedGenerated.slice(0, 10).join(", ")}`,
+        );
+      }
+    }
+
+    // Fetch .octopusignore (user-authored) if it exists in the repo
     let octopusIg: ReturnType<typeof parseOctopusIgnore> | undefined;
     if (repoTree.includes(".octopusignore")) {
       try {
@@ -1272,6 +1305,14 @@ export async function processReview(pullRequestId: string): Promise<void> {
       } catch (err) {
         console.warn("[reviewer] Failed to fetch .octopusignore, continuing without it:", err);
       }
+    }
+
+    // Final review cap AFTER filtering — generated/ignored files never consumed
+    // the budget, so the remaining hand-written files are what gets reviewed.
+    if (diff.length > MAX_DIFF_CHARS) {
+      const before = diff.length;
+      diff = truncateDiff(diff);
+      console.log(`[reviewer] Capped filtered diff ${before} → ${diff.length} chars`);
     }
 
     const diffFiles = extractDiffFiles(diff);
@@ -1828,6 +1869,16 @@ export async function processReview(pullRequestId: string): Promise<void> {
         "",
       ].filter(Boolean).join("\n");
       reviewBody = badFilesSection + "\n\n" + reviewBody;
+    }
+
+    // Note generated files excluded from review, so a reader knows they were
+    // intentionally skipped (not overlooked). Non-blocking footnote.
+    if (skippedGenerated.length > 0) {
+      const shown = skippedGenerated.slice(0, 10).map((f) => `\`${f}\``).join(", ");
+      const more = skippedGenerated.length > 10 ? ` and ${skippedGenerated.length - 10} more` : "";
+      reviewBody +=
+        `\n\n<sub>ℹ️ Skipped ${skippedGenerated.length} generated file(s) (not reviewed): ${shown}${more}. ` +
+        `Mark files with \`linguist-generated\` in \`.gitattributes\` to control this.</sub>`;
     }
 
     await logAiUsage({

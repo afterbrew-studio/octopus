@@ -4,6 +4,8 @@ import { indexRepository } from "@/lib/indexer";
 import { summarizeRepository } from "@/lib/summarizer";
 import { analyzeRepository } from "@/lib/analyzer";
 import { getRepositoryTree, getPullRequestDiff } from "@/lib/github";
+import { buildGeneratedMatcher, splitDiffByIgnore } from "@/lib/generated-files";
+import { truncateDiff } from "@/lib/diff-truncate";
 import { eventBus } from "@/lib/events/bus";
 import { persistCommunityReviewToPR } from "@/lib/community-pr-persist";
 import { decryptString } from "@/lib/crypto";
@@ -212,6 +214,17 @@ export async function processCommunityReview(jobId: string): Promise<void> {
     if (isBotAccount && (!diff || diff.trim().length === 0) && job.prNumber != null) {
       const [ownerPart, repoPart] = fullName.split("/");
       diff = await getPullRequestDiff(0, ownerPart, repoPart, job.prNumber, githubToken);
+    }
+
+    // Exclude generated files (defaults) before the review cap so a large
+    // generated file can't crowd real files out of the review (#1429). Then cap
+    // to the review size (the fetch ceiling above is larger).
+    {
+      const { kept, skipped } = splitDiffByIgnore(diff ?? "", buildGeneratedMatcher());
+      diff = truncateDiff(kept);
+      if (skipped.length > 0) {
+        LOG(jobId, `excluded ${skipped.length} generated file(s): ${skipped.slice(0, 10).join(", ")}`);
+      }
     }
 
     LOG(jobId, "generating review...");

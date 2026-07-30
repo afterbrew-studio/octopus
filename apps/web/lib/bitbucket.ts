@@ -1,5 +1,5 @@
 import { prisma } from "@octopus/db";
-import { truncateDiff } from "@/lib/diff-truncate";
+import { truncateDiff, MAX_FETCH_DIFF_CHARS } from "@/lib/diff-truncate";
 import { encryptString, decryptStringMaybeLegacy } from "@/lib/crypto";
 
 const BITBUCKET_API = "https://api.bitbucket.org/2.0";
@@ -180,7 +180,8 @@ export async function getPullRequestDiff(
   }
 
   const diff = await res.text();
-  return truncateDiff(diff);
+  // Raw-fetch ceiling; generated/ignored filtering + the review cap happen downstream.
+  return truncateDiff(diff, MAX_FETCH_DIFF_CHARS);
 }
 
 export async function createPullRequestComment(

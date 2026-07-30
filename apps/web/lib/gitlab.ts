@@ -1,5 +1,5 @@
 import { prisma } from "@octopus/db";
-import { truncateDiff } from "@/lib/diff-truncate";
+import { truncateDiff, MAX_FETCH_DIFF_CHARS } from "@/lib/diff-truncate";
 import { decryptString, encryptString, decryptStringMaybeLegacy } from "@/lib/crypto";
 
 // ── Token Management ──
@@ -270,7 +270,8 @@ export async function getPullRequestDiff(
   }
 
   const diff = parts.join("\n");
-  return truncateDiff(diff);
+  // Raw-fetch ceiling; generated/ignored filtering + the review cap happen downstream.
+  return truncateDiff(diff, MAX_FETCH_DIFF_CHARS);
 }
 
 export async function createPullRequestComment(
