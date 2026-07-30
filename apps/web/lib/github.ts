@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { getGithubAppConfig } from "@/lib/github-app-config";
+import { MAX_DIFF_CHARS, truncateDiff, truncationNotice } from "@/lib/diff-truncate";
 
 const GITHUB_API = "https://api.github.com";
 const RETRYABLE_STATUSES = new Set([502, 503, 504]);
@@ -359,8 +360,13 @@ export async function getPullRequestDiff(
     console.warn(
       `[github] Diff too large for ${owner}/${repo}#${prNumber} (406), trying /files fallback`,
     );
-    const reconstructed = await getPullRequestDiffViaFiles(token, owner, repo, prNumber);
-    if (reconstructed.endsWith(TRUNCATION_MARKER) && isInternalCliEnabled()) {
+    const { diff: reconstructed, truncated } = await getPullRequestDiffViaFiles(
+      token,
+      owner,
+      repo,
+      prNumber,
+    );
+    if (truncated && isInternalCliEnabled()) {
       throw new LargePrError(
         `/files fallback also truncated for ${owner}/${repo}#${prNumber}`,
         { owner, repo, prNumber, reason: "too-many-files" },
@@ -378,24 +384,17 @@ function isInternalCliEnabled(): boolean {
   return process.env.ENABLE_INTERNAL_CLI === "true";
 }
 
-const MAX_DIFF_CHARS = 30_000;
-const TRUNCATION_MARKER = "\n\n[... diff truncated at 30,000 chars]";
-
-function truncateDiff(diff: string): string {
-  return diff.length > MAX_DIFF_CHARS
-    ? diff.slice(0, MAX_DIFF_CHARS) + TRUNCATION_MARKER
-    : diff;
-}
-
 async function getPullRequestDiffViaFiles(
   token: string,
   owner: string,
   repo: string,
   prNumber: number,
-): Promise<string> {
+): Promise<{ diff: string; truncated: boolean }> {
   const patches: string[] = [];
   let totalLength = 0;
   let page = 1;
+  let hitCap = false; // set when we stop early due to the size cap (explicit,
+  // so an exact-boundary length can't read as "not truncated")
 
   while (totalLength < MAX_DIFF_CHARS) {
     const res = await fetchWithRetry(
@@ -425,14 +424,23 @@ async function getPullRequestDiffViaFiles(
       patches.push(entry);
       totalLength += entry.length;
 
-      if (totalLength >= MAX_DIFF_CHARS) break;
+      if (totalLength >= MAX_DIFF_CHARS) {
+        hitCap = true;
+        break;
+      }
     }
 
     if (files.length < 100) break;
     page++;
   }
 
-  return truncateDiff(patches.join(""));
+  // Explicit cap-hit flag (not inferred from length) so an exact-boundary total
+  // can't misread as complete, and a PR's own content can't false-positive.
+  // Append the notice whenever we hit the cap (covers the exact-boundary case
+  // truncateDiff's length check would miss).
+  const joined = patches.join("");
+  const diff = hitCap ? joined.slice(0, MAX_DIFF_CHARS) + truncationNotice() : joined;
+  return { diff, truncated: hitCap };
 }
 
 // GitHub's issue / PR comment API rejects bodies larger than 65536 chars

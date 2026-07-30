@@ -1,4 +1,5 @@
 import { prisma } from "@octopus/db";
+import { truncateDiff } from "@/lib/diff-truncate";
 import { decryptString, encryptString, decryptStringMaybeLegacy } from "@/lib/crypto";
 
 // ── Token Management ──
@@ -269,9 +270,7 @@ export async function getPullRequestDiff(
   }
 
   const diff = parts.join("\n");
-  return diff.length > 30_000
-    ? diff.slice(0, 30_000) + "\n\n[... diff truncated at 30,000 chars]"
-    : diff;
+  return truncateDiff(diff);
 }
 
 export async function createPullRequestComment(
