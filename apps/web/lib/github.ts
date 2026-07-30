@@ -419,6 +419,8 @@ async function getPullRequestDiffViaFiles(
   const patches: string[] = [];
   let totalLength = 0;
   let page = 1;
+  let hitCap = false; // set when we stop early due to the size cap (explicit,
+  // so an exact-boundary length can't read as "not truncated")
 
   while (totalLength < MAX_DIFF_CHARS) {
     const res = await fetchWithRetry(
@@ -448,18 +450,19 @@ async function getPullRequestDiffViaFiles(
       patches.push(entry);
       totalLength += entry.length;
 
-      if (totalLength >= MAX_DIFF_CHARS) break;
+      if (totalLength >= MAX_DIFF_CHARS) {
+        hitCap = true;
+        break;
+      }
     }
 
     if (files.length < 100) break;
     page++;
   }
 
-  const joined = patches.join("");
-  // Structured flag instead of sniffing the marker back out of the text (a PR's
-  // own content could contain the marker string and false-positive).
-  const truncated = joined.length > MAX_DIFF_CHARS;
-  return { diff: truncateDiff(joined), truncated };
+  // Explicit cap-hit flag (not inferred from length) so an exact-boundary total
+  // can't misread as complete, and a PR's own content can't false-positive.
+  return { diff: truncateDiff(patches.join("")), truncated: hitCap };
 }
 
 // GitHub's issue / PR comment API rejects bodies larger than 65536 chars
