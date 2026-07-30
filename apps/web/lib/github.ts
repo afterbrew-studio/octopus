@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { getGithubAppConfig } from "@/lib/github-app-config";
+import { MAX_DIFF_CHARS, truncateDiff, truncationNotice } from "@/lib/diff-truncate";
 
 const GITHUB_API = "https://api.github.com";
 const RETRYABLE_STATUSES = new Set([502, 503, 504]);
@@ -383,33 +384,6 @@ function isInternalCliEnabled(): boolean {
   return process.env.ENABLE_INTERNAL_CLI === "true";
 }
 
-// Max diff size handed to the review engine. Sized to fit the model context
-// (~200k-token windows ≈ ~800k chars) alongside the reviewer's RAG context,
-// rulepacks and output, with headroom — 300k chars (~7.5k diff lines) covers
-// the overwhelming majority of PRs so they review IN FULL. Env-tunable
-// (MAX_DIFF_CHARS) to trade coverage vs. token cost without a redeploy. The old
-// 30k default silently truncated everyday PRs, so security-critical files past
-// the cut went unreviewed while a confident score was still posted (#1429).
-const MAX_DIFF_CHARS = (() => {
-  const n = Number(process.env.MAX_DIFF_CHARS);
-  return Number.isFinite(n) && n > 0 ? n : 300_000;
-})();
-
-// Stable substring marking a truncated diff (used to detect truncation in the
-// /files reconstruction path). The full marker appends the actual char count.
-const TRUNCATION_MARKER = "[... diff truncated";
-
-export function truncateDiff(diff: string): string {
-  if (diff.length <= MAX_DIFF_CHARS) return diff;
-  // Only pathological diffs reach here now. Truncate with a factual, dynamic
-  // marker (no "split your PR" nag) so the reviewer at least knows the tail was
-  // cut rather than silently scoring an unreviewed remainder.
-  return (
-    diff.slice(0, MAX_DIFF_CHARS) +
-    `\n\n${TRUNCATION_MARKER} at ${MAX_DIFF_CHARS.toLocaleString("en-US")} chars — remaining files not included]`
-  );
-}
-
 async function getPullRequestDiffViaFiles(
   token: string,
   owner: string,
@@ -462,7 +436,11 @@ async function getPullRequestDiffViaFiles(
 
   // Explicit cap-hit flag (not inferred from length) so an exact-boundary total
   // can't misread as complete, and a PR's own content can't false-positive.
-  return { diff: truncateDiff(patches.join("")), truncated: hitCap };
+  // Append the notice whenever we hit the cap (covers the exact-boundary case
+  // truncateDiff's length check would miss).
+  const joined = patches.join("");
+  const diff = hitCap ? joined.slice(0, MAX_DIFF_CHARS) + truncationNotice() : joined;
+  return { diff, truncated: hitCap };
 }
 
 // GitHub's issue / PR comment API rejects bodies larger than 65536 chars

@@ -1,4 +1,5 @@
 import { prisma } from "@octopus/db";
+import { truncateDiff } from "@/lib/diff-truncate";
 import { encryptString, decryptStringMaybeLegacy } from "@/lib/crypto";
 
 const BITBUCKET_API = "https://api.bitbucket.org/2.0";
@@ -179,9 +180,7 @@ export async function getPullRequestDiff(
   }
 
   const diff = await res.text();
-  return diff.length > 30_000
-    ? diff.slice(0, 30_000) + "\n\n[... diff truncated at 30,000 chars]"
-    : diff;
+  return truncateDiff(diff);
 }
 
 export async function createPullRequestComment(
