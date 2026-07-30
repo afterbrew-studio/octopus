@@ -14,15 +14,25 @@ export const MAX_DIFF_CHARS = (() => {
   return Number.isFinite(n) && n > 0 ? n : 300_000;
 })();
 
+// Raw-fetch ceiling — how much diff a provider fetch returns BEFORE generated/
+// ignored files are filtered out. Must be well above MAX_DIFF_CHARS so a large
+// generated file (e.g. a 12k-line ORM snapshot) doesn't crowd real files out of
+// the fetch: it's fetched, then filtered, then the remainder is capped to
+// MAX_DIFF_CHARS for review. Only genuinely enormous raw diffs hit this.
+export const MAX_FETCH_DIFF_CHARS = (() => {
+  const n = Number(process.env.MAX_FETCH_DIFF_CHARS);
+  return Number.isFinite(n) && n > 0 ? n : 1_500_000;
+})();
+
 // Stable substring identifying a truncation notice (also used to build it).
 export const TRUNCATION_MARKER = "[... diff truncated";
 
 /** The factual truncation notice appended to a cut diff (no "split your PR" nag). */
-export function truncationNotice(): string {
-  return `\n\n${TRUNCATION_MARKER} at ${MAX_DIFF_CHARS.toLocaleString("en-US")} chars — remaining files not included]`;
+export function truncationNotice(cap: number = MAX_DIFF_CHARS): string {
+  return `\n\n${TRUNCATION_MARKER} at ${cap.toLocaleString("en-US")} chars — remaining files not included]`;
 }
 
-/** Cut a diff to the cap with a truncation notice; leaves ≤cap diffs unchanged. */
-export function truncateDiff(diff: string): string {
-  return diff.length > MAX_DIFF_CHARS ? diff.slice(0, MAX_DIFF_CHARS) + truncationNotice() : diff;
+/** Cut a diff to `cap` with a truncation notice; leaves ≤cap diffs unchanged. */
+export function truncateDiff(diff: string, cap: number = MAX_DIFF_CHARS): string {
+  return diff.length > cap ? diff.slice(0, cap) + truncationNotice(cap) : diff;
 }

@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { getGithubAppConfig } from "@/lib/github-app-config";
-import { MAX_DIFF_CHARS, truncateDiff, truncationNotice } from "@/lib/diff-truncate";
+import { MAX_FETCH_DIFF_CHARS, truncateDiff, truncationNotice } from "@/lib/diff-truncate";
 
 const GITHUB_API = "https://api.github.com";
 const RETRYABLE_STATUSES = new Set([502, 503, 504]);
@@ -337,17 +337,23 @@ export async function getPullRequestDiff(
 
   if (res.ok) {
     const diff = await res.text();
-    if (diff.length > MAX_DIFF_CHARS) {
+    // Intentional: the internal-cli (clone + git diff) handoff now triggers at
+    // the raw-fetch ceiling (MAX_FETCH_DIFF_CHARS), not the review cap. Below the
+    // ceiling the standard path fetches the whole diff, excludes generated /
+    // ignored files, THEN caps to MAX_DIFF_CHARS — which reviews most large PRs
+    // fully (better than the summary-only large-PR path). internal-cli is
+    // reserved for genuinely enormous raw diffs.
+    if (diff.length > MAX_FETCH_DIFF_CHARS) {
       if (isInternalCliEnabled()) {
         throw new LargePrError(
-          `Diff exceeds ${MAX_DIFF_CHARS} chars for ${owner}/${repo}#${prNumber}`,
+          `Diff exceeds ${MAX_FETCH_DIFF_CHARS} chars for ${owner}/${repo}#${prNumber}`,
           { owner, repo, prNumber, reason: "diff-too-large" },
         );
       }
       console.warn(
-        `[github] Diff over ${MAX_DIFF_CHARS} chars for ${owner}/${repo}#${prNumber} but ENABLE_INTERNAL_CLI is off — truncating for review engine`,
+        `[github] Diff over ${MAX_FETCH_DIFF_CHARS} chars for ${owner}/${repo}#${prNumber} but ENABLE_INTERNAL_CLI is off — truncating for review engine`,
       );
-      return truncateDiff(diff);
+      return truncateDiff(diff, MAX_FETCH_DIFF_CHARS);
     }
     return diff;
   }
@@ -396,7 +402,7 @@ async function getPullRequestDiffViaFiles(
   let hitCap = false; // set when we stop early due to the size cap (explicit,
   // so an exact-boundary length can't read as "not truncated")
 
-  while (totalLength < MAX_DIFF_CHARS) {
+  while (totalLength < MAX_FETCH_DIFF_CHARS) {
     const res = await fetchWithRetry(
       `${GITHUB_API}/repos/${owner}/${repo}/pulls/${prNumber}/files?per_page=100&page=${page}`,
       {
@@ -424,7 +430,7 @@ async function getPullRequestDiffViaFiles(
       patches.push(entry);
       totalLength += entry.length;
 
-      if (totalLength >= MAX_DIFF_CHARS) {
+      if (totalLength >= MAX_FETCH_DIFF_CHARS) {
         hitCap = true;
         break;
       }
@@ -439,7 +445,9 @@ async function getPullRequestDiffViaFiles(
   // Append the notice whenever we hit the cap (covers the exact-boundary case
   // truncateDiff's length check would miss).
   const joined = patches.join("");
-  const diff = hitCap ? joined.slice(0, MAX_DIFF_CHARS) + truncationNotice() : joined;
+  const diff = hitCap
+    ? joined.slice(0, MAX_FETCH_DIFF_CHARS) + truncationNotice(MAX_FETCH_DIFF_CHARS)
+    : joined;
   return { diff, truncated: hitCap };
 }
 
