@@ -360,7 +360,7 @@ export async function getPullRequestDiff(
       `[github] Diff too large for ${owner}/${repo}#${prNumber} (406), trying /files fallback`,
     );
     const reconstructed = await getPullRequestDiffViaFiles(token, owner, repo, prNumber);
-    if (reconstructed.endsWith(TRUNCATION_MARKER) && isInternalCliEnabled()) {
+    if (reconstructed.includes(TRUNCATION_MARKER) && isInternalCliEnabled()) {
       throw new LargePrError(
         `/files fallback also truncated for ${owner}/${repo}#${prNumber}`,
         { owner, repo, prNumber, reason: "too-many-files" },
@@ -378,13 +378,31 @@ function isInternalCliEnabled(): boolean {
   return process.env.ENABLE_INTERNAL_CLI === "true";
 }
 
-const MAX_DIFF_CHARS = 30_000;
-const TRUNCATION_MARKER = "\n\n[... diff truncated at 30,000 chars]";
+// Max diff size handed to the review engine. Sized to fit the model context
+// (~200k-token windows ≈ ~800k chars) alongside the reviewer's RAG context,
+// rulepacks and output, with headroom — 300k chars (~7.5k diff lines) covers
+// the overwhelming majority of PRs so they review IN FULL. Env-tunable
+// (MAX_DIFF_CHARS) to trade coverage vs. token cost without a redeploy. The old
+// 30k default silently truncated everyday PRs, so security-critical files past
+// the cut went unreviewed while a confident score was still posted (#1429).
+const MAX_DIFF_CHARS = (() => {
+  const n = Number(process.env.MAX_DIFF_CHARS);
+  return Number.isFinite(n) && n > 0 ? n : 300_000;
+})();
 
-function truncateDiff(diff: string): string {
-  return diff.length > MAX_DIFF_CHARS
-    ? diff.slice(0, MAX_DIFF_CHARS) + TRUNCATION_MARKER
-    : diff;
+// Stable substring marking a truncated diff (used to detect truncation in the
+// /files reconstruction path). The full marker appends the actual char count.
+const TRUNCATION_MARKER = "[... diff truncated";
+
+export function truncateDiff(diff: string): string {
+  if (diff.length <= MAX_DIFF_CHARS) return diff;
+  // Only pathological diffs reach here now. Truncate with a factual, dynamic
+  // marker (no "split your PR" nag) so the reviewer at least knows the tail was
+  // cut rather than silently scoring an unreviewed remainder.
+  return (
+    diff.slice(0, MAX_DIFF_CHARS) +
+    `\n\n${TRUNCATION_MARKER} at ${MAX_DIFF_CHARS.toLocaleString("en-US")} chars — remaining files not included]`
+  );
 }
 
 async function getPullRequestDiffViaFiles(
