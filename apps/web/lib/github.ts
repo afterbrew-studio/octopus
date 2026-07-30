@@ -359,8 +359,13 @@ export async function getPullRequestDiff(
     console.warn(
       `[github] Diff too large for ${owner}/${repo}#${prNumber} (406), trying /files fallback`,
     );
-    const reconstructed = await getPullRequestDiffViaFiles(token, owner, repo, prNumber);
-    if (reconstructed.includes(TRUNCATION_MARKER) && isInternalCliEnabled()) {
+    const { diff: reconstructed, truncated } = await getPullRequestDiffViaFiles(
+      token,
+      owner,
+      repo,
+      prNumber,
+    );
+    if (truncated && isInternalCliEnabled()) {
       throw new LargePrError(
         `/files fallback also truncated for ${owner}/${repo}#${prNumber}`,
         { owner, repo, prNumber, reason: "too-many-files" },
@@ -410,7 +415,7 @@ async function getPullRequestDiffViaFiles(
   owner: string,
   repo: string,
   prNumber: number,
-): Promise<string> {
+): Promise<{ diff: string; truncated: boolean }> {
   const patches: string[] = [];
   let totalLength = 0;
   let page = 1;
@@ -450,7 +455,11 @@ async function getPullRequestDiffViaFiles(
     page++;
   }
 
-  return truncateDiff(patches.join(""));
+  const joined = patches.join("");
+  // Structured flag instead of sniffing the marker back out of the text (a PR's
+  // own content could contain the marker string and false-positive).
+  const truncated = joined.length > MAX_DIFF_CHARS;
+  return { diff: truncateDiff(joined), truncated };
 }
 
 // GitHub's issue / PR comment API rejects bodies larger than 65536 chars
