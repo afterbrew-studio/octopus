@@ -79,6 +79,7 @@ import { AnalysisLogs } from "@/components/analysis-logs";
 import { Label } from "@/components/ui/label";
 import { getPubbyClient } from "@/lib/pubby-client";
 import { useChat } from "@/components/chat-provider";
+import { RepositoryAnalysisMarkdown } from "@/components/repository-analysis-markdown";
 
 type AvailableModel = {
   modelId: string;
@@ -292,103 +293,6 @@ function parseMarkdownSections(markdown: string): { title: string; content: stri
   }
 
   return sections;
-}
-
-function renderInlineMarkdown(text: string): string {
-  return text
-    .replace(/`([^`]+)`/g, '<code class="rounded bg-muted px-1 py-0.5 text-xs font-mono">$1</code>')
-    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-    .replace(/\*([^*]+)\*/g, "<em>$1</em>");
-}
-
-function renderMarkdownContent(content: string): React.ReactNode[] {
-  const nodes: React.ReactNode[] = [];
-  const lines = content.split("\n");
-  let i = 0;
-
-  while (i < lines.length) {
-    const line = lines[i];
-
-    // Code blocks
-    if (line.startsWith("```")) {
-      const codeLines: string[] = [];
-      i++;
-      while (i < lines.length && !lines[i].startsWith("```")) {
-        codeLines.push(lines[i]);
-        i++;
-      }
-      i++; // skip closing ```
-      nodes.push(
-        <pre
-          key={`code-${nodes.length}`}
-          className="my-2 overflow-x-auto rounded-md bg-muted p-3 text-xs font-mono"
-        >
-          {codeLines.join("\n")}
-        </pre>,
-      );
-      continue;
-    }
-
-    // List items
-    if (line.match(/^[-*] /)) {
-      const listItems: string[] = [];
-      while (i < lines.length && lines[i].match(/^[-*] /)) {
-        listItems.push(lines[i].replace(/^[-*] /, ""));
-        i++;
-      }
-      nodes.push(
-        <ul key={`list-${nodes.length}`} className="my-2 space-y-1 pl-4">
-          {listItems.map((item, idx) => (
-            <li
-              key={idx}
-              className="list-disc text-sm text-muted-foreground"
-              dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(item) }}
-            />
-          ))}
-        </ul>,
-      );
-      continue;
-    }
-
-    // Numbered list items
-    if (line.match(/^\d+\. /)) {
-      const listItems: string[] = [];
-      while (i < lines.length && lines[i].match(/^\d+\. /)) {
-        listItems.push(lines[i].replace(/^\d+\. /, ""));
-        i++;
-      }
-      nodes.push(
-        <ol key={`olist-${nodes.length}`} className="my-2 space-y-1 pl-4">
-          {listItems.map((item, idx) => (
-            <li
-              key={idx}
-              className="list-decimal text-sm text-muted-foreground"
-              dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(item) }}
-            />
-          ))}
-        </ol>,
-      );
-      continue;
-    }
-
-    // Empty lines
-    if (!line.trim()) {
-      i++;
-      continue;
-    }
-
-    // Regular paragraphs
-    nodes.push(
-      <p
-        key={`p-${nodes.length}`}
-        className="my-2 text-sm text-muted-foreground leading-relaxed"
-        dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(line) }}
-      />,
-    );
-    i++;
-  }
-
-  return nodes;
 }
 
 function ReviewStatusBadge({ status, mergedAt }: { status: string; mergedAt?: string | null }) {
@@ -752,7 +656,7 @@ function AnalysisSection({
                 {section.title}
               </AccordionTrigger>
               <AccordionContent>
-                {renderMarkdownContent(section.content)}
+                <RepositoryAnalysisMarkdown content={section.content} />
               </AccordionContent>
             </AccordionItem>
           ))}

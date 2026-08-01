@@ -21,7 +21,8 @@ const ENV = [
   "GITHUB_APP_PRIVATE_KEY",
   "GITHUB_WEBHOOK_SECRET",
   "NEXT_PUBLIC_GITHUB_APP_SLUG",
-  "GITHUB_CLIENT_ID",
+  "GITHUB_APP_CLIENT_ID",
+  "GITHUB_APP_CLIENT_SECRET",
 ];
 
 beforeEach(() => {
@@ -39,6 +40,7 @@ describe("getGithubAppConfig", () => {
       githubAppHtmlUrl: "https://github.com/apps/octopus-db",
       githubAppPrivateKeyEnc: "PEM-DB",
       githubAppWebhookSecretEnc: "WH-DB",
+      githubAppClientSecretEnc: "CS-DB",
     };
     process.env.GITHUB_APP_ID = "111";
     process.env.GITHUB_APP_PRIVATE_KEY = "PEM-ENV";
@@ -49,6 +51,8 @@ describe("getGithubAppConfig", () => {
     expect(c?.slug).toBe("octopus-db");
     expect(c?.privateKey).toBe("PEM-DB");
     expect(c?.webhookSecret).toBe("WH-DB");
+    expect(c?.clientId).toBe("cid-db");
+    expect(c?.clientSecret).toBe("CS-DB");
     expect(c?.htmlUrl).toBe("https://github.com/apps/octopus-db");
   });
 
@@ -58,12 +62,16 @@ describe("getGithubAppConfig", () => {
     process.env.GITHUB_APP_PRIVATE_KEY = "PEM-ENV";
     process.env.GITHUB_WEBHOOK_SECRET = "WH-ENV";
     process.env.NEXT_PUBLIC_GITHUB_APP_SLUG = "octopus-env";
+    process.env.GITHUB_APP_CLIENT_ID = "cid-env";
+    process.env.GITHUB_APP_CLIENT_SECRET = "cs-env";
 
     const c = await getGithubAppConfig();
     expect(c?.appId).toBe("111");
     expect(c?.slug).toBe("octopus-env");
     expect(c?.privateKey).toBe("PEM-ENV");
     expect(c?.webhookSecret).toBe("WH-ENV");
+    expect(c?.clientId).toBe("cid-env");
+    expect(c?.clientSecret).toBe("cs-env");
     expect(c?.htmlUrl).toBeNull();
   });
 

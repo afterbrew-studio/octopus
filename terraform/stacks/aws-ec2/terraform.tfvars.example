@@ -36,10 +36,13 @@ db_password        = ""  # auto-generated if empty (24 chars, no special chars)
 # See README "Step 2: Create GitHub Apps" for a step-by-step guide.
 #
 # Webhook URL to set in app settings: https://<app_domain>/api/github/webhook
-# Setup URL (optional):               https://<app_domain>/api/github/callback
-github_app_id          = ""
-github_webhook_secret  = ""  # Set in the app's "Webhook secret" field
-github_app_slug        = ""  # The slug shown in the app URL (github.com/apps/<slug>)
+# Setup URL:                          https://<app_domain>/api/github/callback
+# Callback URL:                       https://<app_domain>/api/github/callback
+github_app_id             = ""
+github_webhook_secret     = ""  # Set in the app's "Webhook secret" field
+github_app_slug           = ""  # The slug shown in the app URL (github.com/apps/<slug>)
+github_app_client_id      = ""
+github_app_client_secret  = ""
 
 # Private key: paste the entire contents of the .pem file as a single HCL string.
 # Keep the header/footer and replace each newline with \n (literal backslash-n):

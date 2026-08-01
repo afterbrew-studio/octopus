@@ -112,15 +112,17 @@ locals {
     # Qdrant (Vector DB) — internal Docker network
     QDRANT_URL=http://qdrant:6333
 
-    %{~ if var.enable_redis}
+    %{~if var.enable_redis}
     # Redis
     REDIS_URL=${local.redis_url}
-    %{~ endif}
+    %{~endif}
 
     # GitHub App
     GITHUB_APP_ID=${var.github_app_id}
     GITHUB_APP_PRIVATE_KEY=${var.github_app_private_key}
     GITHUB_WEBHOOK_SECRET=${var.github_webhook_secret}
+    GITHUB_APP_CLIENT_ID=${var.github_app_client_id}
+    GITHUB_APP_CLIENT_SECRET=${var.github_app_client_secret}
     NEXT_PUBLIC_GITHUB_APP_SLUG=${var.github_app_slug}
 
     # GitHub OAuth

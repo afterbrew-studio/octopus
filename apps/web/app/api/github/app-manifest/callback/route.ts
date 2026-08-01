@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { cookies, headers } from "next/headers";
 import { auth } from "@/lib/auth";
@@ -5,7 +6,11 @@ import { prisma } from "@octopus/db";
 import { decryptJson } from "@/lib/crypto";
 import { saveGithubAppConfig, hasDbGithubApp } from "@/lib/github-app-config";
 import { isSelfHosted } from "@/lib/self-hosted";
-import { signInstallState } from "@/lib/github-install-state";
+import {
+  GITHUB_INSTALL_STATE_COOKIE,
+  GITHUB_INSTALL_STATE_TTL_MS,
+  signInstallState,
+} from "@/lib/github-install-state";
 import {
   GITHUB_MANIFEST_STATE_COOKIE,
   type GithubManifestState,
@@ -134,15 +139,24 @@ export async function GET(request: NextRequest) {
 
   // Auto-continue: send the user to install the freshly-created App on their
   // repos. The install callback binds the installation to the org as usual.
+  const installNonce = crypto.randomBytes(16).toString("base64url");
   const installState = signInstallState({
     uid: session.user.id,
     oid: membership.organizationId,
     rt: "/settings/integrations",
+    nonce: installNonce,
   });
   const installUrl = new URL(`https://github.com/apps/${conv.slug}/installations/new`);
   installUrl.searchParams.set("state", installState);
 
   const res = NextResponse.redirect(installUrl.toString());
   res.cookies.delete(GITHUB_MANIFEST_STATE_COOKIE);
+  res.cookies.set(GITHUB_INSTALL_STATE_COOKIE, installNonce, {
+    httpOnly: true,
+    secure: baseUrl.startsWith("https://"),
+    sameSite: "lax",
+    path: "/api/github/callback",
+    maxAge: Math.floor(GITHUB_INSTALL_STATE_TTL_MS / 1000),
+  });
   return res;
 }

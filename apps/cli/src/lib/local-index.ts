@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync, statSync } from "node:fs";
-import { resolve } from "node:path";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync } from "node:fs";
 import { postJson } from "./api.js";
+import { containedPath } from "./code-search.js";
 import { type Credentials } from "./credentials.js";
 
 /**
@@ -189,26 +189,57 @@ async function pollStatus(
 
 // ── Walker ──────────────────────────────────────────────────────────────────
 
-function collectEligibleFiles(cwd: string): { path: string; bytes: number }[] {
+type LocalIndexFile = { path: string; content: string; bytes: number };
+
+function collectEligibleFiles(cwd: string): LocalIndexFile[] {
   // `git ls-files` respects .gitignore for free + lists only tracked files,
   // which gives us a sane default for "what's in this repo." We then apply
   // our own extension/size filter (mirrors the server's `shouldIndex`).
   const result = spawnSync("git", ["ls-files", "-z"], { cwd, encoding: "buffer" });
   if (result.status !== 0) return [];
-  const out: { path: string; bytes: number }[] = [];
+  const out: LocalIndexFile[] = [];
   const text = result.stdout.toString("utf8");
   for (const path of text.split("\0").filter(Boolean)) {
     if (!isEligible(path)) continue;
-    try {
-      const full = resolve(cwd, path);
-      const st = statSync(full);
-      if (st.size > MAX_FILE_BYTES) continue;
-      out.push({ path, bytes: st.size });
-    } catch {
-      // unreadable file — skip
-    }
+    const full = containedPath(cwd, path);
+    if (!full) continue;
+    const content = readRegularFileNoFollow(full);
+    if (content === null || content.includes("\0")) continue;
+    const bytes = Buffer.byteLength(content, "utf8");
+    if (bytes > MAX_FILE_BYTES) continue;
+    out.push({ path, content, bytes });
   }
   return out;
+}
+
+/**
+ * Read one already-contained file without following a final symlink. The
+ * lstat check preserves compatibility on platforms without O_NOFOLLOW; on
+ * POSIX, O_NOFOLLOW also closes the swap-to-symlink race between check/read.
+ */
+function readRegularFileNoFollow(path: string): string | null {
+  let fd: number | null = null;
+  try {
+    const before = lstatSync(path);
+    if (before.isSymbolicLink() || !before.isFile() || before.size > MAX_FILE_BYTES) return null;
+
+    const noFollow = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
+    fd = openSync(path, constants.O_RDONLY | noFollow);
+    const opened = fstatSync(fd);
+    if (
+      !opened.isFile() ||
+      opened.size > MAX_FILE_BYTES ||
+      opened.dev !== before.dev ||
+      opened.ino !== before.ino
+    ) {
+      return null;
+    }
+    return readFileSync(fd, "utf8");
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) closeSync(fd);
+  }
 }
 
 function isEligible(path: string): boolean {
@@ -225,7 +256,7 @@ function isEligible(path: string): boolean {
   return CODE_EXTENSIONS.has(ext);
 }
 
-function packBatches(files: { path: string; bytes: number }[]): { path: string; content: string }[][] {
+function packBatches(files: LocalIndexFile[]): { path: string; content: string }[][] {
   const batches: { path: string; content: string }[][] = [];
   let current: { path: string; content: string }[] = [];
   let currentBytes = 0;
@@ -238,16 +269,8 @@ function packBatches(files: { path: string; bytes: number }[]): { path: string; 
       current = [];
       currentBytes = 0;
     }
-    try {
-      const content = readFileSync(f.path, "utf8");
-      // Skip files with NUL bytes — they're binary and will fail the
-      // server-side filter anyway; sending them just wastes bandwidth.
-      if (content.includes("\0")) continue;
-      current.push({ path: f.path, content });
-      currentBytes += content.length;
-    } catch {
-      // unreadable / not utf8 — skip
-    }
+    current.push({ path: f.path, content: f.content });
+    currentBytes += f.bytes;
   }
   if (current.length > 0) batches.push(current);
   return batches;

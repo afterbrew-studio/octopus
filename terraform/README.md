@@ -101,6 +101,8 @@ You need two separate GitHub apps: one for PR reviews and one for user login.
 2. Fill in:
    - **GitHub App name**: e.g. `Octopus Review`
    - **Homepage URL**: `https://your-domain.com`
+   - **Callback URL**: `https://your-domain.com/api/github/callback`
+   - **Setup URL**: `https://your-domain.com/api/github/callback` (enable **Redirect on update**)
    - **Webhook URL**: `https://your-domain.com/api/github/webhook`
    - **Webhook secret**: generate with `openssl rand -hex 20` and save it
 3. Under **Permissions**, set:
@@ -113,14 +115,17 @@ You need two separate GitHub apps: one for PR reviews and one for user login.
 5. **Where can this app be installed?** → Any account (or Only on this account)
 6. Click **Create GitHub App**
 7. On the next page, note the **App ID** (a number like `123456`)
-8. Scroll down → **Generate a private key** → a `.pem` file downloads
-9. Convert the key to a single-line string for Terraform:
+8. Note the **Client ID**, then generate and save a **client secret**. These
+   GitHub App credentials verify that the installing user can access the
+   claimed installation; they are not the login OAuth App credentials.
+9. Scroll down → **Generate a private key** → a `.pem` file downloads
+10. Convert the key to a single-line string for Terraform:
    ```bash
    awk 'NF {printf "%s\\n", $0}' ~/Downloads/your-app-name.pem
    ```
    Copy the output — it should look like: `"-----BEGIN RSA PRIVATE KEY-----\nMIIE...\n-----END RSA PRIVATE KEY-----\n"`
-10. Find your app's **slug** from the URL: `github.com/apps/your-slug` → the slug is `your-slug`
-11. Click **Install App** → select the repositories Octopus should review
+11. Find your app's **slug** from the URL: `github.com/apps/your-slug` → the slug is `your-slug`
+12. After deployment, start installation from Octopus → **Settings → Integrations**
 
 ### Part B — GitHub OAuth App (user login)
 
@@ -156,6 +161,8 @@ The minimum you need to fill in:
 | `github_app_private_key` | The single-line PEM from Step 2A |
 | `github_webhook_secret` | The secret you set in the GitHub App webhook |
 | `github_app_slug` | From Step 2A |
+| `github_app_client_id` | GitHub App client ID from Step 2A |
+| `github_app_client_secret` | GitHub App client secret from Step 2A |
 | `github_client_id` | From Step 2B |
 | `github_client_secret` | From Step 2B |
 | `openai_api_key` or `anthropic_api_key` | At least one LLM key required |

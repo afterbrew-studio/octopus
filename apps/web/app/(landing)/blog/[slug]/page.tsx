@@ -13,6 +13,7 @@ import { BlogToc } from "@/components/blog-toc";
 import { ScrollToTop } from "@/components/scroll-to-top";
 import { IconArrowLeft } from "@tabler/icons-react";
 import { readingTimeMinutes, extractHeadings, proseWordCount } from "@/lib/blog-reading";
+import { safeJsonLd } from "@/lib/html";
 
 const DEFAULT_OG_IMAGE = "https://octopus-review.ai/og-image.png";
 
@@ -129,11 +130,11 @@ export default async function BlogPostPage({
     <div className="min-h-screen bg-[#0c0c0c] text-white">
       <script
         type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(blogPostingJsonLd) }}
+        dangerouslySetInnerHTML={{ __html: safeJsonLd(blogPostingJsonLd) }}
       />
       <script
         type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbJsonLd) }}
+        dangerouslySetInnerHTML={{ __html: safeJsonLd(breadcrumbJsonLd) }}
       />
       <LandingDesktopNav isLoggedIn={isLoggedIn} />
       <LandingMobileNav isLoggedIn={isLoggedIn} />

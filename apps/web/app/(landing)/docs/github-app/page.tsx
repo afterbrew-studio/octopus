@@ -82,7 +82,10 @@ export default function GithubAppPage() {
             <Mono>https://octopus.example.com</Mono>.
           </li>
           <li>
-            <strong>Callback URL</strong> — leave blank.
+            <strong>Callback URL</strong> — set to{" "}
+            <Mono>https://your-domain/api/github/callback</Mono>. Octopus uses
+            the GitHub App user-authorization flow at this URL to prove that the
+            person completing setup can access the claimed installation.
           </li>
           <li>
             <strong>Setup URL</strong> (under <em>Post installation</em>) — set
@@ -143,6 +146,12 @@ export default function GithubAppPage() {
             <Mono>GITHUB_APP_ID</Mono>.
           </li>
           <li>
+            Note the <strong>Client ID</strong>, then generate a client secret.
+            These are <Mono>GITHUB_APP_CLIENT_ID</Mono> and{" "}
+            <Mono>GITHUB_APP_CLIENT_SECRET</Mono>. They belong to this GitHub
+            App and are separate from the OAuth App used for sign-in.
+          </li>
+          <li>
             Note the <strong>slug</strong> from the URL bar
             (<Mono>github.com/settings/apps/<strong>this-part</strong></Mono>) — this is your{" "}
             <Mono>NEXT_PUBLIC_GITHUB_APP_SLUG</Mono>.
@@ -162,6 +171,8 @@ GITHUB_APP_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----
 ...lines from the .pem file...
 -----END RSA PRIVATE KEY-----"
 GITHUB_WEBHOOK_SECRET=<the secret you generated above>
+GITHUB_APP_CLIENT_ID=<the GitHub App client ID>
+GITHUB_APP_CLIENT_SECRET=<the GitHub App client secret>
 NEXT_PUBLIC_GITHUB_APP_SLUG=<the slug from the App's URL>`}</CodeBlock>
         <P>
           Restart the server. The &quot;Install GitHub App&quot; button on{" "}
@@ -190,9 +201,11 @@ NEXT_PUBLIC_GITHUB_APP_SLUG=<the slug from the App's URL>`}</CodeBlock>
         </UL>
         <P>
           After approval GitHub redirects back to{" "}
-          <Mono>/api/github/callback</Mono>, Octopus stores the{" "}
-          <Mono>installation_id</Mono> on your <Mono>Organization</Mono> row,
-          and reviews start flowing on the next PR push.
+          <Mono>/api/github/callback</Mono>. The installer then user-authorizes
+          the GitHub App. Octopus verifies that the returned user token
+          can access the claimed installation, then stores the verified{" "}
+          <Mono>installation_id</Mono> on your <Mono>Organization</Mono> row.
+          Reviews start flowing on the next PR push.
         </P>
       </Section>
 

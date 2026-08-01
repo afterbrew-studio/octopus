@@ -12,6 +12,7 @@ describe("buildAppManifest", () => {
     expect(m.hook_attributes.url).toBe(`${base}/api/github/webhook`);
     expect(m.hook_attributes.active).toBe(true);
     expect(m.redirect_url).toBe(`${base}/api/github/app-manifest/callback`);
+    expect(m.callback_urls).toEqual([`${base}/api/github/callback`]);
     expect(m.setup_url).toBe(`${base}/api/github/callback`);
     expect(m.setup_on_update).toBe(true);
     expect(m.public).toBe(false);

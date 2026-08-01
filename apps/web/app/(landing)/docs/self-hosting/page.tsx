@@ -275,6 +275,8 @@ docker compose exec ollama ollama pull nomic-embed-text`}</CodeBlock>
           <EnvVar name="GITHUB_APP_ID" example="123456" required />
           <EnvVar name="GITHUB_APP_PRIVATE_KEY" example="-----BEGIN RSA..." required />
           <EnvVar name="GITHUB_WEBHOOK_SECRET" example="whsec_..." required />
+          <EnvVar name="GITHUB_APP_CLIENT_ID" example="Iv1.app-client-id" required description="GitHub App user authorization" />
+          <EnvVar name="GITHUB_APP_CLIENT_SECRET" example="secret" required description="GitHub App user authorization" />
           <EnvVar name="GITHUB_CLIENT_ID" example="Iv1.abc123" />
           <EnvVar name="GITHUB_CLIENT_SECRET" example="secret" />
         </EnvGroup>

@@ -14,6 +14,7 @@ export type GithubAppConfig = {
   webhookSecret: string | null;
   slug: string | null;
   clientId: string | null;
+  clientSecret: string | null;
   htmlUrl: string | null;
 };
 
@@ -35,7 +36,8 @@ function fromEnv(): GithubAppConfig | null {
     privateKey,
     webhookSecret: process.env.GITHUB_WEBHOOK_SECRET ?? null,
     slug: process.env.NEXT_PUBLIC_GITHUB_APP_SLUG ?? null,
-    clientId: process.env.GITHUB_CLIENT_ID ?? null,
+    clientId: process.env.GITHUB_APP_CLIENT_ID ?? null,
+    clientSecret: process.env.GITHUB_APP_CLIENT_SECRET ?? null,
     htmlUrl: null,
   };
 }
@@ -53,6 +55,7 @@ async function resolve(): Promise<GithubAppConfig | null> {
         githubAppHtmlUrl: true,
         githubAppPrivateKeyEnc: true,
         githubAppWebhookSecretEnc: true,
+        githubAppClientSecretEnc: true,
       },
     });
     if (row?.githubAppId && row.githubAppPrivateKeyEnc) {
@@ -64,6 +67,9 @@ async function resolve(): Promise<GithubAppConfig | null> {
           : null,
         slug: row.githubAppSlug,
         clientId: row.githubAppClientId,
+        clientSecret: row.githubAppClientSecretEnc
+          ? decryptStringMaybeLegacy(row.githubAppClientSecretEnc)
+          : null,
         htmlUrl: row.githubAppHtmlUrl,
       };
     }

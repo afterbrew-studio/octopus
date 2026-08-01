@@ -33,6 +33,7 @@ export function buildAppManifest(baseUrl: string, name: string) {
     url: baseUrl,
     hook_attributes: { url: `${baseUrl}/api/github/webhook`, active: true },
     redirect_url: `${baseUrl}/api/github/app-manifest/callback`,
+    callback_urls: [`${baseUrl}/api/github/callback`],
     setup_url: `${baseUrl}/api/github/callback`,
     setup_on_update: true,
     public: false,
