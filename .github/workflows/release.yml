@@ -29,8 +29,37 @@ permissions:
   packages: write
 
 jobs:
+  # ── changelog gate ─────────────────────────────────────────────────────────
+  # Block a release that has no customer-facing CHANGELOG.md entry for its
+  # version, so the public /docs/changelog can never silently fall behind.
+  # Content stays human-curated (scripts/bump-version.sh stamps [Unreleased]
+  # into the version) — we only ENFORCE the entry exists, never auto-write prose.
+  verify-changelog:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Require a CHANGELOG.md entry for this version
+        run: |
+          set -euo pipefail
+          SEMVER=${GITHUB_REF#refs/tags/}
+          SEMVER=${SEMVER#v}
+          if [ ! -f CHANGELOG.md ]; then
+            echo "::error::CHANGELOG.md not found at the repository root."
+            exit 1
+          fi
+          ESCAPED=${SEMVER//./\\.}
+          if ! grep -qE "^## \[${ESCAPED}\]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no '## [${SEMVER}]' section. Add a customer-facing entry before tagging — run 'scripts/bump-version.sh ${SEMVER}' to stamp the [Unreleased] notes into a dated version section, then commit and re-tag."
+            exit 1
+          fi
+          echo "CHANGELOG.md has an entry for ${SEMVER} ✓"
+
   # ── self-host distribution image (PUBLIC package) ──────────────────────────
   selfhost:
+    needs: [verify-changelog]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -98,6 +127,7 @@ jobs:
   # they only change on an explicit service update. Skipped when the variables
   # are unset (e.g. on forks).
   prod:
+    needs: [verify-changelog]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
