@@ -265,4 +265,12 @@ describe("safeReturnPath", () => {
     expect(safeReturnPath("/\\evil.com")).toBe("/settings/integrations");
     expect(safeReturnPath("\\/evil.com")).toBe("/settings/integrations");
   });
+
+  it("falls back for URL-parser-stripped control characters", () => {
+    expect(safeReturnPath("/\t/evil.com")).toBe("/settings/integrations");
+    expect(safeReturnPath("/\n/evil.com")).toBe("/settings/integrations");
+    expect(safeReturnPath("/\r/evil.com")).toBe("/settings/integrations");
+    expect(safeReturnPath("/\x00evil")).toBe("/settings/integrations");
+    expect(safeReturnPath("/\x7fevil")).toBe("/settings/integrations");
+  });
 });

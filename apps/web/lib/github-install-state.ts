@@ -25,7 +25,7 @@ export function safeReturnPath(value: string | null | undefined): string {
     !value ||
     !value.startsWith("/") ||
     value.startsWith("//") ||
-    value.includes("\\")
+    /[\x00-\x1f\x7f\\]/.test(value)
   ) {
     return "/settings/integrations";
   }
