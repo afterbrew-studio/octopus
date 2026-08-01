@@ -1,9 +1,16 @@
 import { afterAll, beforeAll, describe, expect, it, mock } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { ensureRepoIndexed } from "../lib/local-index";
+
+it("ships no temporary evidence scripts", () => {
+  const stray = readdirSync(resolve(import.meta.dir, "../..")).filter((f) =>
+    f.startsWith("__evidence"),
+  );
+  expect(stray).toEqual([]);
+});
 
 describe("ensureRepoIndexed file boundary", () => {
   const originalCwd = process.cwd();

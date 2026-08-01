@@ -296,7 +296,19 @@ async function finishVerification(request: NextRequest, stateParam: string) {
 
 export async function GET(request: NextRequest) {
   const stateParam = request.nextUrl.searchParams.get("state");
-  if (!stateParam) return errorRedirect("missing_state");
+  if (!stateParam) {
+    // GitHub-initiated installs (github.com/apps/<slug> or the Marketplace)
+    // land here without state. Bounce through login → /api/github/install,
+    // which mints the signed state server-side before resuming the flow.
+    const loginUrl = new URL("/login", baseUrl);
+    const returnTo = new URL("/api/github/install", baseUrl);
+    returnTo.searchParams.set("returnTo", "/settings/integrations");
+    loginUrl.searchParams.set(
+      "callbackUrl",
+      returnTo.pathname + returnTo.search,
+    );
+    return NextResponse.redirect(loginUrl);
+  }
 
   if (
     request.nextUrl.searchParams.has("code") ||

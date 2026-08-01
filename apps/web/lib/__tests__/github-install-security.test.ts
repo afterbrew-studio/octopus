@@ -130,6 +130,19 @@ afterAll(() => {
 });
 
 describe("GitHub installation callback authorization", () => {
+  it("bounces a state-less GitHub-initiated install through login to /api/github/install", async () => {
+    const response: Response = await GET(
+      callbackRequest({ installation_id: "424242" }),
+    );
+
+    const location = new URL(response.headers.get("location")!);
+    expect(location.pathname).toBe("/login");
+    expect(location.searchParams.get("callbackUrl")).toBe(
+      "/api/github/install?returnTo=%2Fsettings%2Fintegrations",
+    );
+    expect(boundInstallationId).toBeNull();
+  });
+
   it("does not bind an installation when another signed-in user completes the callback", async () => {
     const nonce = "victim-browser-nonce";
     const state = signInstallState({
