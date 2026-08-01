@@ -112,10 +112,10 @@ locals {
     # Qdrant (Vector DB) — internal Docker network
     QDRANT_URL=http://qdrant:6333
 
-    %{~ if var.enable_redis}
+    %{~if var.enable_redis}
     # Redis
     REDIS_URL=${local.redis_url}
-    %{~ endif}
+    %{~endif}
 
     # GitHub App
     GITHUB_APP_ID=${var.github_app_id}

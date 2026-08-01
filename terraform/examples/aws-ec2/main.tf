@@ -9,7 +9,7 @@ module "octopus" {
   aws_region = var.aws_region
 
   # ── Required ──────────────────────────────────────────────────────────────
-  app_image  = "ghcr.io/your-org/octopus:latest"  # see README Step 1
+  app_image  = "ghcr.io/your-org/octopus:latest" # see README Step 1
   app_domain = "octopus.example.com"
   # db_password and better_auth_secret are auto-generated — no need to set them
 
