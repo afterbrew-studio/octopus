@@ -36,6 +36,8 @@ jobs:
   # into the version) — we only ENFORCE the entry exists, never auto-write prose.
   verify-changelog:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -44,6 +46,10 @@ jobs:
           set -euo pipefail
           SEMVER=${GITHUB_REF#refs/tags/}
           SEMVER=${SEMVER#v}
+          if [ ! -f CHANGELOG.md ]; then
+            echo "::error::CHANGELOG.md not found at the repository root."
+            exit 1
+          fi
           ESCAPED=${SEMVER//./\\.}
           if ! grep -qE "^## \[${ESCAPED}\]" CHANGELOG.md; then
             echo "::error::CHANGELOG.md has no '## [${SEMVER}]' section. Add a customer-facing entry before tagging — run 'scripts/bump-version.sh ${SEMVER}' to stamp the [Unreleased] notes into a dated version section, then commit and re-tag."

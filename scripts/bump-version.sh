@@ -47,7 +47,10 @@ if (!body) {
   console.warn("[bump-version] WARNING: [Unreleased] had no notes — inserted a placeholder. Edit CHANGELOG.md with customer-facing notes before releasing.");
 }
 const date = new Date().toISOString().slice(0, 10);
-c = c.replace(capture, `## [Unreleased]\n\n## [${v}] - ${date}\n\n${body}\n`);
+const replacement = `## [Unreleased]\n\n## [${v}] - ${date}\n\n${body}\n`;
+// Replacer FUNCTION, not a string: notes can contain `$` (e.g. "$5 / $25 per
+// million tokens"), and String.replace would treat `$&`/`$1`/`$$` specially.
+c = c.replace(capture, () => replacement);
 fs.writeFileSync(p, c);
 console.log(`[bump-version] Stamped CHANGELOG.md [${v}] - ${date}`);
 NODE
