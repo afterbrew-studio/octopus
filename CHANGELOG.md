@@ -7,6 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.91] - 2026-08-01
+
+### Security
+- OAuth connect flows for Linear, Jira, and Bitbucket now bind the sign-in state to the browser and user that started it, closing a CSRF gap when connecting those integrations.
+
+## [1.0.90] - 2026-08-01
+
+### Security
+- Security-hardening pass across integration and local trust boundaries: fixed an open redirect on the post-auth return path (including a control-character bypass), tightened cookie cleanup, and locked down CI token permissions.
+
+## [1.0.89] - 2026-07-30
+
+_Reviews now spend their budget on your code, not on generated files._
+
+### Changed
+- Generated files — dependency lockfiles, ORM migration snapshots, test snapshots, minified/bundled output, and anything your repo marks `linguist-generated` in `.gitattributes` — are excluded from review, so a large generated file can no longer crowd your hand-written changes out of the review. Excluded files are listed in the review summary.
+
+## [1.0.88] - 2026-07-30
+
+_Large pull requests now get reviewed in full._
+
+### Changed
+- Increased how much of a diff a review covers (~10×) and stopped silently truncating large diffs, so files further down a big PR are no longer skipped. When a diff is genuinely too large it now says so, instead of scoring a partial view. Tunable per deployment.
+
+## [1.0.87] - 2026-07-30
+
+_Self-hosting: create your GitHub App in one click._
+
+### Added
+- Self-hosted instances can create the required GitHub App automatically from Settings → Integrations. One button runs GitHub's App Manifest flow, stores the credentials, and takes you straight to installing it on your repositories — no more copying App ID, private key, and webhook secret into `.env` by hand. Create it under your account or a GitHub organization.
+
+## [1.0.85] - 2026-07-29
+
+_Review public open-source PRs without granting write access._
+
+### Added
+- New OSS bot-account review mode: a zero-permission GitHub Action notifies Octopus, which reviews the pull request server-side and posts as a shared bot account. Because that bot is a non-collaborator, GitHub's own permissions make it comment-only — the guarantee security-conscious maintainers ask for, with no write token running in CI. Opt in per repository with a consent file.
+
+## [1.0.80] - 2026-07-29
+
+### Added
+- Auto-review now skips draft pull requests and runs automatically when a PR is marked ready for review, so work-in-progress is no longer reviewed prematurely. A manual `@octopus` mention still reviews a draft on request.
+
+### Changed
+- The community daily-limit message now links to pricing, so hitting the limit points to a clear next step instead of a dead end.
+
+## [1.0.79] - 2026-07-29
+
+_Claude Opus 4.8 is the default reviewer, with a new reasoning-effort control._
+
+### Added
+- Reasoning effort for extended-thinking models (Fable, Opus 5) is now configurable platform-wide and per organization, so you can trade review depth against speed and cost.
+
+### Changed
+- The default review model is now Claude Opus 4.8.
+
 ## [1.0.62] - 2026-07-25
 
 _Claude Opus 5 and Fable 5 are now selectable review models, and the Opus tier is now cheaper._
