@@ -38,6 +38,14 @@ type GitHubError =
   | "invalid_state_expired"
   | "invalid_state_malformed"
   | "replay_detected"
+  | "state_store_unavailable"
+  | "session_required"
+  | "state_user_mismatch"
+  | "state_browser_mismatch"
+  | "github_verification_not_configured"
+  | "github_authorization_denied"
+  | "github_authorization_failed"
+  | "installation_not_accessible"
   | "not_a_member"
   | "manifest_forbidden"
   | "manifest_already_configured"
@@ -54,6 +62,14 @@ const ERROR_TITLES: Record<Exclude<GitHubError, null>, string> = {
   invalid_state_expired: "Install flow expired",
   invalid_state_malformed: "Install flow could not be verified",
   replay_detected: "Install link already used",
+  state_store_unavailable: "Install verification unavailable",
+  session_required: "Sign-in required",
+  state_user_mismatch: "Install session changed",
+  state_browser_mismatch: "Install browser could not be verified",
+  github_verification_not_configured: "GitHub verification needs configuration",
+  github_authorization_denied: "GitHub authorization declined",
+  github_authorization_failed: "GitHub authorization failed",
+  installation_not_accessible: "Installation access not verified",
   not_a_member: "Organization access lost",
   manifest_forbidden: "Not allowed",
   manifest_already_configured: "GitHub App already set up",
@@ -76,6 +92,22 @@ const ERROR_MESSAGES: Record<Exclude<GitHubError, null>, string> = {
     "The install token is malformed. Please start the install from Octopus again.",
   replay_detected:
     "This install link has already been used. Please start a new install flow.",
+  state_store_unavailable:
+    "The install verification store is temporarily unavailable. Please try again.",
+  session_required:
+    "Sign in again, then restart the GitHub App installation.",
+  state_user_mismatch:
+    "The signed-in user is not the user who started this installation. Restart the install from Octopus.",
+  state_browser_mismatch:
+    "This browser did not start the installation, or its install cookie expired. Start again from Octopus.",
+  github_verification_not_configured:
+    "Add the GitHub App client ID, client secret, and Octopus callback URL, then restart the install.",
+  github_authorization_denied:
+    "GitHub authorization was declined. Authorize the GitHub App to verify the installation belongs to you.",
+  github_authorization_failed:
+    "Octopus could not verify your GitHub authorization. Check the GitHub App callback URL and try again.",
+  installation_not_accessible:
+    "Your GitHub user cannot access this installation. Ask an organization owner to install it or use an authorized account.",
   not_a_member:
     "You are no longer a member of the organization you started the install for. Switch organizations and try again.",
   manifest_forbidden:

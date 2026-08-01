@@ -186,6 +186,19 @@ variable "github_app_slug" {
   default     = ""
 }
 
+variable "github_app_client_id" {
+  description = "GitHub App client ID used to verify the installing user."
+  type        = string
+  default     = ""
+}
+
+variable "github_app_client_secret" {
+  description = "GitHub App client secret used to verify the installing user."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
 variable "github_client_id" {
   description = "GitHub OAuth App client ID."
   type        = string

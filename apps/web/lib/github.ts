@@ -115,6 +115,92 @@ export interface GitHubRepo {
   html_url: string;
 }
 
+export async function exchangeGithubAppUserCode(input: {
+  clientId: string;
+  clientSecret: string;
+  code: string;
+  redirectUri: string;
+}): Promise<string> {
+  const res = await fetch("https://github.com/login/oauth/access_token", {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: new URLSearchParams({
+      client_id: input.clientId,
+      client_secret: input.clientSecret,
+      code: input.code,
+      redirect_uri: input.redirectUri,
+    }),
+    signal: AbortSignal.timeout(15_000),
+  });
+
+  if (!res.ok) {
+    throw new Error(`Failed to exchange GitHub App user code: ${res.status}`);
+  }
+
+  const data = (await res.json()) as {
+    access_token?: unknown;
+    error?: unknown;
+  };
+  if (typeof data.access_token !== "string" || !data.access_token) {
+    throw new Error(
+      `GitHub App user authorization failed${
+        typeof data.error === "string" ? `: ${data.error}` : ""
+      }`,
+    );
+  }
+  return data.access_token;
+}
+
+/**
+ * Prove that a GitHub App user token can access the claimed installation.
+ * GitHub explicitly requires this check because setup_url installation_id
+ * values are caller-controlled.
+ */
+export async function userCanAccessInstallation(
+  userAccessToken: string,
+  installationId: number,
+): Promise<boolean> {
+  let page = 1;
+  while (true) {
+    const res = await fetchWithRetry(
+      `${GITHUB_API}/user/installations?per_page=100&page=${page}`,
+      {
+        headers: {
+          Authorization: `Bearer ${userAccessToken}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+        signal: AbortSignal.timeout(15_000),
+      },
+    );
+
+    if (!res.ok) {
+      throw new Error(`Failed to verify GitHub installation access: ${res.status}`);
+    }
+
+    const data = (await res.json()) as { installations?: unknown };
+    if (!Array.isArray(data.installations)) {
+      throw new Error("GitHub installation verification returned an invalid response");
+    }
+    if (
+      data.installations.some(
+        (installation) =>
+          installation !== null &&
+          typeof installation === "object" &&
+          "id" in installation &&
+          (installation as { id?: unknown }).id === installationId,
+      )
+    ) {
+      return true;
+    }
+    if (data.installations.length < 100) return false;
+    page++;
+  }
+}
+
 export async function addCommentReaction(
   installationId: number,
   owner: string,

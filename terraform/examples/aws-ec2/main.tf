@@ -18,6 +18,8 @@ module "octopus" {
   github_app_private_key = "-----BEGIN RSA PRIVATE KEY-----\n..."
   github_webhook_secret  = "change-me"
   github_app_slug        = "your-app-slug"
+  github_app_client_id = "your-github-app-client-id"
+  github_app_client_secret = "your-github-app-client-secret"
   github_client_id       = "your-github-oauth-client-id"
   github_client_secret   = "your-github-oauth-client-secret"
 

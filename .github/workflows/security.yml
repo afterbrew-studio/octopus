@@ -9,14 +9,18 @@ on:
 
 jobs:
   security:
+    # The upstream action is not hardened against prompt injection. Fork PRs
+    # receive neither the API secret nor a write-capable token; maintainers can
+    # run a local review after inspecting them.
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 2
       
-      - uses: anthropics/claude-code-security-review@main
+      - uses: anthropics/claude-code-security-review@0c6a49f1fa56a1d472575da86a94dbc1edb78eda # main, pinned 2026-08-01
         with:
           comment-pr: true
           claude-api-key: ${{ secrets.CLAUDE_API_KEY }}

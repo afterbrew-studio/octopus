@@ -1,0 +1,211 @@
+import { afterAll, beforeEach, describe, expect, it, mock } from "bun:test";
+import crypto from "node:crypto";
+
+process.env.BETTER_AUTH_URL = "https://app.test";
+process.env.GITHUB_STATE_SECRET =
+  "github-install-security-test-secret-32-bytes";
+
+type Session = { user: { id: string } } | null;
+
+let currentSession: Session = null;
+let boundInstallationId: number | null = null;
+let requestCookies = new Map<string, string>();
+let installationAccessible = false;
+
+const TEST_PRIVATE_KEY = crypto
+  .generateKeyPairSync("rsa", { modulusLength: 1024 })
+  .privateKey.export({ type: "pkcs8", format: "pem" })
+  .toString();
+
+const redisSet = mock(() => Promise.resolve("OK"));
+const organizationUpdate = mock(
+  ({ data }: { data: { githubInstallationId: number } }) => {
+    boundInstallationId = data.githubInstallationId;
+    return Promise.resolve({ id: "org_victim" });
+  },
+);
+
+mock.module("next/headers", () => ({
+  headers: () => Promise.resolve(new Headers()),
+  cookies: () =>
+    Promise.resolve({
+      get: (name: string) =>
+        requestCookies.has(name)
+          ? { name, value: requestCookies.get(name)! }
+          : undefined,
+    }),
+}));
+
+mock.module("next/cache", () => ({ revalidatePath: mock(() => undefined) }));
+
+mock.module("@/lib/auth", () => ({
+  auth: {
+    api: {
+      getSession: () => Promise.resolve(currentSession),
+    },
+  },
+}));
+
+mock.module("@/lib/redis", () => ({
+  getRedis: () => ({ set: redisSet }),
+}));
+
+mock.module("@/lib/github-app-config", () => ({
+  getGithubAppConfig: () =>
+    Promise.resolve({
+      appId: "123",
+      privateKey: TEST_PRIVATE_KEY,
+      clientId: "github-app-client-id",
+      clientSecret: "github-app-client-secret",
+    }),
+}));
+
+const originalFetch = globalThis.fetch;
+globalThis.fetch = mock((input: string | URL | Request) => {
+  const url = String(input);
+  if (url === "https://github.com/login/oauth/access_token") {
+    return Promise.resolve(
+      Response.json({ access_token: "github-app-user-token" }),
+    );
+  }
+  if (url.startsWith("https://api.github.com/user/installations?")) {
+    return Promise.resolve(
+      Response.json({
+        installations: installationAccessible ? [{ id: 424242 }] : [],
+      }),
+    );
+  }
+  if (url === "https://api.github.com/app/installations/424242/access_tokens") {
+    return Promise.resolve(Response.json({ token: "installation-token" }));
+  }
+  if (url.startsWith("https://api.github.com/installation/repositories?")) {
+    return Promise.resolve(Response.json({ repositories: [] }));
+  }
+  throw new Error(`Unexpected GitHub request in test: ${url}`);
+}) as typeof fetch;
+
+mock.module("@octopus/db", () => ({
+  prisma: {
+    organizationMember: {
+      findFirst: () => Promise.resolve({ organizationId: "org_victim" }),
+    },
+    organization: {
+      findUnique: () => Promise.resolve(null),
+      update: organizationUpdate,
+    },
+    repository: {
+      findMany: () => Promise.resolve([]),
+      upsert: () => Promise.resolve({}),
+    },
+  },
+}));
+
+const {
+  GITHUB_INSTALL_STATE_COOKIE,
+  signInstallationVerificationState,
+  signInstallState,
+} = await import("@/lib/github-install-state");
+const { GET } = await import("@/app/api/github/callback/route");
+
+function callbackRequest(params: Record<string, string>) {
+  const url = new URL("https://app.test/api/github/callback");
+  for (const [key, value] of Object.entries(params)) {
+    url.searchParams.set(key, value);
+  }
+  return Object.assign(new Request(url), { nextUrl: url }) as never;
+}
+
+beforeEach(() => {
+  currentSession = { user: { id: "user_victim" } };
+  boundInstallationId = null;
+  requestCookies = new Map();
+  installationAccessible = false;
+  redisSet.mockClear();
+  organizationUpdate.mockClear();
+});
+
+afterAll(() => {
+  globalThis.fetch = originalFetch;
+});
+
+describe("GitHub installation callback authorization", () => {
+  it("does not bind an installation when another signed-in user completes the callback", async () => {
+    const nonce = "victim-browser-nonce";
+    const state = signInstallState({
+      uid: "user_victim",
+      oid: "org_victim",
+      rt: "/settings/integrations",
+      nonce,
+    });
+    requestCookies.set(GITHUB_INSTALL_STATE_COOKIE, nonce);
+    currentSession = { user: { id: "user_attacker" } };
+
+    const response = await GET(
+      callbackRequest({ state, installation_id: "424242" }),
+    );
+    const location = new URL(response.headers.get("location")!);
+
+    expect(location.searchParams.get("error")).toBe("state_user_mismatch");
+    expect(boundInstallationId).toBeNull();
+    expect(organizationUpdate).not.toHaveBeenCalled();
+  });
+
+  it("does not bind the caller-provided id before GitHub user authorization", async () => {
+    const nonce = "install-browser-nonce";
+    const state = signInstallState({
+      uid: "user_victim",
+      oid: "org_victim",
+      rt: "/settings/integrations",
+      nonce,
+    });
+    requestCookies.set(GITHUB_INSTALL_STATE_COOKIE, nonce);
+
+    const response = await GET(
+      callbackRequest({ state, installation_id: "424242" }),
+    );
+    const location = new URL(response.headers.get("location")!);
+
+    expect(location.origin).toBe("https://github.com");
+    expect(location.pathname).toBe("/login/oauth/authorize");
+    expect(location.searchParams.get("state")).toBeTruthy();
+    expect(boundInstallationId).toBeNull();
+  });
+
+  it("rejects an installation that GitHub does not associate with the authorized user", async () => {
+    const nonce = "verification-browser-nonce";
+    const state = signInstallationVerificationState({
+      uid: "user_victim",
+      oid: "org_victim",
+      rt: "/settings/integrations",
+      nonce,
+      installationId: 424242,
+    });
+    requestCookies.set(GITHUB_INSTALL_STATE_COOKIE, nonce);
+
+    const response = await GET(callbackRequest({ state, code: "one-time-code" }));
+    const location = new URL(response.headers.get("location")!);
+
+    expect(location.searchParams.get("error")).toBe("installation_not_accessible");
+    expect(boundInstallationId).toBeNull();
+  });
+
+  it("binds after the same browser, same session, and GitHub user all verify", async () => {
+    const nonce = "verified-browser-nonce";
+    const state = signInstallationVerificationState({
+      uid: "user_victim",
+      oid: "org_victim",
+      rt: "/settings/integrations",
+      nonce,
+      installationId: 424242,
+    });
+    requestCookies.set(GITHUB_INSTALL_STATE_COOKIE, nonce);
+    installationAccessible = true;
+
+    const response = await GET(callbackRequest({ state, code: "one-time-code" }));
+    const location = new URL(response.headers.get("location")!);
+
+    expect(location.pathname).toBe("/settings/integrations");
+    expect(location.searchParams.get("error")).toBeNull();
+    expect(boundInstallationId).toBe(424242);
+  });
+});

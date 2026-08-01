@@ -10,6 +10,7 @@ import {
   Hr,
   Link,
 } from "@react-email/components";
+import { formatInlineEmailHtml } from "@/lib/html";
 
 const APP_URL =
   process.env.BETTER_AUTH_URL ||
@@ -58,7 +59,7 @@ export function EmailLayout({
                   {"  • "}
                   <span
                     dangerouslySetInnerHTML={{
-                      __html: formatInline(p.trim().slice(2)),
+                      __html: formatInlineEmailHtml(p.trim().slice(2)),
                     }}
                   />
                 </Text>
@@ -69,7 +70,7 @@ export function EmailLayout({
               <Text
                 key={i}
                 style={styles.paragraph}
-                dangerouslySetInnerHTML={{ __html: formatInline(p) }}
+                dangerouslySetInnerHTML={{ __html: formatInlineEmailHtml(p) }}
               />
             );
           })}
@@ -108,20 +109,6 @@ export function EmailLayout({
       </Body>
     </Html>
   );
-}
-
-/** Replace **bold**, [text](url), and `code` in inline text */
-function formatInline(text: string): string {
-  return text
-    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-    .replace(
-      /\[(.+?)\]\((.+?)\)/g,
-      '<a href="$2" style="color: #0366d6; text-decoration: underline;">$1</a>',
-    )
-    .replace(
-      /`(.+?)`/g,
-      '<code style="background: #f0f0f0; padding: 2px 4px; border-radius: 3px; font-size: 13px;">$1</code>',
-    );
 }
 
 const styles = {
