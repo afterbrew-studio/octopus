@@ -22,7 +22,11 @@ process.env.EMAIL_PASSWORD = "p";
 process.env.EMAIL_FROM = "noreply@test";
 process.env.EMAIL_FROM_NAME = "Octopus";
 
-const { sendEmail } = await import("@/lib/email");
+// Cache-bust: other test files (e.g. via lib/incidents) may have already
+// imported @/lib/email with real nodemailer, so force a fresh evaluation
+// that picks up the createTransport mock above.
+const emailModuleSpecifier = `@/lib/email?email-send-test=${Date.now()}`;
+const { sendEmail } = (await import(emailModuleSpecifier)) as typeof import("@/lib/email");
 
 describe("email transporter (nodemailer v9 surface)", () => {
   beforeEach(() => sendMailMock.mockClear());
