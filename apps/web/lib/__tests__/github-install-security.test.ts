@@ -102,6 +102,7 @@ mock.module("@octopus/db", () => ({
 
 const {
   GITHUB_INSTALL_STATE_COOKIE,
+  safeReturnPath,
   signInstallationVerificationState,
   signInstallState,
 } = await import("@/lib/github-install-state");
@@ -207,5 +208,61 @@ describe("GitHub installation callback authorization", () => {
     expect(location.pathname).toBe("/settings/integrations");
     expect(location.searchParams.get("error")).toBeNull();
     expect(boundInstallationId).toBe(424242);
+  });
+
+  it("clears the state nonce cookie on its own path after completion", async () => {
+    const nonce = "cookie-cleanup-nonce";
+    const state = signInstallationVerificationState({
+      uid: "user_victim",
+      oid: "org_victim",
+      rt: "/settings/integrations",
+      nonce,
+      installationId: 424242,
+    });
+    requestCookies.set(GITHUB_INSTALL_STATE_COOKIE, nonce);
+    installationAccessible = true;
+
+    const response = await GET(callbackRequest({ state, code: "one-time-code" }));
+    const setCookie = response.headers.get("set-cookie")!;
+
+    expect(setCookie).toContain(`${GITHUB_INSTALL_STATE_COOKIE}=;`);
+    expect(setCookie).toContain("Path=/api/github/callback");
+  });
+
+  it("does not redirect off-origin for a backslash return path", async () => {
+    const nonce = "redirect-browser-nonce";
+    const state = signInstallationVerificationState({
+      uid: "user_victim",
+      oid: "org_victim",
+      rt: "/\\evil.com",
+      nonce,
+      installationId: 424242,
+    });
+    requestCookies.set(GITHUB_INSTALL_STATE_COOKIE, nonce);
+    installationAccessible = true;
+
+    const response = await GET(callbackRequest({ state, code: "one-time-code" }));
+    const location = new URL(response.headers.get("location")!);
+
+    expect(location.origin).toBe("https://app.test");
+    expect(location.pathname).toBe("/settings/integrations");
+  });
+});
+
+describe("safeReturnPath", () => {
+  it("keeps safe same-origin relative paths", () => {
+    expect(safeReturnPath("/dashboard")).toBe("/dashboard");
+    expect(safeReturnPath("/settings/integrations?tab=github")).toBe(
+      "/settings/integrations?tab=github",
+    );
+  });
+
+  it("falls back for unsafe or non-relative values", () => {
+    expect(safeReturnPath(null)).toBe("/settings/integrations");
+    expect(safeReturnPath("")).toBe("/settings/integrations");
+    expect(safeReturnPath("https://evil.com")).toBe("/settings/integrations");
+    expect(safeReturnPath("//evil.com")).toBe("/settings/integrations");
+    expect(safeReturnPath("/\\evil.com")).toBe("/settings/integrations");
+    expect(safeReturnPath("\\/evil.com")).toBe("/settings/integrations");
   });
 });

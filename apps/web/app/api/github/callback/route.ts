@@ -14,6 +14,7 @@ import { getRedis } from "@/lib/redis";
 import {
   GITHUB_INSTALL_STATE_COOKIE,
   GITHUB_INSTALL_STATE_TTL_MS,
+  safeReturnPath,
   signInstallationVerificationState,
   stateReplayKey,
   verifyInstallationVerificationState,
@@ -29,7 +30,10 @@ function errorRedirect(reason: string) {
   const url = new URL("/settings/integrations", baseUrl);
   url.searchParams.set("error", reason);
   const response = NextResponse.redirect(url);
-  response.cookies.delete(GITHUB_INSTALL_STATE_COOKIE);
+  response.cookies.delete({
+    name: GITHUB_INSTALL_STATE_COOKIE,
+    path: "/api/github/callback",
+  });
   return response;
 }
 
@@ -40,12 +44,6 @@ function loginResumeRedirect(request: NextRequest) {
     `${request.nextUrl.pathname}${request.nextUrl.search}`,
   );
   return NextResponse.redirect(loginUrl);
-}
-
-function safeReturnPath(value: string): string {
-  return value.startsWith("/") && !value.startsWith("//")
-    ? value
-    : "/settings/integrations";
 }
 
 function parseInstallationId(value: string | null): number | null {
@@ -190,7 +188,10 @@ async function beginVerification(request: NextRequest, stateParam: string) {
     const response = NextResponse.redirect(
       new URL(safeReturnPath(verified.payload.rt), baseUrl),
     );
-    response.cookies.delete(GITHUB_INSTALL_STATE_COOKIE);
+    response.cookies.delete({
+      name: GITHUB_INSTALL_STATE_COOKIE,
+      path: "/api/github/callback",
+    });
     return response;
   }
   const installationId = parseInstallationId(rawInstallationId);
@@ -286,7 +287,10 @@ async function finishVerification(request: NextRequest, stateParam: string) {
   const response = NextResponse.redirect(
     new URL(safeReturnPath(verified.payload.rt), baseUrl),
   );
-  response.cookies.delete(GITHUB_INSTALL_STATE_COOKIE);
+  response.cookies.delete({
+    name: GITHUB_INSTALL_STATE_COOKIE,
+    path: "/api/github/callback",
+  });
   return response;
 }
 

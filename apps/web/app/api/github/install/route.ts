@@ -6,17 +6,12 @@ import { prisma } from "@octopus/db";
 import {
   GITHUB_INSTALL_STATE_COOKIE,
   GITHUB_INSTALL_STATE_TTL_MS,
+  safeReturnPath,
   signInstallState,
 } from "@/lib/github-install-state";
 import { getGithubAppConfig } from "@/lib/github-app-config";
 
 const baseUrl = process.env.BETTER_AUTH_URL || "http://localhost:3000";
-
-function safeRelativePath(value: string | null | undefined): string {
-  if (!value) return "/settings/integrations";
-  if (!value.startsWith("/") || value.startsWith("//")) return "/settings/integrations";
-  return value;
-}
 
 export async function GET(request: NextRequest) {
   const appSlug = (await getGithubAppConfig())?.slug;
@@ -46,7 +41,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.redirect(new URL("/dashboard", baseUrl));
   }
 
-  const returnTo = safeRelativePath(request.nextUrl.searchParams.get("returnTo"));
+  const returnTo = safeReturnPath(request.nextUrl.searchParams.get("returnTo"));
 
   const nonce = crypto.randomBytes(16).toString("base64url");
   const state = signInstallState({

@@ -20,6 +20,18 @@ const MIN_SECRET_LENGTH = 32;
 export const GITHUB_INSTALL_STATE_COOKIE = "gh_install_state";
 export const GITHUB_INSTALL_STATE_TTL_MS = STATE_TTL_MS;
 
+export function safeReturnPath(value: string | null | undefined): string {
+  if (
+    !value ||
+    !value.startsWith("/") ||
+    value.startsWith("//") ||
+    value.includes("\\")
+  ) {
+    return "/settings/integrations";
+  }
+  return value;
+}
+
 // Visible boot-time warning so ops notices a misconfigured secret before the
 // first user click on the install flow, not as a 500 inside the OAuth redirect.
 if (process.env.NODE_ENV !== "test") {

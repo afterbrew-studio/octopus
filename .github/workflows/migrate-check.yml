@@ -21,6 +21,9 @@ on:
       - "packages/db/prisma/migrations/**/migration.sql"
       - ".github/workflows/migrate-check.yml"
 
+permissions:
+  contents: read
+
 jobs:
   check:
     runs-on: ubuntu-latest
