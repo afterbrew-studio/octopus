@@ -1,6 +1,6 @@
 {
   "name": "octopus",
-  "version": "1.0.26",
+  "version": "1.0.93",
   "devDependencies": {
     "turbo": "^2"
   },
@@ -26,5 +26,9 @@
     "@prisma/engines",
     "prisma"
   ],
-  "workspaces": ["apps/*", "packages/*", "tools/*"]
+  "workspaces": [
+    "apps/*",
+    "packages/*",
+    "tools/*"
+  ]
 }

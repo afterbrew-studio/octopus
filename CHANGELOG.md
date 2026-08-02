@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.93] - 2026-08-02
+
 ### Security
 - GitHub webhook deliveries are now recorded in a signature-verified delivery ledger that cross-checks tenant routing in shadow mode — observation only, with no change to how reviews are dispatched. Only bounded metadata is stored (never payload content), retained 30 days by default; self-hosted deployments can tune this via `WEBHOOK_DELIVERY_RETENTION_DAYS`.
 
