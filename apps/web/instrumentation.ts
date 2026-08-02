@@ -1,6 +1,13 @@
 export async function register() {
   // Only start queue workers on the server (not during build or edge runtime)
   if (process.env.NEXT_RUNTIME === "nodejs") {
+    // Fail before queue startup if retention is misconfigured; otherwise the
+    // daily cleanup could remain broken while delivery telemetry keeps growing.
+    const { resolveWebhookDeliveryRetentionDays } = await import(
+      "./lib/webhook-tenant"
+    );
+    resolveWebhookDeliveryRetentionDays();
+
     const { reconcileStaleRepoStates } = await import("./lib/boot-reconciler");
     await reconcileStaleRepoStates();
 
@@ -41,6 +48,10 @@ export async function register() {
       // the audit job to avoid simultaneous deleteMany load). Window tunable via
       // ACTIVITY_RETENTION_DAYS (default 30).
       await boss.schedule("enforce-activity-retention", "0 4 * * *");
+
+      // Verified webhook-delivery telemetry retention (04:30 UTC). The default
+      // 30-day window is configurable via WEBHOOK_DELIVERY_RETENTION_DAYS.
+      await boss.schedule("enforce-webhook-delivery-retention", "30 4 * * *");
 
       // Daily release-cache refresh (05:00 UTC — offset from the retention jobs).
       // Gated to self-hosted: the release-check/update panel only surfaces there
