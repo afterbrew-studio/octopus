@@ -1,5 +1,8 @@
 import { afterAll, beforeEach, describe, expect, it, mock } from "bun:test";
 import crypto from "node:crypto";
+import { readdirSync, readFileSync } from "node:fs";
+import { join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 
 process.env.BETTER_AUTH_URL = "https://app.test";
 process.env.GITHUB_STATE_SECRET =
@@ -50,14 +53,21 @@ mock.module("@/lib/redis", () => ({
   getRedis: () => ({ set: redisSet }),
 }));
 
+let githubAppConfigured = true;
+
 mock.module("@/lib/github-app-config", () => ({
   getGithubAppConfig: () =>
-    Promise.resolve({
-      appId: "123",
-      privateKey: TEST_PRIVATE_KEY,
-      clientId: "github-app-client-id",
-      clientSecret: "github-app-client-secret",
-    }),
+    Promise.resolve(
+      githubAppConfigured
+        ? {
+            appId: "123",
+            slug: "octopus-review",
+            privateKey: TEST_PRIVATE_KEY,
+            clientId: "github-app-client-id",
+            clientSecret: "github-app-client-secret",
+          }
+        : null,
+    ),
 }));
 
 const originalFetch = globalThis.fetch;
@@ -107,6 +117,7 @@ const {
   signInstallState,
 } = await import("@/lib/github-install-state");
 const { GET } = await import("@/app/api/github/callback/route");
+const { GET: GET_INSTALL } = await import("@/app/api/github/install/route");
 
 function callbackRequest(params: Record<string, string>) {
   const url = new URL("https://app.test/api/github/callback");
@@ -116,7 +127,16 @@ function callbackRequest(params: Record<string, string>) {
   return Object.assign(new Request(url), { nextUrl: url }) as never;
 }
 
+function installRequest(params: Record<string, string>) {
+  const url = new URL("https://app.test/api/github/install");
+  for (const [key, value] of Object.entries(params)) {
+    url.searchParams.set(key, value);
+  }
+  return Object.assign(new Request(url), { nextUrl: url }) as never;
+}
+
 beforeEach(() => {
+  githubAppConfigured = true;
   currentSession = { user: { id: "user_victim" } };
   boundInstallationId = null;
   requestCookies = new Map();
@@ -285,5 +305,103 @@ describe("safeReturnPath", () => {
     expect(safeReturnPath("/\r/evil.com")).toBe("/settings/integrations");
     expect(safeReturnPath("/\x00evil")).toBe("/settings/integrations");
     expect(safeReturnPath("/\x7fevil")).toBe("/settings/integrations");
+  });
+});
+
+describe("GitHub installation UI entry points", () => {
+  const repoRoot = fileURLToPath(new URL("../../../../", import.meta.url));
+  const repoTableSource = readFileSync(
+    new URL("../../components/dashboard/repo-table.tsx", import.meta.url),
+    "utf8",
+  );
+  const indexingLogsSource = readFileSync(
+    new URL("../../components/indexing-logs.tsx", import.meta.url),
+    "utf8",
+  );
+  const cliRepoStepSource = readFileSync(
+    join(repoRoot, "apps/cli/src/steps/RepoStep.tsx"),
+    "utf8",
+  );
+
+  function sourceFiles(directory: string): string[] {
+    return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+      if (
+        entry.name.startsWith(".") ||
+        entry.name === "node_modules" ||
+        entry.name === "__tests__" ||
+        /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(entry.name)
+      ) {
+        return [];
+      }
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) return sourceFiles(path);
+      return /\.[cm]?[jt]sx?$/.test(entry.name) ? [path] : [];
+    });
+  }
+
+  it("keeps raw GitHub App URLs inside the two server-owned redirect boundaries", () => {
+    const rawInstallUrl = "https://github.com/apps/";
+    const allowed = new Set([
+      "apps/web/app/api/github/install/route.ts",
+      "apps/web/app/api/github/app-manifest/callback/route.ts",
+    ]);
+    const sourceRoots = [join(repoRoot, "apps/web"), join(repoRoot, "apps/cli/src")];
+
+    const violations = sourceRoots
+      .flatMap(sourceFiles)
+      .map((file) => ({
+        file: relative(repoRoot, file).replaceAll("\\", "/"),
+        source: readFileSync(file, "utf8"),
+      }))
+      .filter(({ file, source }) => source.includes(rawInstallUrl) && !allowed.has(file))
+      .map(({ file }) => file);
+
+    expect(violations).toEqual([]);
+    for (const file of allowed) {
+      expect(readFileSync(join(repoRoot, file), "utf8")).toContain(rawInstallUrl);
+    }
+  });
+
+  it("routes web and CLI recovery links through the signed install-start endpoint", () => {
+    expect(repoTableSource).toContain(
+      'href={`/api/github/install?orgId=${encodeURIComponent(orgId)}&returnTo=${encodeURIComponent("/dashboard")}`}',
+    );
+    expect(indexingLogsSource).toContain(
+      "href={`/api/github/install?orgId=${encodeURIComponent(orgId)}&returnTo=${encodeURIComponent(`/repositories?repo=${repoId}`)}`}",
+    );
+    expect(cliRepoStepSource).toContain(
+      "`${creds.baseUrl}/api/github/install?orgId=${encodeURIComponent(creds.orgId)}&returnTo=${encodeURIComponent(\"/repositories\")}`",
+    );
+  });
+
+  it("does not hide signed recovery links behind a public app-slug gate", () => {
+    expect(repoTableSource).not.toContain("githubAppSlug");
+    expect(indexingLogsSource).not.toContain("NEXT_PUBLIC_GITHUB_APP_SLUG");
+  });
+
+  it("redirects to integrations settings when no GitHub App is configured", async () => {
+    githubAppConfigured = false;
+
+    const response = await GET_INSTALL(
+      installRequest({ orgId: "org_victim", returnTo: "/repositories" }),
+    );
+    const location = new URL(response.headers.get("location")!);
+
+    expect(location.pathname).toBe("/settings/integrations");
+    expect(location.searchParams.get("error")).toBe("github_app_not_configured");
+  });
+
+  it("resumes an unauthenticated install-start request after login", async () => {
+    currentSession = null;
+
+    const response = await GET_INSTALL(
+      installRequest({ orgId: "org_victim", returnTo: "/repositories" }),
+    );
+    const location = new URL(response.headers.get("location")!);
+
+    expect(location.pathname).toBe("/login");
+    expect(location.searchParams.get("callbackUrl")).toBe(
+      "/api/github/install?orgId=org_victim&returnTo=%2Frepositories",
+    );
   });
 });
