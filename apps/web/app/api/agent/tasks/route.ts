@@ -1,6 +1,9 @@
+import "server-only";
+
 import { NextResponse } from "next/server";
 import { prisma } from "@octopus/db";
 import { authenticateApiToken } from "@/lib/api-auth";
+import { isPostgresSafeText } from "@/lib/bounded-json";
 
 export async function GET(request: Request) {
   const auth = await authenticateApiToken(request);
@@ -11,15 +14,18 @@ export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const agentId = searchParams.get("agentId");
 
-  if (!agentId) {
+  if (!agentId || !isPostgresSafeText(agentId)) {
     return NextResponse.json({ error: "agentId is required" }, { status: 400 });
   }
 
-  // Verify agent belongs to this org
+  // Bind the caller to the agent record created with this API token. An
+  // organization can have multiple agent tokens, so org membership alone is
+  // not enough to authorize another agent's repository scope.
   const agent = await prisma.localAgent.findFirst({
     where: {
       id: agentId,
       organizationId: auth.org.id,
+      apiTokenId: auth.token.id,
     },
   });
 
