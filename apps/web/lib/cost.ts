@@ -1,5 +1,10 @@
 import { prisma } from "@octopus/db";
 import { ORG_TYPE } from "@/lib/org-types";
+// NOTE: the review-model/provider resolvers are imported LAZILY inside
+// getOrgSpendLimitStatus (not at the top level). cost.ts also exports
+// client-safe formatters (formatUsd/formatNumber), and `@/lib/ai-router` pulls
+// in `server-only`; a top-level import would poison cost.ts for any client
+// importer and break unit tests that import the formatters.
 
 type ModelPricing = { input: number; output: number };
 
@@ -145,6 +150,44 @@ export type SpendLimitResult =
   | { blocked: true; reason: "no_credits" }
   | { blocked: true; reason: "spend_limit"; limitUsd: number };
 
+// Whether the org's own key/config covers this provider, so a review on it is
+// never platform-billed and the credit gate must not apply. Kept in sync with
+// the own-key billing decision in ai-usage.ts:logAiUsage (`hasOwnKey`).
+function orgOwnsKeyForProvider(
+  org: {
+    anthropicApiKey: string | null;
+    openaiApiKey: string | null;
+    googleApiKey: string | null;
+    cohereApiKey: string | null;
+    grokApiKey: string | null;
+    openrouterApiKey: string | null;
+    claudeCodeApiKey: string | null;
+    claudeCodeAuthMode: string | null;
+  },
+  provider: string,
+): boolean {
+  switch (provider) {
+    case "anthropic": return !!org.anthropicApiKey;
+    case "openai": return !!org.openaiApiKey;
+    case "google": return !!org.googleApiKey;
+    case "cohere": return !!org.cohereApiKey;
+    case "grok": return !!org.grokApiKey;
+    case "openrouter": return !!org.openrouterApiKey;
+    case "claude-code":
+      return !!org.claudeCodeApiKey || org.claudeCodeAuthMode === "subscription";
+    // Operator-infra / local-agent / gateways / test doubles: never platform-billed.
+    case "ollama":
+    case "local":
+    case "acp":
+    case "opencode":
+    case "mock":
+    case "mock-fail":
+      return true;
+    default:
+      return false;
+  }
+}
+
 export async function getOrgSpendLimitStatus(orgId: string): Promise<SpendLimitResult> {
   const org = await prisma.organization.findUnique({
     where: { id: orgId },
@@ -153,6 +196,11 @@ export async function getOrgSpendLimitStatus(orgId: string): Promise<SpendLimitR
       anthropicApiKey: true,
       openaiApiKey: true,
       googleApiKey: true,
+      cohereApiKey: true,
+      grokApiKey: true,
+      openrouterApiKey: true,
+      claudeCodeApiKey: true,
+      claudeCodeAuthMode: true,
       monthlySpendLimitUsd: true,
       creditBalance: true,
       freeCreditBalance: true,
@@ -164,8 +212,23 @@ export async function getOrgSpendLimitStatus(orgId: string): Promise<SpendLimitR
   // Community orgs get rate-limited via communityDailyReviewLimit, not credits.
   if (org.type === ORG_TYPE.COMMUNITY) return { blocked: false };
 
-  // Orgs with their own keys for all LLM providers have no platform limit
-  if (org.anthropicApiKey && org.openaiApiKey && org.googleApiKey) return { blocked: false };
+  // BYOK: an org that brings its own key for the provider its reviews ACTUALLY
+  // use pays that provider directly, so the platform credit gate doesn't apply.
+  // (Previously this required keys for anthropic AND openai AND google at once,
+  // so an org that brought only the key for the provider it uses was still
+  // wrongly credit-blocked.) On resolution failure, fall back to the old strict
+  // all-provider check so the gate never throws and never bills a fully-keyed org.
+  try {
+    const [{ getReviewModel }, { getProviderForModel }] = await Promise.all([
+      import("@/lib/ai-client"),
+      import("@/lib/ai-router"),
+    ]);
+    const provider = await getProviderForModel(await getReviewModel(orgId));
+    if (orgOwnsKeyForProvider(org, provider)) return { blocked: false };
+  } catch (err) {
+    console.error("[cost] spend-gate provider resolution failed; using strict BYOK check:", err);
+    if (org.anthropicApiKey && org.openaiApiKey && org.googleApiKey) return { blocked: false };
+  }
 
   // Check credit balance — if both free and purchased are <= 0, block usage
   const totalCredits = Number(org.creditBalance) + Number(org.freeCreditBalance);

@@ -1,5 +1,5 @@
-import { describe, expect, it } from "bun:test";
-import { scoreSignup, WELCOME_RISK } from "@/lib/welcome-credit";
+import { describe, expect, it, mock } from "bun:test";
+import { scoreSignup, WELCOME_RISK, logWelcomeOutcome } from "@/lib/welcome-credit";
 
 // Guards the signup abuse scorer's bands. Uses default (no-env) thresholds:
 // warn peers 2 (+25), block peers 4 (+50), unverified +15, holdAt 40, blockAt 50.
@@ -42,5 +42,77 @@ describe("scoreSignup", () => {
       WELCOME_RISK.points.emailUnverified + WELCOME_RISK.points.velocityBlock;
     expect(max).toBeGreaterThanOrEqual(WELCOME_RISK.blockAt);
     expect(WELCOME_RISK.blockAt).toBeGreaterThan(WELCOME_RISK.holdAt);
+  });
+});
+
+// B2: silent withholds must become visible in the logs. Guards which cases emit
+// the greppable "[welcome-credit] welcome bonus NOT granted" warning.
+describe("logWelcomeOutcome", () => {
+  function withWarnSpy(fn: (calls: unknown[][]) => void) {
+    const spy = mock((..._args: unknown[]) => {});
+    const orig = console.warn;
+    console.warn = spy as unknown as typeof console.warn;
+    try {
+      fn(spy.mock.calls);
+    } finally {
+      console.warn = orig;
+    }
+  }
+
+  it("logs a risk-withheld first-org bonus with cause=risk_withheld", () => {
+    withWarnSpy((calls) => {
+      logWelcomeOutcome({
+        userId: "u1",
+        orgId: "o1",
+        firstOrg: true,
+        granted: false,
+        decision: { eligible: true, grant: false, score: 50, reason: "ip_velocity_5" },
+      });
+      expect(calls.length).toBe(1);
+      const payload = calls[0][1] as { cause: string; score: number | null; reason: string | null };
+      expect(payload.cause).toBe("risk_withheld");
+      expect(payload.score).toBe(50);
+      expect(payload.reason).toBe("ip_velocity_5");
+    });
+  });
+
+  it("labels a lost one-time claim as cause=claim_race (grant was intended)", () => {
+    withWarnSpy((calls) => {
+      logWelcomeOutcome({
+        userId: "u2",
+        orgId: "o2",
+        firstOrg: true,
+        granted: false,
+        decision: { eligible: true, grant: true, score: 0, reason: null },
+      });
+      expect(calls.length).toBe(1);
+      expect((calls[0][1] as { cause: string }).cause).toBe("claim_race");
+    });
+  });
+
+  it("does not log when the bonus was granted", () => {
+    withWarnSpy((calls) => {
+      logWelcomeOutcome({
+        userId: "u3",
+        orgId: "o3",
+        firstOrg: true,
+        granted: true,
+        decision: { eligible: true, grant: true, score: 0, reason: null },
+      });
+      expect(calls.length).toBe(0);
+    });
+  });
+
+  it("does not log for a non-first org (nothing was ever owed)", () => {
+    withWarnSpy((calls) => {
+      logWelcomeOutcome({
+        userId: "u4",
+        orgId: "o4",
+        firstOrg: false,
+        granted: false,
+        decision: { eligible: false, grant: false, score: null, reason: null },
+      });
+      expect(calls.length).toBe(0);
+    });
   });
 });

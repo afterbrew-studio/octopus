@@ -980,16 +980,33 @@ describe("off-session credit purchase", () => {
     expect(bonus.amount).toBe(5);
   });
 
-  it("failed when the saved card is declined", async () => {
+  it("failed with cardError=true when the saved card is genuinely declined", async () => {
     mockOrganizationFindUnique = mock(() => Promise.resolve({ stripeCustomerId: "cus_1" } as never));
     mockOffSessionPaymentMethodId = mock(() => Promise.resolve("pm_1"));
-    const declined = new Error("declined") as Error & { code: string };
+    // Real Stripe card declines are StripeCardError with a decline code.
+    const declined = new Error("declined") as Error & { code: string; type: string };
     declined.code = "card_declined";
+    declined.type = "StripeCardError";
     mockPaymentIntentsCreate = mock(() => Promise.reject(declined));
 
     const res = await chargeCreditsOffSession("org_1", 25, "idem-test");
 
-    expect(res).toEqual({ status: "failed", reason: "card_declined" });
+    expect(res).toEqual({ status: "failed", cardError: true, reason: "card_declined" });
+    expect(orgState).toEqual({ creditBalance: 20, freeCreditBalance: 8 }); // untouched
+  });
+
+  it("failed with cardError=false for a platform/config error (not blamed on the card)", async () => {
+    mockOrganizationFindUnique = mock(() => Promise.resolve({ stripeCustomerId: "cus_1" } as never));
+    mockOffSessionPaymentMethodId = mock(() => Promise.resolve("pm_1"));
+    // e.g. bad API key / invalid request — NOT a card decline.
+    const apiErr = new Error("No such price") as Error & { code: string; type: string };
+    apiErr.code = "resource_missing";
+    apiErr.type = "StripeInvalidRequestError";
+    mockPaymentIntentsCreate = mock(() => Promise.reject(apiErr));
+
+    const res = await chargeCreditsOffSession("org_1", 25, "idem-test");
+
+    expect(res).toEqual({ status: "failed", cardError: false, reason: "resource_missing" });
     expect(orgState).toEqual({ creditBalance: 20, freeCreditBalance: 8 }); // untouched
   });
 });
