@@ -28,7 +28,7 @@ export default function SecurityOverviewPage() {
           customer&apos;s own infrastructure (self-hosted Octopus).
         </P>
         <UL>
-          <li><strong>Webhook</strong> — GitHub, GitLab, or Bitbucket POSTs a PR/MR event; we verify the HMAC signature before processing.</li>
+          <li><strong>Webhook</strong> — GitHub, GitLab, or Bitbucket POSTs a PR/MR event; we verify GitHub and Bitbucket HMAC signatures or GitLab&apos;s per-organisation hook token before processing.</li>
           <li><strong>Clone</strong> — we clone the repository into a per-job temporary directory; never persisted beyond the job.</li>
           <li><strong>Index</strong> — file contents are chunked and embedded into Qdrant for vector search. Source files are not stored as plaintext outside the indexing window.</li>
           <li><strong>Review</strong> — relevant chunks plus the diff are sent to the configured LLM provider. Provider choice and BYOK key live on the organisation.</li>
@@ -75,7 +75,7 @@ export default function SecurityOverviewPage() {
           <li><strong>Session management</strong> — short-lived bearer tokens with refresh; sessions revocable from <code>/settings/sessions</code>.</li>
           <li><strong>Role-based access</strong> — per-organisation roles (owner / admin / member); the audit log records role transitions.</li>
           <li><strong>CLI tokens</strong> — issued via the device-code flow, scoped to one organisation, revocable per-token.</li>
-          <li><strong>Webhook secrets</strong> — set per-organisation; HMAC verification on every inbound payload.</li>
+          <li><strong>Webhook secrets</strong> — set per-organisation; every inbound payload is verified via HMAC signature (GitHub, Bitbucket) or per-organisation hook-token comparison (GitLab).</li>
         </UL>
       </Section>
 
