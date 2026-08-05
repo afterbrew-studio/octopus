@@ -2,7 +2,7 @@
 // NEXT_PUBLIC_SENTRY_DSN — baked ONLY in the hosted build (from a repo var), so
 // the public self-host image ships with no DSN and client Sentry stays off.
 import * as Sentry from "@sentry/nextjs";
-import { scrubEvent } from "@/lib/sentry-scrub";
+import { scrubEvent, parseRate } from "@/lib/sentry-scrub";
 
 const dsn = process.env.NEXT_PUBLIC_SENTRY_DSN;
 
@@ -13,12 +13,13 @@ Sentry.init({
     process.env.NEXT_PUBLIC_SENTRY_ENVIRONMENT ??
     (process.env.NEXT_PUBLIC_OCTOPUS_SELF_HOSTED === "true" ? "self-hosted" : "production"),
   release: process.env.NEXT_PUBLIC_APP_VERSION,
-  tracesSampleRate: Number(process.env.NEXT_PUBLIC_SENTRY_TRACES_SAMPLE_RATE ?? 0.1),
+  tracesSampleRate: parseRate(process.env.NEXT_PUBLIC_SENTRY_TRACES_SAMPLE_RATE, 0.1),
   // Session Replay. This product handles payment + account data, so replays are
   // masked hard: no text, no inputs, no media is recorded. Sample a small % of
   // sessions but always keep the replay around an error.
-  replaysSessionSampleRate: Number(
-    process.env.NEXT_PUBLIC_SENTRY_REPLAY_SESSION_RATE ?? 0.1,
+  replaysSessionSampleRate: parseRate(
+    process.env.NEXT_PUBLIC_SENTRY_REPLAY_SESSION_RATE,
+    0.1,
   ),
   replaysOnErrorSampleRate: 1.0,
   integrations: [

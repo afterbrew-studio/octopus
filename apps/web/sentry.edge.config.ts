@@ -1,7 +1,7 @@
 // Edge-runtime Sentry init (middleware / edge routes). Minimal: no replay or
 // heavy integrations on the edge. DSN read from env at runtime (self-host safe).
 import * as Sentry from "@sentry/nextjs";
-import { scrubEvent } from "@/lib/sentry-scrub";
+import { scrubEvent, parseRate } from "@/lib/sentry-scrub";
 
 const dsn = process.env.SENTRY_DSN || process.env.NEXT_PUBLIC_SENTRY_DSN;
 
@@ -12,7 +12,7 @@ Sentry.init({
     process.env.SENTRY_ENVIRONMENT ??
     (process.env.NEXT_PUBLIC_OCTOPUS_SELF_HOSTED === "true" ? "self-hosted" : "production"),
   release: process.env.NEXT_PUBLIC_APP_VERSION,
-  tracesSampleRate: Number(process.env.SENTRY_TRACES_SAMPLE_RATE ?? 0.1),
+  tracesSampleRate: parseRate(process.env.SENTRY_TRACES_SAMPLE_RATE, 0.1),
   sendDefaultPii: false,
   beforeSend: (event) => scrubEvent(event),
 });

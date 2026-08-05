@@ -20,6 +20,16 @@ function redact(value: unknown, depth = 0): unknown {
   return value;
 }
 
+/**
+ * Parse a 0..1 Sentry sample rate from env, falling back on missing or invalid
+ * input so a fat-fingered value can't turn into a NaN/out-of-range rate.
+ */
+export function parseRate(raw: string | undefined, fallback: number): number {
+  if (raw == null || raw === "") return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 && n <= 1 ? n : fallback;
+}
+
 /** Drop request headers/cookies and redact sensitive keys from an event. */
 export function scrubEvent(event: ErrorEvent): ErrorEvent {
   if (event.request) {
