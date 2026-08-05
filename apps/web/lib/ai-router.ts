@@ -76,6 +76,15 @@ async function resolveProvider(modelId: string): Promise<AiProvider> {
   return "anthropic"; // default
 }
 
+/**
+ * Public wrapper over the internal provider resolver: maps a model id to the
+ * LLM provider it routes to (DB cache → name-prefix fallback → "anthropic").
+ * Used by the spend-limit gate to know which BYOK key exempts an org.
+ */
+export async function getProviderForModel(modelId: string): Promise<AiProvider> {
+  return resolveProvider(modelId);
+}
+
 // ── Org key resolver ─────────────────────────────────────────────────────────
 
 type OrgKeys = {

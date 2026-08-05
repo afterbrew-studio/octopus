@@ -114,7 +114,7 @@ import { writeSyncLog, deleteSyncLogs } from "@/lib/elasticsearch";
 import { logAiUsage } from "@/lib/ai-usage";
 import { resolveReviewModel } from "@/lib/review-routing";
 import { createAiMessage } from "@/lib/ai-router";
-import { isOrgOverSpendLimit, shouldGuardConcurrency } from "@/lib/cost";
+import { getOrgSpendLimitStatus, shouldGuardConcurrency } from "@/lib/cost";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -1122,11 +1122,17 @@ export async function processReview(pullRequestId: string): Promise<void> {
       }
     }
 
-    // Spend limit check
-    const overLimit = await isOrgOverSpendLimit(org.id);
-    if (overLimit) {
-      console.warn(`[reviewer] Org ${org.id} is over spend limit — skipping review`);
-      const limitMsg = "> 🐙 **Octopus Review** — Your organization has reached its monthly AI usage limit.\n>\n> Please add your own API keys in Settings to continue receiving reviews.";
+    // Spend limit check. Distinguish "out of credits" from "monthly cap": a
+    // brand-new org that never got credit must not be told it "exceeded a
+    // monthly limit", and the two reasons must be separable in the reviews
+    // table (both used to write the same errorMessage — see credit-health).
+    const spendStatus = await getOrgSpendLimitStatus(org.id);
+    if (spendStatus.blocked) {
+      const outOfCredits = spendStatus.reason === "no_credits";
+      console.warn(`[reviewer] Org ${org.id} blocked (${spendStatus.reason}) — skipping review`);
+      const limitMsg = outOfCredits
+        ? "> 🐙 **Octopus Review** — Your organization is **out of credits**. Add credits (or your own API keys) in Settings to start receiving reviews."
+        : "> 🐙 **Octopus Review** — Your organization has reached its monthly AI usage limit.\n>\n> Please add your own API keys in Settings to continue receiving reviews.";
       if (reviewCommentId) {
         await providerUpdateComment(reviewCommentId, limitMsg);
       } else {
@@ -1134,14 +1140,20 @@ export async function processReview(pullRequestId: string): Promise<void> {
       }
       await prisma.pullRequest.update({
         where: { id: pr.id },
-        data: { status: "failed", errorMessage: "Monthly spend limit reached" },
+        data: {
+          status: "failed",
+          errorMessage: outOfCredits ? "Out of credits" : "Monthly spend limit reached",
+        },
       });
       // Finalize the GitLab status as success — a billing limit is not a code
       // problem, so it must not block the MR merge (and leaving "running" would
       // strand it). GitHub uses no check here for the same reason.
       if (pr.headSha && isGitlab) {
+        const gitlabMsg = outOfCredits
+          ? "Review skipped — out of credits."
+          : "Review skipped — monthly usage limit reached.";
         await gitlab
-          .setCommitStatus(org.id, projectPath, pr.headSha, "success", GITLAB_STATUS_NAME, "Review skipped — monthly usage limit reached.")
+          .setCommitStatus(org.id, projectPath, pr.headSha, "success", GITLAB_STATUS_NAME, gitlabMsg)
           .catch((e) => console.error("[reviewer] Failed to set GitLab status:", e));
       }
       return;

@@ -67,8 +67,13 @@ export async function purchaseCredits(
     return { success: true };
   }
   if (charge.status === "failed") {
+    // Only blame the customer's card on a genuine decline. Platform/Stripe-side
+    // failures (config, auth, network, unexpected status) get a neutral message
+    // and are logged in chargeCreditsOffSession for us to investigate.
     return {
-      error: "Your saved card was declined. Update your card and try again.",
+      error: charge.cardError
+        ? "Your saved card was declined. Update your card and try again."
+        : "We couldn't process your payment right now. Please try again in a moment — if it keeps happening, contact support and we'll sort it out.",
     };
   }
 

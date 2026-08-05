@@ -6,7 +6,17 @@ import { volumeBonusUsd } from "./plans";
 export type OffSessionPurchaseResult =
   | { status: "succeeded"; paymentIntentId: string }
   | { status: "no_card" }
-  | { status: "failed"; reason?: string };
+  // `cardError` distinguishes a genuine card decline (show the user "card
+  // declined, update it") from a platform/Stripe-side failure — bad config,
+  // auth, network, unexpected PI status — which must NOT be blamed on the
+  // customer's card. `reason` carries the Stripe error code when available.
+  | { status: "failed"; cardError: boolean; reason?: string };
+
+/** True when a caught Stripe error is a genuine card decline, not our-side. */
+function isStripeCardError(err: unknown): boolean {
+  const e = err as { type?: unknown; rawType?: unknown } | null;
+  return e?.type === "StripeCardError" || e?.rawType === "card_error";
+}
 
 function isDuplicateLedgerError(err: unknown): boolean {
   return (err as { code?: string } | null)?.code === "P2002";
@@ -81,8 +91,11 @@ export async function chargeCreditsOffSession(
   let paymentMethod: string | null;
   try {
     paymentMethod = await getOffSessionPaymentMethodId(org.stripeCustomerId);
-  } catch {
-    return { status: "failed" };
+  } catch (err) {
+    // Failing to look up the saved card is a platform/Stripe-side error, not a
+    // decline — don't tell the customer their card was declined.
+    console.error("[credits] Off-session payment-method lookup failed:", err);
+    return { status: "failed", cardError: false };
   }
   if (!paymentMethod) return { status: "no_card" };
 
@@ -101,11 +114,21 @@ export async function chargeCreditsOffSession(
       { idempotencyKey },
     );
   } catch (err) {
-    const code = (err as { code?: unknown } | null)?.code;
-    console.error("[credits] Off-session purchase charge failed:", err);
-    return { status: "failed", reason: typeof code === "string" ? code : undefined };
+    const e = err as { code?: unknown; type?: unknown } | null;
+    const code = e?.code;
+    const cardError = isStripeCardError(err);
+    // Log type + code so platform-side failures (auth/config/network) are
+    // greppable in prod logs and not silently blamed on the customer's card.
+    console.error("[credits] Off-session purchase charge failed:", { type: e?.type, code, cardError, err });
+    return { status: "failed", cardError, reason: typeof code === "string" ? code : undefined };
   }
-  if (paymentIntent.status !== "succeeded") return { status: "failed" };
+  // A non-succeeded PI after off_session confirm (e.g. requires_action/
+  // requires_payment_method) is not a clean decline; treat as platform-side so
+  // we surface a neutral message and can inspect the status in logs.
+  if (paymentIntent.status !== "succeeded") {
+    console.error("[credits] Off-session purchase PI not succeeded:", paymentIntent.status);
+    return { status: "failed", cardError: false, reason: paymentIntent.status };
+  }
 
   // Grant inline for instant feedback. This is a FAST PATH: the authoritative
   // guarantee is the payment_intent.succeeded webhook, which grants the same

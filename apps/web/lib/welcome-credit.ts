@@ -131,3 +131,29 @@ export async function assessWelcomeCredit(userId: string): Promise<WelcomeDecisi
     return { eligible: true, grant: true, score: null, reason: "assess_error" };
   }
 }
+
+/**
+ * Emit a structured, greppable log when a first org's welcome bonus was NOT
+ * granted, so silent withholds become visible in prod logs (previously the only
+ * trace was `welcomeRiskScore`/`welcomeRiskReason` on the org row — no log, no
+ * notice). Logging only; no behavior/threshold change. Call AFTER the create tx.
+ * `cause`: `risk_withheld` (score cleared the hold band) vs `claim_race` (grant
+ * was intended but a concurrent first-org create won the one-time claim).
+ */
+export function logWelcomeOutcome(args: {
+  userId: string;
+  orgId: string;
+  firstOrg: boolean;
+  granted: boolean;
+  decision: WelcomeDecision;
+}): void {
+  const { userId, orgId, firstOrg, granted, decision } = args;
+  if (!firstOrg || granted) return; // granted, or not a first-org attempt — nothing to flag
+  console.warn("[welcome-credit] welcome bonus NOT granted to first org", {
+    orgId,
+    userId,
+    cause: decision.grant ? "claim_race" : "risk_withheld",
+    score: decision.score,
+    reason: decision.reason,
+  });
+}

@@ -14,7 +14,7 @@ import { createAbortController, abortIndexing } from "@/lib/indexing-abort";
 import { runIndexingInBackground } from "@/lib/indexing-runner";
 import { toBaseSlug, randomSlugSuffix } from "@/lib/slug";
 import { canUserCreateOrg, hasEverOwnedOrg } from "@/lib/org-limits";
-import { assessWelcomeCredit } from "@/lib/welcome-credit";
+import { assessWelcomeCredit, logWelcomeOutcome } from "@/lib/welcome-credit";
 import { MAX_OWNED_ORGS_PER_USER, WELCOME_FREE_CREDITS } from "@/lib/constants";
 import { encryptString } from "@/lib/crypto";
 import { validateProviderUrl } from "@/lib/providers/url-validation";
@@ -105,7 +105,7 @@ export async function createOrganization(
   // Re-check limit and create atomically to prevent TOCTOU race
   let org;
   try {
-    org = await prisma.$transaction(async (tx) => {
+    const created = await prisma.$transaction(async (tx) => {
       const ownedCount = await tx.organizationMember.count({
         where: { userId: user.id, role: "owner", deletedAt: null, organization: { deletedAt: null } },
       });
@@ -131,7 +131,7 @@ export async function createOrganization(
         grantBonus = claim.count === 1 && welcome.grant;
       }
 
-      return tx.organization.create({
+      const org = await tx.organization.create({
         data: {
           name: name.trim(),
           slug,
@@ -158,7 +158,11 @@ export async function createOrganization(
           }),
         },
       });
+      return { org, firstOrg, granted: grantBonus };
     });
+    org = created.org;
+    // Surface a silently-withheld (or race-lost) welcome bonus in the logs.
+    logWelcomeOutcome({ userId: user.id, orgId: org.id, firstOrg: created.firstOrg, granted: created.granted, decision: welcome });
   } catch (err) {
     if (err instanceof Error && err.message === "ORG_LIMIT_REACHED") {
       return { error: `You can own at most ${MAX_OWNED_ORGS_PER_USER} organizations.` };
