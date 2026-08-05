@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.98] - 2026-08-05
+
+### Added
+- Self-hosted deployments can now enable Sentry error, performance, and session-replay monitoring by setting `SENTRY_DSN` (and optionally `NEXT_PUBLIC_SENTRY_DSN` for browser capture). Session replay masks all text, inputs, and media, and sensitive fields are scrubbed before anything leaves the app; Sentry stays fully disabled when no DSN is configured.
+
 ## [1.0.97] - 2026-08-05
 
 ### Security
