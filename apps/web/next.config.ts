@@ -1,6 +1,7 @@
 import { config } from "dotenv";
 import path from "path";
 import type { NextConfig } from "next";
+import { withSentryConfig } from "@sentry/nextjs";
 
 config({ path: path.resolve(__dirname, "../../.env") });
 
@@ -41,4 +42,15 @@ const nextConfig: NextConfig = {
   },
 };
 
-export default nextConfig;
+// Wrap with Sentry: injects the SDK, adds tunneling, and uploads source maps at
+// build time. Source-map upload only runs when SENTRY_AUTH_TOKEN is set, so
+// self-host builds (no token) skip it and never push to octopus's project. org/
+// project are env-overridable for self-hosters; they default to octopus's.
+export default withSentryConfig(nextConfig, {
+  org: process.env.SENTRY_ORG || "weezboo-i0",
+  project: process.env.SENTRY_PROJECT || "octopus-review",
+  sentryUrl: process.env.SENTRY_URL || "https://de.sentry.io",
+  silent: !process.env.CI,
+  widenClientFileUpload: true,
+  sourcemaps: { deleteSourcemapsAfterUpload: true },
+});

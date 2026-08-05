@@ -38,13 +38,22 @@ ARG NEXT_PUBLIC_GITHUB_APP_SLUG
 ARG NEXT_PUBLIC_PUBBY_KEY
 ARG NEXT_PUBLIC_APP_VERSION
 ARG NEXT_PUBLIC_OCTOPUS_SELF_HOSTED
+# Client Sentry DSN — public, baked in only when passed (hosted build). Empty on
+# the self-host image, which leaves client Sentry disabled.
+ARG NEXT_PUBLIC_SENTRY_DSN
 ENV NEXT_PUBLIC_BUILD_ID=${NEXT_PUBLIC_BUILD_ID}
 ENV NEXT_PUBLIC_GITHUB_APP_SLUG=${NEXT_PUBLIC_GITHUB_APP_SLUG}
 ENV NEXT_PUBLIC_PUBBY_KEY=${NEXT_PUBLIC_PUBBY_KEY}
 ENV NEXT_PUBLIC_APP_VERSION=${NEXT_PUBLIC_APP_VERSION}
 ENV NEXT_PUBLIC_OCTOPUS_SELF_HOSTED=${NEXT_PUBLIC_OCTOPUS_SELF_HOSTED}
+ENV NEXT_PUBLIC_SENTRY_DSN=${NEXT_PUBLIC_SENTRY_DSN}
 ENV NODE_OPTIONS="--max-old-space-size=4096"
-RUN cd apps/web && bun run build
+# SENTRY_AUTH_TOKEN is mounted as a build secret (never baked into image layers)
+# so withSentryConfig can upload source maps. Absent/empty → upload is skipped
+# (self-host builds and any build before the CI secret is set).
+RUN --mount=type=secret,id=sentry_auth_token \
+    export SENTRY_AUTH_TOKEN="$(cat /run/secrets/sentry_auth_token 2>/dev/null || true)" && \
+    cd apps/web && bun run build
 
 # --- runner ---
 FROM node:22-alpine AS runner

@@ -171,6 +171,13 @@ jobs:
             NEXT_PUBLIC_APP_VERSION=${{ steps.tags.outputs.semver }}
             NEXT_PUBLIC_GITHUB_APP_SLUG=${{ vars.NEXT_PUBLIC_GITHUB_APP_SLUG }}
             NEXT_PUBLIC_PUBBY_KEY=${{ vars.NEXT_PUBLIC_PUBBY_KEY }}
+            NEXT_PUBLIC_SENTRY_DSN=${{ vars.NEXT_PUBLIC_SENTRY_DSN }}
+          # Auth token for Sentry source-map upload — mounted as a build secret
+          # (kept out of image layers). Unset → upload is skipped, build still
+          # succeeds. Only the hosted (private) image uploads; the self-host job
+          # passes neither DSN nor token.
+          secrets: |
+            sentry_auth_token=${{ secrets.SENTRY_AUTH_TOKEN }}
           cache-from: type=gha,scope=prod
           cache-to: type=gha,mode=max,scope=prod
 
