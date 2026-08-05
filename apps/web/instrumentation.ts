@@ -1,4 +1,14 @@
+import * as Sentry from "@sentry/nextjs";
+
 export async function register() {
+  // Sentry init per runtime (DSN read at runtime; no-op when unset — self-host safe).
+  if (process.env.NEXT_RUNTIME === "nodejs") {
+    await import("./sentry.server.config");
+  }
+  if (process.env.NEXT_RUNTIME === "edge") {
+    await import("./sentry.edge.config");
+  }
+
   // Only start queue workers on the server (not during build or edge runtime)
   if (process.env.NEXT_RUNTIME === "nodejs") {
     // Fail before queue startup if retention is misconfigured; otherwise the
@@ -70,8 +80,13 @@ export async function register() {
       }
     }
 
-    // Graceful shutdown: wait for active jobs (e.g. in-progress reviews) to finish
+    // Graceful shutdown: wait for active jobs (e.g. in-progress reviews) to finish.
+    // Re-entry guard so a SIGTERM+SIGINT pair (or repeated signals) can't call
+    // boss.stop()/process.exit() concurrently and interrupt the drain.
+    let shuttingDown = false;
     const shutdown = async () => {
+      if (shuttingDown) return;
+      shuttingDown = true;
       console.log("[queue] Graceful shutdown, waiting for active jobs...");
       await boss.stop({ graceful: true, timeout: 300_000 }); // 5 min
       process.exit(0);
@@ -80,3 +95,6 @@ export async function register() {
     process.on("SIGINT", shutdown);
   }
 }
+
+// Capture errors thrown in nested React Server Components (Next 15+/16).
+export const onRequestError = Sentry.captureRequestError;

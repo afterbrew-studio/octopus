@@ -23,6 +23,7 @@
     "@octopus/package-analyzer": "workspace:*",
     "@qdrant/js-client-rest": "^1.18.0",
     "@react-email/components": "^1.0.12",
+    "@sentry/nextjs": "10.69.0",
     "@stripe/stripe-js": "^9.10.0",
     "@tabler/icons-react": "^3.44.0",
     "better-auth": "^1.4.18",
