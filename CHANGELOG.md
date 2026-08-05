@@ -7,8 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.97] - 2026-08-05
+
 ### Security
 - AWS Terraform deployments now identify the application with a dedicated data-access security group, so RDS and optional Redis no longer trust every workload in the VPC. Existing stacks have a documented two-stage cutover that attaches the identity before removing legacy CIDR ingress. SSH stays unreachable unless an operator both configures a key pair and explicitly supplies trusted CIDRs; internet-wide SSH CIDRs are rejected.
+
+### Fixed
+- Reviews skipped because an organization is out of credits now say exactly that and point to adding credits, instead of the confusing "monthly usage limit" message — the out-of-credits and monthly-cap cases are now clearly distinct.
+- Organizations that bring their own API key for the provider their reviews actually use are no longer incorrectly blocked as "out of credits"; a single relevant provider key is enough (previously keys for all providers were required at once).
+- Credit top-ups that fail for a reason other than the card — a temporary processing or configuration issue — no longer show a misleading "card was declined" message. Genuine card declines are still reported as declines.
 
 ## [1.0.96] - 2026-08-05
 
