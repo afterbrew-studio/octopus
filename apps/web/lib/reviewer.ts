@@ -1368,7 +1368,7 @@ export async function processReview(pullRequestId: string): Promise<void> {
         "> - All changed files are excluded by `.octopusignore`",
         "> - The PR branch is already up to date with the base branch",
         ">",
-        "> If you believe this is a mistake, please update the PR and comment `@octopus` to retry.",
+        "> If you believe this is a mistake, please update the PR and comment `@octopus-review` to retry.",
       ].join("\n");
 
       if (reviewCommentId) {
@@ -2680,7 +2680,7 @@ Rules:
     if (reviewCommentId) {
       await providerUpdateComment(
         reviewCommentId,
-        `> 🐙 **Octopus Review** encountered an error while analyzing this pull request.\n>\n> \`${errorMessage}\`\n>\n> Please try again by commenting \`@octopus\` on this PR.`,
+        `> 🐙 **Octopus Review** encountered an error while analyzing this pull request.\n>\n> \`${errorMessage}\`\n>\n> Please try again by commenting \`@octopus-review\` on this PR.`,
       ).catch((e) => console.error("[reviewer] Failed to update placeholder with error:", e));
     }
 

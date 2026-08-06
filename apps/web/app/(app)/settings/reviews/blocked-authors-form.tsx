@@ -51,7 +51,7 @@ export function BlockedAuthorsForm({
         <CardTitle>Blocked Authors</CardTitle>
         <CardDescription>
           PRs from these authors will not trigger reviews, even when mentioned
-          with @octopus. Use this to skip bot PRs or specific users.
+          with @octopus-review. Use this to skip bot PRs or specific users.
         </CardDescription>
       </CardHeader>
       <CardContent>
