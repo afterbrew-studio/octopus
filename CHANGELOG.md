@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.99] - 2026-08-06
+
+### Fixed
+- Mentioning the reviewer now points to `@octopus-review`, which links to the Octopus bot on GitHub — a bare `@octopus` linked to an unrelated account. Existing `@octopus` mentions still trigger a review.
+
 ## [1.0.98] - 2026-08-05
 
 ### Added
