@@ -31,6 +31,17 @@ Sentry.init({
     }),
   ],
   sendDefaultPii: false,
+  // Browser auto-translation (Google Translate et al.) rewrites text nodes out
+  // from under React, producing these DOM-manipulation errors that aren't app
+  // bugs. Filtering keeps Sentry signal-rich; genuine React failures surface
+  // with different messages. (Hydration errors are intentionally NOT filtered —
+  // those can be real.)
+  ignoreErrors: [
+    "Failed to execute 'removeChild' on 'Node'",
+    "Failed to execute 'insertBefore' on 'Node'",
+    "The node to be removed is not a child of this node",
+    "The node before which the new node is to be inserted is not a child of this node",
+  ],
   beforeSend: (event) => scrubEvent(event),
 });
 
