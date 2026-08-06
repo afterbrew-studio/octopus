@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.101] - 2026-08-06
+
+### Fixed
+- Reviews interrupted by a server restart or timeout used to hang in "reviewing" with no error. They're now caught automatically: recent ones retry on their own, and older ones are marked failed with a note so you can re-trigger with a push or an @octopus mention.
+
 ## [1.0.100] - 2026-08-06
 
 ## [1.0.99] - 2026-08-06
