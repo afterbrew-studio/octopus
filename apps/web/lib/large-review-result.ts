@@ -75,7 +75,7 @@ export async function handleLargeReviewResult(
       ">",
       `> \`${data.error}\``,
       ">",
-      "> Please try again by commenting `@octopus` on this PR.",
+      "> Please try again by commenting `@octopus-review` on this PR.",
     ].join("\n");
 
     if (reviewCommentId) {
