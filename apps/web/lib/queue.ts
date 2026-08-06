@@ -89,6 +89,13 @@ export async function startQueue(): Promise<PgBoss> {
     expireInSeconds: 300,
   }).catch(() => {});
 
+  // Reaper for reviews orphaned mid-flight (engine restart on deploy, crash,
+  // OOM, or a hang past the timeout). Scheduled every 5 min in instrumentation.ts.
+  await boss.createQueue("reap-stuck-reviews", {
+    retryLimit: 1,
+    expireInSeconds: 300,
+  }).catch(() => {});
+
   // Community-tier (no API key) async review pipeline.
   // Indexing can take minutes for first-touch repos, so the action enqueues
   // and polls; the worker indexes + reviews and writes the result back to
