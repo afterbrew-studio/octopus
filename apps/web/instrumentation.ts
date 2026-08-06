@@ -63,6 +63,12 @@ export async function register() {
       // 30-day window is configurable via WEBHOOK_DELIVERY_RETENTION_DAYS.
       await boss.schedule("enforce-webhook-delivery-retention", "30 4 * * *");
 
+      // Reap reviews orphaned mid-flight (engine restart on deploy, crash, OOM,
+      // or a hang past the timeout) every 5 min: mark them failed with a real
+      // message and auto-retry recent ones. pg-boss dedups the cron across
+      // instances; the worker in queue-workers.ts does the work.
+      await boss.schedule("reap-stuck-reviews", "*/5 * * * *");
+
       // Daily release-cache refresh (05:00 UTC — offset from the retention jobs).
       // Gated to self-hosted: the release-check/update panel only surfaces there
       // (same server-side flag the admin bootstrap above uses). pg-boss dedups

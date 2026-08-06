@@ -11,6 +11,7 @@ import { enforceWebhookDeliveryRetention } from "./webhook-tenant";
 import { refreshReleaseCache } from "./releases";
 import { renewDueSubscriptions } from "./subscription";
 import { runOllamaPull } from "./ollama-admin";
+import { reapStuckReviews } from "./reap-stuck-reviews";
 import type { QueueConfig } from "./queue";
 
 export interface WelcomeEmailJob {
@@ -145,6 +146,25 @@ export async function registerWorkers(boss: PgBoss, config: QueueConfig): Promis
     }
   });
 
+  // Reap reviews orphaned mid-flight — scheduled every 5 min in
+  // instrumentation.ts via boss.schedule(). Idempotent (status-guarded update),
+  // so concurrent instances are harmless.
+  await boss.work("reap-stuck-reviews", async (jobs) => {
+    for (const job of jobs) {
+      try {
+        const { requeued, failed } = await reapStuckReviews();
+        if (requeued || failed) {
+          console.log(
+            `[queue] reap-stuck-reviews ${job.id}: requeued=${requeued} failed=${failed}`,
+          );
+        }
+      } catch (err) {
+        console.error(`[queue] reap-stuck-reviews failed (job ${job.id}):`, err);
+        throw err;
+      }
+    }
+  });
+
   // Daily release-cache refresh (self-hosted) — scheduled in instrumentation.ts
   // via boss.schedule(). Keeps SystemConfig.latestRelease warm so the update
   // panel/route serves a fresh answer without a lazy cache miss. Idempotent:
@@ -173,5 +193,5 @@ export async function registerWorkers(boss: PgBoss, config: QueueConfig): Promis
     }
   });
 
-  console.log("[queue] Workers registered: welcome-email, process-review, post-large-review-result, community-review, enforce-audit-retention, enforce-activity-retention, refresh-release-cache, pull-ollama-model");
+  console.log("[queue] Workers registered: welcome-email, process-review, post-large-review-result, community-review, enforce-audit-retention, enforce-activity-retention, refresh-release-cache, reap-stuck-reviews, pull-ollama-model");
 }
