@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.102] - 2026-08-08
+
 ### Security
 - AWS Terraform deployments now require an encrypted S3 backend with native state locking. A new bootstrap root provisions the versioned, private, KMS-encrypted bucket and generates account-pinned configuration plus least-privilege operator IAM; existing local state has a workspace-safe migration runbook. Common saved-plan filenames are ignored because plans can retain secrets. The HTTPS guide now correctly requires origin TLS before Cloudflare Full or Full (strict).
 
