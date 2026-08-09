@@ -9,6 +9,7 @@ import { renderEmailTemplate } from "./email-renderer";
 import { enqueueAfter } from "./queue";
 import { reasonToMessage, validateEmailForSignup } from "./email-validator";
 import { normalizeEmail } from "./email-normalize";
+import { assertUserNotBanned } from "./session-guard";
 
 // Email/password sign-in + sign-up (and the first-boot admin seed) are a
 // self-hosted opt-in. On the multi-tenant SaaS, sign-in is OAuth + magic-link.
@@ -88,6 +89,9 @@ export const auth = betterAuth({
   databaseHooks: {
     session: {
       create: {
+        before: async (session) => {
+          await assertUserNotBanned(session.userId);
+        },
         after: async (session) => {
           const user = await prisma.user.findUnique({
             where: { id: session.userId },

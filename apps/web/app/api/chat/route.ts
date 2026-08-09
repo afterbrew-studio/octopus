@@ -76,16 +76,25 @@ export async function POST(request: Request) {
     return new Response("Missing message or orgId", { status: 400 });
   }
 
-  // Verify org membership
+  // Verify org membership. Defense in depth: banned users can't mint sessions
+  // (session-guard.ts), but a session issued before the ban that escaped the
+  // ban-time session purge must not keep this endpoint open either.
   const membership = await prisma.organizationMember.findFirst({
     where: {
       organizationId: orgId,
       userId: session.user.id,
       deletedAt: null,
     },
+    include: {
+      user: { select: { bannedAt: true } },
+      organization: { select: { bannedAt: true } },
+    },
   });
   if (!membership) {
     return new Response("Not a member of this organization", { status: 403 });
+  }
+  if (membership.user.bannedAt || membership.organization.bannedAt) {
+    return new Response("Account suspended", { status: 403 });
   }
 
   // Get or create conversation — shared chats allow any org member
