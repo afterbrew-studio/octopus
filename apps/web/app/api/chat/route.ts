@@ -21,6 +21,13 @@ import { getOrgSpendLimitStatus } from "@/lib/cost";
 import { generateSparseVector } from "@/lib/sparse-vector";
 import { requestAgentSearch, findClaudeAgent, requestAgentAnswer } from "@/lib/agent-search";
 import { getReviewModel } from "@/lib/ai-client";
+import {
+  chatScopeGuardEnabled,
+  checkChatScope,
+  checkFreeChatDailyCap,
+  dailyCapMessage,
+  OUT_OF_SCOPE_MESSAGE,
+} from "@/lib/chat-guard";
 
 let anthropicClient: Anthropic | null = null;
 
@@ -173,6 +180,40 @@ export async function POST(request: Request) {
       conversationId: conversation.id,
       message: limitMsg,
     }, { status: 402 });
+  }
+
+  // Abuse gates (lib/chat-guard.ts) — same placement rationale as the spend
+  // gate: reject before context retrieval, queueing, or any main-model call.
+  const rejectChat = async (reason: string, msg: string) => {
+    const savedAssistantMsg = await prisma.chatMessage.create({
+      data: { role: "assistant", content: msg, conversationId: conversation.id },
+    });
+    if (conversation.isShared) {
+      try {
+        await pubby.trigger(`presence-chat-${conversation.id}`, "chat-message-complete", {
+          id: savedAssistantMsg.id,
+          role: "assistant",
+          content: msg,
+        });
+      } catch {}
+    }
+    console.warn(`[chat] Org ${orgId} rejected (${reason})`);
+    return Response.json(
+      { blocked: true, reason, conversationId: conversation.id, message: msg },
+      { status: 402 },
+    );
+  };
+
+  const dailyCap = await checkFreeChatDailyCap(orgId);
+  if (dailyCap.blocked) {
+    return rejectChat("daily_cap", dailyCapMessage(dailyCap.capUsd));
+  }
+
+  if (chatScopeGuardEnabled()) {
+    const inScope = await checkChatScope(getAnthropicClient(), message, orgId);
+    if (!inScope) {
+      return rejectChat("out_of_scope", OUT_OF_SCOPE_MESSAGE);
+    }
   }
 
   if (conversation.isShared) {
