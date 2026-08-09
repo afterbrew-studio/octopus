@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.106] - 2026-08-09
+
+### Security
+- Banned accounts can no longer sign back in: session creation is now blocked at the auth layer for banned users (attempts are audit-logged), and the chat API additionally rejects any session issued before a ban. Previously a ban only blocked web pages, so a banned user could re-authenticate and keep calling API endpoints.
+- Chat endpoints now stay on topic and on budget: a lightweight classifier turns away requests unrelated to software work (kill switch: `CHAT_SCOPE_GUARD=off`), and organizations that have never purchased credits get a daily chat spending cap (`CHAT_FREE_DAILY_CAP_USD`, default $2). Together these shut down use of the chat API as a free general-purpose LLM proxy.
+
 ## [1.0.105] - 2026-08-09
 
 ### Security
