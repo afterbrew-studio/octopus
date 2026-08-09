@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.105] - 2026-08-09
+
+### Security
+- Self-hosted AWS deployments now run Redis (ElastiCache) with authentication and least-privilege ACLs, rolled out through a staged, health-gated cutover. The app connects compatibly with restricted (auth-only) Redis users and cleans up stale presence entries more reliably.
+
 ## [1.0.104] - 2026-08-09
 
 ### Security
