@@ -12,6 +12,13 @@ import Anthropic from "@anthropic-ai/sdk";
 import { requestAgentSearch } from "@/lib/agent-search";
 import { getReviewModel } from "@/lib/ai-client";
 import { getOrgSpendLimitStatus } from "@/lib/cost";
+import {
+  chatScopeGuardEnabled,
+  checkChatScope,
+  checkFreeChatDailyCap,
+  dailyCapMessage,
+  OUT_OF_SCOPE_MESSAGE,
+} from "@/lib/chat-guard";
 
 let anthropicClient: Anthropic | null = null;
 
@@ -48,6 +55,26 @@ export async function POST(request: Request) {
       { blocked: true, reason: spendStatus.reason, message: limitMsg },
       { status: 402 },
     );
+  }
+
+  // Abuse gates (lib/chat-guard.ts) — mirrors /api/chat.
+  const dailyCap = await checkFreeChatDailyCap(orgId);
+  if (dailyCap.blocked) {
+    console.warn(`[chat-cli] Org ${orgId} rejected (daily_cap)`);
+    return Response.json(
+      { blocked: true, reason: "daily_cap", message: dailyCapMessage(dailyCap.capUsd) },
+      { status: 402 },
+    );
+  }
+  if (chatScopeGuardEnabled()) {
+    const inScope = await checkChatScope(getAnthropicClient(), message, orgId);
+    if (!inScope) {
+      console.warn(`[chat-cli] Org ${orgId} rejected (out_of_scope)`);
+      return Response.json(
+        { blocked: true, reason: "out_of_scope", message: OUT_OF_SCOPE_MESSAGE },
+        { status: 402 },
+      );
+    }
   }
 
   // Get or create conversation
