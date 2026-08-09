@@ -18,12 +18,15 @@ export function isPaidPlanTier(tier: string): tier is PaidPlanTier {
 
 /**
  * Volume bonus on one-off credit top-ups: pay $N, get bonus credits on top.
- * Rates are kept below the subscription per-dollar bonus (10–16%) so a
- * recurring plan stays the better deal. Highest matching tier wins.
+ * Promotional rates (buy more, get more) — buying $100 lands $150 in credit.
+ * These sit ABOVE the subscription per-dollar bonus, so top-ups are the
+ * headline deal; all tiers stay margin-positive at the current PLATFORM_MARKUP.
+ * Highest matching tier wins.
  */
 export const VOLUME_BONUS_TIERS = [
-  { minUsd: 500, rate: 0.1 },
-  { minUsd: 100, rate: 0.05 },
+  { minUsd: 500, rate: 0.7 },
+  { minUsd: 250, rate: 0.6 },
+  { minUsd: 100, rate: 0.5 },
 ] as const;
 
 /** Bonus credits (USD, rounded to cents) granted for a top-up of `amountUsd`. */

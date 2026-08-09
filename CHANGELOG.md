@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Buying credits now earns a volume bonus: a $100 top-up lands $150 in credit, and larger top-ups earn more (up to 70%). A "Buy Credits" shortcut now sits on the dashboard, and the amount you'll receive — bonus included — is shown before you pay.
+
 ## [1.0.106] - 2026-08-09
 
 ### Security

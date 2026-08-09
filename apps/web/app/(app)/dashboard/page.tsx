@@ -21,6 +21,7 @@ import { SyncReposButton } from "@/components/sync-repos-button";
 import { KpiFilters } from "@/components/dashboard/kpi-filters";
 import { ProvidersBanner } from "@/components/dashboard/providers-banner";
 import { OnboardingTips } from "@/components/dashboard/onboarding-tips";
+import { BuyCreditsButton } from "@/components/dashboard/buy-credits-button";
 
 // --- Constants ---
 
@@ -494,10 +495,15 @@ export default async function DashboardPage({
 
   return (
     <div className="mx-auto max-w-6xl p-6 md:p-10">
-      <h1 className="text-2xl font-semibold tracking-tight">Dashboard</h1>
-      <p className="text-muted-foreground mt-1 text-sm">
-        Overview of your repositories and integrations.
-      </p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">Dashboard</h1>
+          <p className="text-muted-foreground mt-1 text-sm">
+            Overview of your repositories and integrations.
+          </p>
+        </div>
+        <BuyCreditsButton />
+      </div>
 
       {(!githubConnected || !bitbucketConnected || !gitlabConnected) && !bannerDismissed && (
         <ProvidersBanner

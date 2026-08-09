@@ -18,7 +18,7 @@ import {
 import { purchaseCredits } from "./actions";
 import { volumeBonusUsd } from "@/lib/plans";
 
-const PRESETS = [10, 25, 50, 100];
+const PRESETS = [50, 100, 250, 500];
 
 export function PurchaseDialog({
   open,
@@ -66,25 +66,35 @@ export function PurchaseDialog({
         <DialogHeader>
           <DialogTitle>Purchase Credits</DialogTitle>
           <DialogDescription>
-            Select an amount or enter a custom value. Credits are non-refundable.
+            Buy more, get more — up to 70% bonus credits. Select an amount or
+            enter a custom value. Credits are non-refundable.
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4">
           <div className="grid grid-cols-4 gap-2">
-            {PRESETS.map((preset) => (
-              <Button
-                key={preset}
-                variant={amount === preset ? "default" : "outline"}
-                size="sm"
-                onClick={() => {
-                  setAmount(preset);
-                  setError(null);
-                }}
-              >
-                ${preset}
-              </Button>
-            ))}
+            {PRESETS.map((preset) => {
+              const pct = Math.round((volumeBonusUsd(preset) / preset) * 100);
+              return (
+                <Button
+                  key={preset}
+                  variant={amount === preset ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => {
+                    setAmount(preset);
+                    setError(null);
+                  }}
+                  className="flex h-auto flex-col gap-0.5 py-2"
+                >
+                  <span>${preset}</span>
+                  {pct > 0 && (
+                    <span className="text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
+                      +{pct}%
+                    </span>
+                  )}
+                </Button>
+              );
+            })}
           </div>
 
           <div className="space-y-2">
@@ -128,7 +138,11 @@ export function PurchaseDialog({
             disabled={pending || !amount}
             className="w-full"
           >
-            {pending ? "Processing…" : `Purchase $${amount || 0} Credits`}
+            {pending
+              ? "Processing…"
+              : typeof amount === "number" && volumeBonusUsd(amount) > 0
+                ? `Pay $${amount} → get $${(amount + volumeBonusUsd(amount)).toFixed(2)} credit`
+                : `Purchase $${amount || 0} Credits`}
           </Button>
         </DialogFooter>
       </DialogContent>
