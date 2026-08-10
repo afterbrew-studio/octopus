@@ -23,9 +23,12 @@ const PRESETS = [50, 100, 250, 500];
 export function PurchaseDialog({
   open,
   onOpenChange,
+  card,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** Saved card to charge. `null` = none on file; omit if unknown. */
+  card?: { brand: string; last4: string } | null;
 }) {
   const router = useRouter();
   const [amount, setAmount] = useState<number | "">(25);
@@ -88,7 +91,13 @@ export function PurchaseDialog({
                 >
                   <span>${preset}</span>
                   {pct > 0 && (
-                    <span className="text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
+                    <span
+                      className={`text-[10px] font-medium ${
+                        amount === preset
+                          ? "text-primary-foreground/80"
+                          : "text-emerald-600 dark:text-emerald-400"
+                      }`}
+                    >
                       +{pct}%
                     </span>
                   )}
@@ -128,6 +137,19 @@ export function PurchaseDialog({
               {(amount + volumeBonusUsd(amount)).toFixed(2)} total.
             </p>
           )}
+
+          {card ? (
+            <div className="flex items-center justify-between rounded-md border bg-muted/30 px-3 py-2 text-sm">
+              <span className="text-muted-foreground">Payment method</span>
+              <span className="font-medium capitalize">
+                {card.brand} •••• {card.last4}
+              </span>
+            </div>
+          ) : card === null ? (
+            <p className="text-xs text-muted-foreground">
+              You&apos;ll enter your card securely at checkout.
+            </p>
+          ) : null}
 
           {error && <p className="text-sm text-destructive">{error}</p>}
         </div>

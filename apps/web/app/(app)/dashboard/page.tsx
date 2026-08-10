@@ -22,6 +22,7 @@ import { KpiFilters } from "@/components/dashboard/kpi-filters";
 import { ProvidersBanner } from "@/components/dashboard/providers-banner";
 import { OnboardingTips } from "@/components/dashboard/onboarding-tips";
 import { BuyCreditsButton } from "@/components/dashboard/buy-credits-button";
+import { getCustomerPaymentMethods } from "@/lib/stripe";
 
 // --- Constants ---
 
@@ -127,6 +128,7 @@ export default async function DashboardPage({
         select: {
           id: true,
           githubInstallationId: true,
+          stripeCustomerId: true,
           repositories: {
             where: { isActive: true },
             select: {
@@ -174,6 +176,15 @@ export default async function DashboardPage({
   const org = member.organization;
   const repos = org.repositories;
   const totalRepos = repos.length;
+
+  // Saved card for the Buy Credits dialog. Guarded: only orgs with a Stripe
+  // customer pay the lookup, and getCustomerPaymentMethods returns [] on error.
+  const cards = org.stripeCustomerId
+    ? await getCustomerPaymentMethods(org.stripeCustomerId)
+    : [];
+  const defaultCard = cards[0]
+    ? { brand: cards[0].brand, last4: cards[0].last4 }
+    : null;
   const indexedRepos = repos.filter((r) => r.indexStatus === "indexed").length;
   const notIndexedRepos = totalRepos - indexedRepos;
   const githubConnected = org.githubInstallationId !== null;
@@ -502,7 +513,7 @@ export default async function DashboardPage({
             Overview of your repositories and integrations.
           </p>
         </div>
-        <BuyCreditsButton />
+        <BuyCreditsButton card={defaultCard} />
       </div>
 
       {(!githubConnected || !bitbucketConnected || !gitlabConnected) && !bannerDismissed && (

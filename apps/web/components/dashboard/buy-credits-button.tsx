@@ -8,7 +8,11 @@ import { PurchaseDialog } from "@/app/(app)/settings/billing/purchase-dialog";
 // Discoverable top-up entry point for the dashboard header. Opens the same
 // purchase dialog used on the billing page (which shows the volume bonus), so
 // buying credits never requires digging into Settings → Billing.
-export function BuyCreditsButton() {
+export function BuyCreditsButton({
+  card,
+}: {
+  card?: { brand: string; last4: string } | null;
+}) {
   const [open, setOpen] = useState(false);
   return (
     <>
@@ -19,7 +23,7 @@ export function BuyCreditsButton() {
           up to 70% bonus
         </span>
       </Button>
-      <PurchaseDialog open={open} onOpenChange={setOpen} />
+      <PurchaseDialog open={open} onOpenChange={setOpen} card={card} />
     </>
   );
 }
