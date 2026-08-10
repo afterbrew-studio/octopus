@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.110] - 2026-08-10
+
 ### Added
 - Billing now shows monthly AI usage, the configured spend limit, remaining allowance, reset date, current credit balance, and auto-reload status in one responsive overview.
 
