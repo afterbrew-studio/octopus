@@ -833,7 +833,11 @@ export function BillingSettings({
         </CardContent>
       </Card>
 
-      <PurchaseDialog open={purchaseOpen} onOpenChange={setPurchaseOpen} />
+      <PurchaseDialog
+        open={purchaseOpen}
+        onOpenChange={setPurchaseOpen}
+        card={paymentMethods[0] ?? null}
+      />
       <CardSetupDialog
         open={cardOpen}
         onOpenChange={setCardOpen}
