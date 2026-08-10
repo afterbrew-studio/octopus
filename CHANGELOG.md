@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.108] - 2026-08-10
+
 ### Fixed
 - The Purchase Credits dialog now shows which saved card will be charged, and the bonus percentage on the selected amount is legible again (it was green-on-green when highlighted).
 
