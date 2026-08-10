@@ -16,11 +16,11 @@ export function BuyCreditsButton({
   const [open, setOpen] = useState(false);
   return (
     <>
-      <Button size="sm" onClick={() => setOpen(true)}>
+      <Button size="sm" variant="secondary" onClick={() => setOpen(true)}>
         <IconCoin className="mr-1.5 size-4" />
         Buy Credits
-        <span className="ml-2 rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
-          up to 70% bonus
+        <span className="ml-2 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11px] font-medium text-emerald-700 dark:bg-emerald-400/20 dark:text-emerald-300">
+          Up to 70% bonus
         </span>
       </Button>
       <PurchaseDialog open={open} onOpenChange={setOpen} card={card} />
