@@ -150,15 +150,31 @@ export async function mergeOrgs(params: MergeOrgsParams): Promise<MergeReport> {
 
         const counts: Record<string, number> = {};
 
-        // Members: move source members not already in target (demoting any
-        // owner to admin — the target keeps its own owner); then soft-close
-        // any leftover source rows (a user already in the target), so no active
-        // membership points at the drained org.
+        // Members. A user may already have a row in the target — possibly a
+        // SOFT-DELETED one, since the [organizationId, userId] unique slot
+        // survives a soft delete. Handle all three cases so no active member is
+        // lost and no unique collision is hit:
+        //   1. reactivate a soft-deleted target row when the user is active in
+        //      the source — otherwise step 2's NOT IN would treat the slot as
+        //      taken and the member would be silently dropped in step 3;
+        //   2. move active source members who have NO target row at all,
+        //      demoting a moved owner to admin (the target keeps its own owner);
+        //   3. soft-close any leftover active source row (user already in the
+        //      target, active or just-reactivated) so nothing points at the
+        //      drained org.
+        counts.members_reactivated = await tx.$executeRaw`
+          UPDATE organization_members t SET "deletedAt" = NULL
+          WHERE t."organizationId" = ${targetOrgId} AND t."deletedAt" IS NOT NULL
+            AND EXISTS (
+              SELECT 1 FROM organization_members s
+              WHERE s."organizationId" = ${sourceOrgId} AND s."userId" = t."userId"
+                AND s."deletedAt" IS NULL
+            )`;
         counts.members_moved = await tx.$executeRaw`
           UPDATE organization_members
           SET "organizationId" = ${targetOrgId},
               role = CASE WHEN role = 'owner' THEN 'admin' ELSE role END
-          WHERE "organizationId" = ${sourceOrgId}
+          WHERE "organizationId" = ${sourceOrgId} AND "deletedAt" IS NULL
             AND "userId" NOT IN (
               SELECT "userId" FROM organization_members WHERE "organizationId" = ${targetOrgId}
             )`;
@@ -166,7 +182,15 @@ export async function mergeOrgs(params: MergeOrgsParams): Promise<MergeReport> {
           UPDATE organization_members SET "deletedAt" = now()
           WHERE "organizationId" = ${sourceOrgId} AND "deletedAt" IS NULL`;
 
-        // Compound-unique tables: drop source rows that would collide, move the rest.
+        // Compound-unique tables that have NO deletedAt column, so soft-delete
+        // is impossible: colliding SOURCE rows are hard-deleted (deliberate, not
+        // an inconsistency with the soft-deletes above). Safe because each is
+        // regenerable, ephemeral, or a kept-on-the-target duplicate:
+        //   - day_summaries: regenerable daily aggregates;
+        //   - user_presences: ephemeral heartbeats;
+        //   - incident_comms / coupon_redemptions: idempotency / single-
+        //     redemption ledgers where the target's row is authoritative.
+        // Non-colliding rows are preserved and moved.
         counts.day_summaries_dropped = await tx.$executeRaw`
           DELETE FROM day_summaries s
           WHERE s."organizationId" = ${sourceOrgId}
