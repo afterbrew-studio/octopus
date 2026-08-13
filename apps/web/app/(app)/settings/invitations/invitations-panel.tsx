@@ -580,7 +580,11 @@ export function InvitationsPanel({ orgId, isAdmin }: InvitationsPanelProps) {
                   checked={scopesDraft.includes(scope)}
                   onCheckedChange={(checked) =>
                     setScopesDraft((prev) =>
-                      checked ? [...prev, scope] : prev.filter((s) => s !== scope),
+                      checked
+                        ? prev.includes(scope)
+                          ? prev
+                          : [...prev, scope]
+                        : prev.filter((s) => s !== scope),
                     )
                   }
                   disabled={scopesSaving}
