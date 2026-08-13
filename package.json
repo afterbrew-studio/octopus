@@ -30,5 +30,8 @@
     "apps/*",
     "packages/*",
     "tools/*"
-  ]
+  ],
+  "overrides": {
+    "convict": "6.2.5"
+  }
 }
