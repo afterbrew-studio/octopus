@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Retired the older Opus 4.6 and 4.7 models from the review-model list and re-ordered the Settings model dropdown newest-first. Organizations and repositories still set to a retired model are moved to Opus 4.8.
+
 ## [1.0.112] - 2026-08-13
 
 ### Security
