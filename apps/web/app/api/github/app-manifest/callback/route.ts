@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { cookies, headers } from "next/headers";
 import { auth } from "@/lib/auth";
 import { prisma } from "@octopus/db";
+import { hasOrgPermission } from "@/lib/org-permissions";
 import { decryptJson } from "@/lib/crypto";
 import { saveGithubAppConfig, hasDbGithubApp } from "@/lib/github-app-config";
 import { isSelfHosted } from "@/lib/self-hosted";
@@ -75,12 +76,11 @@ export async function GET(request: NextRequest) {
     where: {
       userId: session.user.id,
       organizationId: payload.orgId,
-      role: { in: ["owner", "admin"] },
       deletedAt: null,
     },
-    select: { organizationId: true },
+    select: { organizationId: true, role: true, scopes: true },
   });
-  if (!membership) return errorRedirect("forbidden");
+  if (!membership || !hasOrgPermission(membership, "integrations:manage")) return errorRedirect("forbidden");
 
   // Re-check (fresh, non-memoized DB read) that no App has been provisioned
   // since this flow started — never clobber existing credentials (TOCTOU guard).

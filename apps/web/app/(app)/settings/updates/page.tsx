@@ -2,6 +2,7 @@ import { headers, cookies } from "next/headers";
 import { redirect, notFound } from "next/navigation";
 import { auth } from "@/lib/auth";
 import { prisma } from "@octopus/db";
+import { hasOrgPermission } from "@/lib/org-permissions";
 import { compareSemver, getCachedOrFreshRelease } from "@/lib/releases";
 
 /**
@@ -34,10 +35,10 @@ export default async function UpdatesSettingsPage() {
       ...(currentOrgId ? { organizationId: currentOrgId } : {}),
       deletedAt: null,
     },
-    select: { role: true },
+    select: { role: true, scopes: true },
   });
   if (!member) redirect("/dashboard");
-  if (member.role !== "owner" && member.role !== "admin") redirect("/settings");
+  if (!hasOrgPermission(member, "settings:manage")) redirect("/settings");
 
   // Treat `0.0.0` (the fallback) and missing/empty as "unknown" so we can
   // render a clear hint rather than a misleading "you're behind" panel that

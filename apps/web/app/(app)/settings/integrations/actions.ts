@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { auth } from "@/lib/auth";
 import { prisma } from "@octopus/db";
+import { hasOrgPermission } from "@/lib/org-permissions";
 import { decryptStringMaybeLegacy } from "@/lib/crypto";
 
 async function getAdminOrg() {
@@ -22,7 +23,7 @@ async function getAdminOrg() {
     select: { role: true, organizationId: true },
   });
 
-  if (!member || (member.role !== "owner" && member.role !== "admin")) {
+  if (!member || !hasOrgPermission(member, "integrations:manage")) {
     return null;
   }
 

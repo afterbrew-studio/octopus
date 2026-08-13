@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { cookies, headers } from "next/headers";
 import { auth } from "@/lib/auth";
 import { prisma } from "@octopus/db";
+import { hasOrgPermission } from "@/lib/org-permissions";
 import { encryptJson } from "@/lib/crypto";
 import { isGithubAppConfigured } from "@/lib/github-app-config";
 import { isSelfHosted } from "@/lib/self-hosted";
@@ -52,12 +53,11 @@ export async function GET(request: NextRequest) {
     where: {
       userId: session.user.id,
       organizationId: orgId,
-      role: { in: ["owner", "admin"] },
       deletedAt: null,
     },
-    select: { organizationId: true },
+    select: { organizationId: true, role: true, scopes: true },
   });
-  if (!membership) {
+  if (!membership || !hasOrgPermission(membership, "integrations:manage")) {
     return NextResponse.redirect(
       new URL("/settings/integrations?error=manifest_forbidden", baseUrl),
     );

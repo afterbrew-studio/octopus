@@ -2,6 +2,7 @@ import { headers, cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
 import { prisma } from "@octopus/db";
+import { hasOrgPermission } from "@/lib/org-permissions";
 import { HARDCODED_REVIEW_MODEL, HARDCODED_EMBED_MODEL } from "@/lib/ai-client";
 import { DEFAULT_THINKING_EFFORT } from "@/lib/providers/thinking";
 import { ModelsSettings } from "./models-settings";
@@ -73,7 +74,7 @@ export default async function ModelsPage() {
     return 0;
   });
 
-  const canManage = member.role === "owner" || member.role === "admin";
+  const canManage = hasOrgPermission(member, "settings:manage");
 
   // Local-model panel only appears when Ollama is actually configured — on the
   // hosted SaaS OLLAMA_SERVER_URL is unset, so the panel stays hidden.

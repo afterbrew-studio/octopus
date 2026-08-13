@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { auth } from "@/lib/auth";
 import { prisma } from "@octopus/db";
+import { hasOrgPermission } from "@/lib/org-permissions";
 import { pubby } from "@/lib/pubby";
 import { writeSyncLog, deleteSyncLogs } from "@/lib/elasticsearch";
 import { listInstallationRepos } from "@/lib/github";
@@ -226,10 +227,10 @@ export async function updateOrganizationName(
       userId: user.id,
       deletedAt: null,
     },
-    select: { role: true },
+    select: { role: true, scopes: true },
   });
 
-  if (!member || (member.role !== "owner" && member.role !== "admin")) {
+  if (!hasOrgPermission(member, "settings:manage")) {
     return { error: "Only organization owners and admins can change the name." };
   }
 
@@ -269,10 +270,10 @@ export async function updateApiKeys(
       userId: user.id,
       deletedAt: null,
     },
-    select: { role: true },
+    select: { role: true, scopes: true },
   });
 
-  if (!member || (member.role !== "owner" && member.role !== "admin")) {
+  if (!hasOrgPermission(member, "settings:manage")) {
     return { error: "Only organization owners and admins can update API keys." };
   }
 
@@ -376,10 +377,10 @@ export async function removeApiKey(
       userId: user.id,
       deletedAt: null,
     },
-    select: { role: true },
+    select: { role: true, scopes: true },
   });
 
-  if (!member || (member.role !== "owner" && member.role !== "admin")) {
+  if (!hasOrgPermission(member, "settings:manage")) {
     return { error: "Only organization owners and admins can manage API keys." };
   }
 
@@ -408,10 +409,10 @@ export async function updateDefaultModels(
       userId: user.id,
       deletedAt: null,
     },
-    select: { role: true },
+    select: { role: true, scopes: true },
   });
 
-  if (!member || (member.role !== "owner" && member.role !== "admin")) {
+  if (!hasOrgPermission(member, "settings:manage")) {
     return { error: "Only organization owners and admins can change default models." };
   }
 
@@ -877,10 +878,10 @@ export async function updateCheckFailureThreshold(
       userId: user.id,
       deletedAt: null,
     },
-    select: { role: true },
+    select: { role: true, scopes: true },
   });
 
-  if (!member || (member.role !== "owner" && member.role !== "admin")) {
+  if (!hasOrgPermission(member, "reviews:configure")) {
     return { error: "Only organization owners and admins can change review settings." };
   }
 
@@ -914,10 +915,10 @@ export async function toggleReviewsPaused(
       userId: user.id,
       deletedAt: null,
     },
-    select: { role: true },
+    select: { role: true, scopes: true },
   });
 
-  if (!member || (member.role !== "owner" && member.role !== "admin")) {
+  if (!hasOrgPermission(member, "reviews:configure")) {
     return { error: "Only organization owners and admins can pause reviews." };
   }
 
@@ -951,7 +952,7 @@ export async function toggleLiveTelemetry(
 
   const member = await prisma.organizationMember.findFirst({
     where: { organizationId: orgId, userId: user.id, deletedAt: null },
-    select: { role: true },
+    select: { role: true, scopes: true },
   });
 
   if (!member || (member.role !== "owner" && member.role !== "admin")) {
@@ -1050,7 +1051,7 @@ export async function toggleVendorMemberVisibility(
 
   const member = await prisma.organizationMember.findFirst({
     where: { organizationId: orgId, userId: user.id, deletedAt: null },
-    select: { role: true },
+    select: { role: true, scopes: true },
   });
   if (!member || member.role !== "owner") {
     return { error: "Only the organization owner can change vendor visibility." };
@@ -1102,10 +1103,10 @@ export async function updateOrgDefaultReviewConfig(
       userId: user.id,
       deletedAt: null,
     },
-    select: { role: true },
+    select: { role: true, scopes: true },
   });
 
-  if (!member || (member.role !== "owner" && member.role !== "admin")) {
+  if (!hasOrgPermission(member, "reviews:configure")) {
     return { error: "Only organization owners and admins can change review defaults." };
   }
 
@@ -1130,10 +1131,10 @@ export async function updateOrgReviewLanguage(
 
   const member = await prisma.organizationMember.findFirst({
     where: { organizationId: orgId, userId: user.id, deletedAt: null },
-    select: { role: true },
+    select: { role: true, scopes: true },
   });
 
-  if (!member || (member.role !== "owner" && member.role !== "admin")) {
+  if (!hasOrgPermission(member, "reviews:configure")) {
     return { error: "Only organization owners and admins can change the review language." };
   }
 
@@ -1165,10 +1166,10 @@ export async function updateOrgBlockedAuthors(
       userId: user.id,
       deletedAt: null,
     },
-    select: { role: true },
+    select: { role: true, scopes: true },
   });
 
-  if (!member || (member.role !== "owner" && member.role !== "admin")) {
+  if (!hasOrgPermission(member, "reviews:configure")) {
     return { error: "Only organization owners and admins can change blocked authors." };
   }
 

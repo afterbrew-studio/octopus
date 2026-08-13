@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { auth } from "@/lib/auth";
 import { prisma } from "@octopus/db";
+import { hasOrgPermission } from "@/lib/org-permissions";
 import {
   createJiraIssue,
   encryptJiraToken,
@@ -51,9 +52,9 @@ async function getAdminOrg(): Promise<{ orgId: string } | { error: string }> {
 
   const member = await prisma.organizationMember.findFirst({
     where: { userId: session.user.id, organizationId: orgId, deletedAt: null },
-    select: { role: true },
+    select: { role: true, scopes: true },
   });
-  if (!member || (member.role !== "owner" && member.role !== "admin")) {
+  if (!member || !hasOrgPermission(member, "integrations:manage")) {
     return { error: "Insufficient permissions." };
   }
   return { orgId };

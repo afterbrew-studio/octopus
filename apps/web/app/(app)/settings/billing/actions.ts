@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { auth } from "@/lib/auth";
 import { prisma } from "@octopus/db";
+import { hasOrgPermission } from "@/lib/org-permissions";
 import {
   createCheckoutSession,
   createSubscriptionCheckoutSession,
@@ -34,10 +35,10 @@ async function getOwnerOrgId(): Promise<{ orgId: string } | { error: string }> {
       userId: session.user.id,
       deletedAt: null,
     },
-    select: { role: true },
+    select: { role: true, scopes: true },
   });
 
-  if (!member || (member.role !== "owner" && member.role !== "admin")) {
+  if (!member || !hasOrgPermission(member, "billing:manage")) {
     return { error: "Only organization owners and admins can manage billing." };
   }
 

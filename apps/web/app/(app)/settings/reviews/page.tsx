@@ -2,6 +2,7 @@ import { headers, cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
 import { prisma } from "@octopus/db";
+import { hasOrgPermission } from "@/lib/org-permissions";
 import { ReviewSettingsForm } from "./review-settings-form";
 import { ReviewsPausedSwitch } from "./reviews-paused-switch";
 import { OrgReviewConfigForm } from "./org-review-config-form";
@@ -49,7 +50,7 @@ export default async function ReviewsSettingsPage() {
   });
   const globalBlockedAuthors = (globalConfig?.blockedAuthors as string[]) ?? [];
 
-  const canManage = member.role === "owner" || member.role === "admin";
+  const canManage = hasOrgPermission(member, "reviews:configure");
 
   return (
     <div key={member.organization.id} className="space-y-6">

@@ -2,6 +2,7 @@ import { headers, cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
 import { prisma } from "@octopus/db";
+import { hasOrgPermission } from "@/lib/org-permissions";
 import { decryptStringMaybeLegacy } from "@/lib/crypto";
 import { ApiKeysForm } from "../api-keys-form";
 
@@ -47,7 +48,7 @@ export default async function ApiKeysPage() {
 
   if (!member) redirect("/dashboard");
 
-  const canManage = member.role === "owner" || member.role === "admin";
+  const canManage = hasOrgPermission(member, "settings:manage");
 
   return (
     <ApiKeysForm

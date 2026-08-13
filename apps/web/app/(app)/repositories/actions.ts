@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { auth } from "@/lib/auth";
 import { prisma } from "@octopus/db";
+import { hasOrgPermission } from "@/lib/org-permissions";
 import { pubby } from "@/lib/pubby";
 import { createAnalysisAbortController, abortAnalysis, clearAnalysisAbortController } from "@/lib/analysis-abort";
 import { abortIndexing } from "@/lib/indexing-abort";
@@ -526,7 +527,7 @@ export async function updateRepoModels(
         select: {
           members: {
             where: { userId: session.user.id, deletedAt: null },
-            select: { role: true },
+            select: { role: true, scopes: true },
           },
         },
       },
@@ -537,10 +538,7 @@ export async function updateRepoModels(
     return { error: "Repository not found." };
   }
 
-  if (
-    repo.organization.members[0].role !== "owner" &&
-    repo.organization.members[0].role !== "admin"
-  ) {
+  if (!hasOrgPermission(repo.organization.members[0], "repos:manage")) {
     return { error: "Only organization owners and admins can change model settings." };
   }
 
@@ -581,7 +579,7 @@ export async function transferRepository(
           name: true,
           members: {
             where: { userId: session.user.id, deletedAt: null },
-            select: { role: true },
+            select: { role: true, scopes: true },
           },
         },
       },
@@ -592,10 +590,7 @@ export async function transferRepository(
     return { error: "Repository not found." };
   }
 
-  if (
-    repo.organization.members[0].role !== "owner" &&
-    repo.organization.members[0].role !== "admin"
-  ) {
+  if (!hasOrgPermission(repo.organization.members[0], "repos:manage")) {
     return { error: "Only organization owners and admins can transfer repositories." };
   }
 
@@ -669,7 +664,7 @@ export async function removeRepository(
         select: {
           members: {
             where: { userId: session.user.id, deletedAt: null },
-            select: { role: true },
+            select: { role: true, scopes: true },
           },
         },
       },
@@ -680,10 +675,7 @@ export async function removeRepository(
     return { error: "Repository not found." };
   }
 
-  if (
-    repo.organization.members[0].role !== "owner" &&
-    repo.organization.members[0].role !== "admin"
-  ) {
+  if (!hasOrgPermission(repo.organization.members[0], "repos:manage")) {
     return { error: "Only organization owners and admins can remove repositories." };
   }
 
@@ -728,7 +720,7 @@ export async function restoreRepository(
         select: {
           members: {
             where: { userId: session.user.id, deletedAt: null },
-            select: { role: true },
+            select: { role: true, scopes: true },
           },
         },
       },
@@ -739,10 +731,7 @@ export async function restoreRepository(
     return { error: "Repository not found." };
   }
 
-  if (
-    repo.organization.members[0].role !== "owner" &&
-    repo.organization.members[0].role !== "admin"
-  ) {
+  if (!hasOrgPermission(repo.organization.members[0], "repos:manage")) {
     return { error: "Only organization owners and admins can restore repositories." };
   }
 
@@ -784,7 +773,7 @@ export async function toggleAutoReview(
         select: {
           members: {
             where: { userId: session.user.id, deletedAt: null },
-            select: { id: true },
+            select: { role: true, scopes: true },
           },
         },
       },
@@ -792,6 +781,12 @@ export async function toggleAutoReview(
   });
 
   if (!repo || repo.organization.members.length === 0) return {};
+
+  // Previously ungated (any member) — inconsistent with every sibling repo
+  // action; auto-review on/off is review configuration.
+  if (!hasOrgPermission(repo.organization.members[0], "reviews:configure")) {
+    return { error: "Only organization owners and admins can toggle auto-review." };
+  }
 
   await prisma.repository.update({
     where: { id: repoId },
@@ -826,7 +821,7 @@ export async function updateReviewConfig(
         select: {
           members: {
             where: { userId: session.user.id, deletedAt: null },
-            select: { role: true },
+            select: { role: true, scopes: true },
           },
         },
       },
@@ -837,10 +832,7 @@ export async function updateReviewConfig(
     return { error: "Repository not found." };
   }
 
-  if (
-    repo.organization.members[0].role !== "owner" &&
-    repo.organization.members[0].role !== "admin"
-  ) {
+  if (!hasOrgPermission(repo.organization.members[0], "reviews:configure")) {
     return { error: "Only organization owners and admins can change review config." };
   }
 
@@ -890,7 +882,7 @@ export async function updateRepoConfigSettings(
         select: {
           members: {
             where: { userId: session.user.id, deletedAt: null },
-            select: { role: true },
+            select: { role: true, scopes: true },
           },
         },
       },
@@ -900,10 +892,7 @@ export async function updateRepoConfigSettings(
   if (!repo || repo.organization.members.length === 0) {
     return { error: "Repository not found." };
   }
-  if (
-    repo.organization.members[0].role !== "owner" &&
-    repo.organization.members[0].role !== "admin"
-  ) {
+  if (!hasOrgPermission(repo.organization.members[0], "reviews:configure")) {
     return { error: "Only organization owners and admins can change repo config settings." };
   }
 

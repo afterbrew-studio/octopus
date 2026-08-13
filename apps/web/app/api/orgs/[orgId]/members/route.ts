@@ -31,6 +31,7 @@ export async function GET(
     select: {
       id: true,
       role: true,
+      scopes: true,
       createdAt: true,
       user: {
         select: { id: true, name: true, email: true, image: true },

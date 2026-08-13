@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { cookies, headers } from "next/headers";
 import { prisma } from "@octopus/db";
+import { hasOrgPermission } from "@/lib/org-permissions";
 import { auth } from "@/lib/auth";
 import { listWorkspaceRepos, createWebhook } from "@/lib/bitbucket";
 import { encryptString } from "@/lib/crypto";
@@ -67,10 +68,10 @@ export async function GET(request: NextRequest) {
   // Verify the user is an admin/owner of this org
   const member = await prisma.organizationMember.findFirst({
     where: { userId: session.user.id, organizationId: orgId, deletedAt: null },
-    select: { role: true },
+    select: { role: true, scopes: true },
   });
 
-  if (!member || (member.role !== "owner" && member.role !== "admin")) {
+  if (!member || !hasOrgPermission(member, "integrations:manage")) {
     return NextResponse.redirect(
       new URL("/settings/integrations?error=insufficient_role", baseUrl),
     );

@@ -2,6 +2,7 @@ import { headers, cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
 import { prisma } from "@octopus/db";
+import { hasOrgPermission } from "@/lib/org-permissions";
 import { getOrgMonthlySpend } from "@/lib/cost";
 import {
   formatBillingResetLabel,
@@ -46,7 +47,7 @@ export default async function BillingPage() {
   if (!member) redirect("/dashboard");
 
   const org = member.organization;
-  const canManageBilling = member.role === "owner" || member.role === "admin";
+  const canManageBilling = hasOrgPermission(member, "billing:manage");
 
   // Bracket notation on purpose: Next inlines `process.env.NEXT_PUBLIC_*`
   // dot-access at BUILD time (client and server), and the CI image is built

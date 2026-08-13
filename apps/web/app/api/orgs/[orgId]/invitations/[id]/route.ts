@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { headers } from "next/headers";
 import { auth } from "@/lib/auth";
 import { prisma } from "@octopus/db";
+import { hasOrgPermission } from "@/lib/org-permissions";
 
 // DELETE /api/orgs/:orgId/invitations/:id — Revoke invitation
 export async function DELETE(
@@ -19,11 +20,10 @@ export async function DELETE(
     where: {
       organizationId: orgId,
       userId: session.user.id,
-      role: { in: ["admin", "owner"] },
       deletedAt: null,
     },
   });
-  if (!member) {
+  if (!member || !hasOrgPermission(member, "members:manage")) {
     return NextResponse.json({ error: "Forbidden: admin role required" }, { status: 403 });
   }
 

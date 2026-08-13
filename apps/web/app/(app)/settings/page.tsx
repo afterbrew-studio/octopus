@@ -2,6 +2,7 @@ import { headers, cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
 import { prisma } from "@octopus/db";
+import { hasOrgPermission } from "@/lib/org-permissions";
 import { UserNameForm } from "./user-name-form";
 import { OrgNameForm } from "./org-name-form";
 import { DangerZoneCard } from "./danger-zone-card";
@@ -32,7 +33,7 @@ export default async function SettingsPage() {
   if (!member) redirect("/dashboard");
 
   const isOwner = member.role === "owner";
-  const canManage = member.role === "owner" || member.role === "admin";
+  const canManage = hasOrgPermission(member, "settings:manage");
 
   let isLastOrg = false;
   if (isOwner) {

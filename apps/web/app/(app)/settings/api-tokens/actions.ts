@@ -4,6 +4,7 @@ import { headers, cookies } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { auth } from "@/lib/auth";
 import { prisma } from "@octopus/db";
+import { hasOrgPermission } from "@/lib/org-permissions";
 import { generateApiToken, hashToken, getTokenPrefix } from "@/lib/api-auth";
 
 export async function createApiToken(formData: FormData) {
@@ -25,7 +26,11 @@ export async function createApiToken(formData: FormData) {
       deletedAt: null,
     },
   });
-  if (!member) return { error: "Not a member of this organization" };
+  // Org API tokens grant repo + local-agent access, so creation/revocation
+  // requires tokens:manage (previously any member could do both).
+  if (!member || !hasOrgPermission(member, "tokens:manage")) {
+    return { error: "API token management permission required" };
+  }
 
   // Rate limit: max 5 tokens per hour per user
   const recentTokens = await prisma.orgApiToken.count({
@@ -69,6 +74,20 @@ export async function deleteApiToken(formData: FormData) {
   const cookieStore = await cookies();
   const currentOrgId = cookieStore.get("current_org_id")?.value;
   if (!currentOrgId) return { error: "No organization selected" };
+
+  // The org id is a client-controlled cookie — membership must be verified
+  // here (previously it wasn't, letting any signed-in user revoke any org's
+  // tokens by forging the cookie). Same tokens:manage rule as creation.
+  const member = await prisma.organizationMember.findFirst({
+    where: {
+      userId: session.user.id,
+      organizationId: currentOrgId,
+      deletedAt: null,
+    },
+  });
+  if (!member || !hasOrgPermission(member, "tokens:manage")) {
+    return { error: "API token management permission required" };
+  }
 
   // Soft delete
   const token = await prisma.orgApiToken.findFirst({

@@ -2,6 +2,7 @@ import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
 import { prisma } from "@octopus/db";
+import { hasOrgPermission } from "@/lib/org-permissions";
 import { decryptJson } from "@/lib/crypto";
 import {
   JIRA_OAUTH_PENDING_COOKIE,
@@ -44,9 +45,9 @@ export default async function SelectJiraSitePage() {
       organizationId: payload.orgId,
       deletedAt: null,
     },
-    select: { role: true },
+    select: { role: true, scopes: true },
   });
-  if (!member || (member.role !== "owner" && member.role !== "admin")) {
+  if (!member || !hasOrgPermission(member, "integrations:manage")) {
     redirect("/settings/integrations?error=forbidden");
   }
 
