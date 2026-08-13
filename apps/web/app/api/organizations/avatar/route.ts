@@ -5,6 +5,7 @@ import { randomBytes } from "node:crypto";
 import sharp from "sharp";
 import { auth } from "@/lib/auth";
 import { prisma } from "@octopus/db";
+import { hasOrgPermission } from "@/lib/org-permissions";
 import { uploadToR2, deleteFromR2, extractR2Key, isR2Configured } from "@/lib/r2";
 import { writeAuditLog } from "@/lib/audit";
 import { fixedWindowLimit, tooManyRequests } from "@/lib/rate-limit";
@@ -32,9 +33,9 @@ async function getOwnerContext() {
 
   const member = await prisma.organizationMember.findFirst({
     where: { organizationId: orgId, userId: session.user.id, deletedAt: null },
-    select: { role: true },
+    select: { role: true, scopes: true },
   });
-  if (!member || (member.role !== "owner" && member.role !== "admin")) {
+  if (!member || !hasOrgPermission(member, "settings:manage")) {
     return { error: "Only organization owners and admins can change the avatar.", status: 403 as const };
   }
   return { userId: session.user.id, userEmail: session.user.email, orgId };

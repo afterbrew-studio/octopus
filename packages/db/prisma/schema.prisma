@@ -236,6 +236,10 @@ model IncidentComm {
 model OrganizationMember {
   id        String    @id @default(cuid())
   role      String    @default("member")
+  // Additive permission grants on top of the role baseline (registry +
+  // baselines in apps/web/lib/org-permissions.ts). Never subtractive: a
+  // scope here can only ADD what the role alone wouldn't allow.
+  scopes    String[]  @default([])
   createdAt DateTime  @default(now())
   deletedAt DateTime?
   // Per-member opt-out from live telemetry: when true, no presence/activity is

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { headers, cookies } from "next/headers";
 import { auth } from "@/lib/auth";
 import { prisma } from "@octopus/db";
+import { hasOrgPermission } from "@/lib/org-permissions";
 import { encryptString, decryptJson } from "@/lib/crypto";
 import {
   SLACK_OAUTH_STATE_COOKIE,
@@ -90,9 +91,9 @@ export async function GET(request: NextRequest) {
   // Defense in depth: that user must still be an admin of the target org.
   const member = await prisma.organizationMember.findFirst({
     where: { userId: session.user.id, organizationId: orgId, deletedAt: null },
-    select: { role: true },
+    select: { role: true, scopes: true },
   });
-  if (!member || (member.role !== "owner" && member.role !== "admin")) {
+  if (!member || !hasOrgPermission(member, "integrations:manage")) {
     return redirectClearingState(
       new URL("/settings/integrations?error=forbidden", baseUrl),
     );

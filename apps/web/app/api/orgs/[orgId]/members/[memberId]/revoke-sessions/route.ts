@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { headers } from "next/headers";
 import { auth } from "@/lib/auth";
 import { prisma } from "@octopus/db";
+import { hasOrgPermission } from "@/lib/org-permissions";
 import { writeAuditLog } from "@/lib/audit";
 
 // POST /api/orgs/:orgId/members/:memberId/revoke-sessions
@@ -24,11 +25,10 @@ export async function POST(
     where: {
       organizationId: orgId,
       userId: session.user.id,
-      role: { in: ["owner", "admin"] },
       deletedAt: null,
     },
   });
-  if (!caller) {
+  if (!caller || !hasOrgPermission(caller, "members:manage")) {
     return NextResponse.json({ error: "Forbidden: admin role required" }, { status: 403 });
   }
 

@@ -2,6 +2,7 @@ import { headers } from "next/headers";
 import { redirect, notFound } from "next/navigation";
 import { auth } from "@/lib/auth";
 import { prisma } from "@octopus/db";
+import { hasOrgPermission } from "@/lib/org-permissions";
 import { ReviewConfigForm } from "./review-config-form";
 import { RepoConfigForm } from "./repo-config-form";
 import { DEFAULT_REPO_CONFIG_FILES, normalizeRepoConfigFiles } from "@/lib/repo-config-shared";
@@ -30,7 +31,7 @@ export default async function RepoSettingsPage({
         select: {
           members: {
             where: { userId: session.user.id, deletedAt: null },
-            select: { role: true },
+            select: { role: true, scopes: true },
           },
         },
       },
@@ -40,8 +41,7 @@ export default async function RepoSettingsPage({
   if (!repo || repo.organization.members.length === 0) notFound();
 
   const canManage =
-    repo.organization.members[0].role === "owner" ||
-    repo.organization.members[0].role === "admin";
+    hasOrgPermission(repo.organization.members[0], "reviews:configure");
   const reviewConfig = (repo.reviewConfig as Record<string, unknown>) ?? {};
   const initialFiles = normalizeRepoConfigFiles(repo.repoConfigFiles);
   const initialFilesOrDefault = initialFiles.length > 0 ? initialFiles : [...DEFAULT_REPO_CONFIG_FILES];

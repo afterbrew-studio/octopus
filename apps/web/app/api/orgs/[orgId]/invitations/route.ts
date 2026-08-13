@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { headers } from "next/headers";
 import { auth } from "@/lib/auth";
 import { prisma } from "@octopus/db";
+import { hasOrgPermission } from "@/lib/org-permissions";
 import { sendInvitationEmail } from "@/lib/invitation-email";
 import { normalizeEmail } from "@/lib/email-normalize";
 import { validateEmailForSignup, reasonToMessage } from "@/lib/email-validator";
@@ -20,14 +21,14 @@ const DAYS_TO_MS = 24 * 60 * 60 * 1000;
 const VALID_ROLES = ["admin", "member"];
 
 async function getAdminMember(orgId: string, userId: string) {
-  return prisma.organizationMember.findFirst({
+  const member = await prisma.organizationMember.findFirst({
     where: {
       organizationId: orgId,
       userId,
-      role: { in: ["admin", "owner"] },
       deletedAt: null,
     },
   });
+  return member && hasOrgPermission(member, "members:manage") ? member : null;
 }
 
 // POST /api/orgs/:orgId/invitations — Send invitation

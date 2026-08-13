@@ -28,8 +28,10 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { IconX, IconLogout } from "@tabler/icons-react";
+import { IconX, IconLogout, IconShieldCog } from "@tabler/icons-react";
 import { toast } from "sonner";
+import { Switch } from "@/components/ui/switch";
+import { ALL_ORG_SCOPES, ORG_SCOPE_LABELS } from "@/lib/org-permissions";
 import { InviteModal } from "./invite-modal";
 
 interface Invitation {
@@ -51,6 +53,7 @@ interface Invitation {
 interface Member {
   id: string;
   role: string;
+  scopes: string[];
   createdAt: string;
   user: {
     id: string;
@@ -90,6 +93,9 @@ export function InvitationsPanel({ orgId, isAdmin }: InvitationsPanelProps) {
   const [roleChanging, setRoleChanging] = useState<string | null>(null);
   const [removeTarget, setRemoveTarget] = useState<Member | null>(null);
   const [revokeSessionsTarget, setRevokeSessionsTarget] = useState<Member | null>(null);
+  const [scopesTarget, setScopesTarget] = useState<Member | null>(null);
+  const [scopesDraft, setScopesDraft] = useState<string[]>([]);
+  const [scopesSaving, setScopesSaving] = useState(false);
 
   const fetchMembers = useCallback(async () => {
     setMembersLoading(true);
@@ -235,6 +241,42 @@ export function InvitationsPanel({ orgId, isAdmin }: InvitationsPanelProps) {
     return true;
   }
 
+  // Extra grants only mean something below admin (owner/admin baselines
+  // already include every scope), and you can't edit your own.
+  function canEditScopes(target: Member): boolean {
+    if (!isAdmin) return false;
+    if (target.role !== "member") return false;
+    if (target.user.id === callerUserId) return false;
+    return true;
+  }
+
+  function openScopesDialog(m: Member) {
+    setScopesTarget(m);
+    setScopesDraft(m.scopes ?? []);
+  }
+
+  async function handleScopesSave() {
+    if (!scopesTarget) return;
+    setScopesSaving(true);
+    try {
+      const res = await fetch(`/api/orgs/${orgId}/members/${scopesTarget.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scopes: scopesDraft }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        toast.error(data.error ?? "Failed to update permissions");
+        return;
+      }
+      toast.success(`Updated permissions for ${scopesTarget.user.name || scopesTarget.user.email}`);
+      setScopesTarget(null);
+      await fetchMembers();
+    } finally {
+      setScopesSaving(false);
+    }
+  }
+
   function getAvailableRoles(): string[] {
     return ["admin", "member"];
   }
@@ -308,6 +350,27 @@ export function InvitationsPanel({ orgId, isAdmin }: InvitationsPanelProps) {
                 ))}
               </SelectContent>
             </Select>
+          )}
+          {canEditScopes(m) && (
+            <Button
+              size="icon"
+              variant="ghost"
+              className="size-7 text-muted-foreground hover:text-foreground"
+              onClick={() => openScopesDialog(m)}
+              disabled={isBusy}
+              title={
+                m.scopes?.length
+                  ? `Extra permissions: ${m.scopes.join(", ")}`
+                  : "Grant extra permissions"
+              }
+            >
+              <span className="relative inline-flex">
+                <IconShieldCog className="size-4" />
+                {(m.scopes?.length ?? 0) > 0 && (
+                  <span className="absolute -right-1 -top-1 size-2 rounded-full bg-primary" />
+                )}
+              </span>
+            </Button>
           )}
           {canRevokeSessions(m) && (
             <Button
@@ -492,6 +555,48 @@ export function InvitationsPanel({ orgId, isAdmin }: InvitationsPanelProps) {
             <AlertDialogAction onClick={handleRemoveMember} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
               Remove
             </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={!!scopesTarget} onOpenChange={(o) => !o && setScopesTarget(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Extra permissions — {scopesTarget?.user.name || scopesTarget?.user.email}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              Grants on top of the member role. Admins and owners already have all of these.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="space-y-3 py-2">
+            {ALL_ORG_SCOPES.map((scope) => (
+              <div key={scope} className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium">{ORG_SCOPE_LABELS[scope]}</p>
+                  <p className="font-mono text-xs text-muted-foreground">{scope}</p>
+                </div>
+                <Switch
+                  checked={scopesDraft.includes(scope)}
+                  onCheckedChange={(checked) =>
+                    setScopesDraft((prev) =>
+                      checked
+                        ? prev.includes(scope)
+                          ? prev
+                          : [...prev, scope]
+                        : prev.filter((s) => s !== scope),
+                    )
+                  }
+                  disabled={scopesSaving}
+                />
+              </div>
+            ))}
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={scopesSaving}>Cancel</AlertDialogCancel>
+            <Button onClick={handleScopesSave} disabled={scopesSaving}>
+              {scopesSaving ? "Saving…" : "Save permissions"}
+            </Button>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

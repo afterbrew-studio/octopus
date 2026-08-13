@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { headers } from "next/headers";
 import { auth } from "@/lib/auth";
 import { prisma } from "@octopus/db";
+import { hasOrgPermission } from "@/lib/org-permissions";
 import { createCheckoutSession } from "@/lib/stripe";
 
 export async function POST(req: NextRequest) {
@@ -25,11 +26,12 @@ export async function POST(req: NextRequest) {
       organizationId: orgId,
       userId: session.user.id,
       deletedAt: null,
-      role: "owner",
     },
   });
 
-  if (!member) {
+  // Aligned with the billing server actions: billing:manage (admin+owner
+  // baseline) rather than the previous owner-only rule.
+  if (!member || !hasOrgPermission(member, "billing:manage")) {
     return NextResponse.json({ error: "Only owners can purchase credits" }, { status: 403 });
   }
 

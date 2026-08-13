@@ -2,10 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { headers } from "next/headers";
 import { auth } from "@/lib/auth";
 import { prisma } from "@octopus/db";
+import { hasOrgPermission, normalizeOrgScopes } from "@/lib/org-permissions";
+import { writeAuditLog } from "@/lib/audit";
 
 const ASSIGNABLE_ROLES = ["admin", "member"];
 
-// PATCH /api/orgs/:orgId/members/:memberId — Update member role
+// PATCH /api/orgs/:orgId/members/:memberId — Update member role and/or scopes
 export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ orgId: string; memberId: string }> },
@@ -17,26 +19,43 @@ export async function PATCH(
 
   const { orgId, memberId } = await params;
   const body = await request.json();
-  const { role } = body;
+  const { role, scopes } = body;
 
-  if (!role || !ASSIGNABLE_ROLES.includes(role)) {
+  if (role === undefined && scopes === undefined) {
+    return NextResponse.json({ error: "Nothing to update" }, { status: 400 });
+  }
+  if (role !== undefined && !ASSIGNABLE_ROLES.includes(role)) {
     return NextResponse.json(
       { error: `Invalid role. Must be one of: ${ASSIGNABLE_ROLES.join(", ")}` },
       { status: 400 },
     );
   }
+  let normalizedScopes: string[] | undefined;
+  if (scopes !== undefined) {
+    try {
+      normalizedScopes = normalizeOrgScopes(scopes);
+    } catch (err) {
+      return NextResponse.json(
+        { error: err instanceof Error ? err.message : "Invalid scopes" },
+        { status: 400 },
+      );
+    }
+  }
 
-  // Caller must be owner or admin
+  // Caller needs members:manage (owner/admin baseline, or an explicit grant)
   const caller = await prisma.organizationMember.findFirst({
     where: {
       organizationId: orgId,
       userId: session.user.id,
-      role: { in: ["owner", "admin"] },
       deletedAt: null,
     },
+    select: { role: true, scopes: true },
   });
-  if (!caller) {
-    return NextResponse.json({ error: "Forbidden: admin role required" }, { status: 403 });
+  if (!caller || !hasOrgPermission(caller, "members:manage")) {
+    return NextResponse.json(
+      { error: "Forbidden: member management permission required" },
+      { status: 403 },
+    );
   }
 
   const target = await prisma.organizationMember.findFirst({
@@ -46,29 +65,49 @@ export async function PATCH(
     return NextResponse.json({ error: "Member not found" }, { status: 404 });
   }
 
-  // Cannot change own role
+  // Cannot change your own role or grants (blocks self-escalation)
   if (target.userId === session.user.id) {
-    return NextResponse.json({ error: "Cannot change your own role" }, { status: 400 });
+    return NextResponse.json(
+      { error: "Cannot change your own role or permissions" },
+      { status: 400 },
+    );
   }
 
   // Cannot change owner role
-  if (target.role === "owner") {
+  if (role !== undefined && target.role === "owner") {
     return NextResponse.json({ error: "Cannot change the owner's role" }, { status: 400 });
   }
 
-  if (target.role === role) {
+  if (role !== undefined && scopes === undefined && target.role === role) {
     return NextResponse.json({ error: "Member already has this role" }, { status: 400 });
   }
 
   const updated = await prisma.organizationMember.update({
     where: { id: memberId },
-    data: { role },
+    data: {
+      ...(role !== undefined && target.role !== "owner" ? { role } : {}),
+      ...(normalizedScopes !== undefined ? { scopes: normalizedScopes } : {}),
+    },
     select: {
       id: true,
       role: true,
+      scopes: true,
       user: { select: { id: true, name: true, email: true } },
     },
   });
+
+  if (normalizedScopes !== undefined) {
+    await writeAuditLog({
+      action: "org.member_scopes_changed",
+      category: "admin",
+      actorId: session.user.id,
+      actorEmail: session.user.email,
+      targetType: "user",
+      targetId: target.userId,
+      organizationId: orgId,
+      metadata: { from: target.scopes, to: normalizedScopes },
+    });
+  }
 
   return NextResponse.json({ member: updated });
 }
@@ -90,11 +129,10 @@ export async function DELETE(
     where: {
       organizationId: orgId,
       userId: session.user.id,
-      role: { in: ["owner", "admin"] },
       deletedAt: null,
     },
   });
-  if (!caller) {
+  if (!caller || !hasOrgPermission(caller, "members:manage")) {
     return NextResponse.json({ error: "Forbidden: admin role required" }, { status: 403 });
   }
 

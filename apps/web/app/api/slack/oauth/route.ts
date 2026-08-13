@@ -3,6 +3,7 @@ import { headers, cookies } from "next/headers";
 import { randomBytes } from "node:crypto";
 import { auth } from "@/lib/auth";
 import { prisma } from "@octopus/db";
+import { hasOrgPermission } from "@/lib/org-permissions";
 import { encryptJson } from "@/lib/crypto";
 import {
   SLACK_OAUTH_STATE_COOKIE,
@@ -25,10 +26,10 @@ export async function GET() {
 
   const member = await prisma.organizationMember.findFirst({
     where: { userId: session.user.id, organizationId: orgId, deletedAt: null },
-    select: { role: true },
+    select: { role: true, scopes: true },
   });
 
-  if (!member || (member.role !== "owner" && member.role !== "admin")) {
+  if (!member || !hasOrgPermission(member, "integrations:manage")) {
     return NextResponse.json({ error: "Insufficient permissions" }, { status: 403 });
   }
 

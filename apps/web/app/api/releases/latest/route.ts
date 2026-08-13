@@ -1,6 +1,7 @@
 import { headers, cookies } from "next/headers";
 import { auth } from "@/lib/auth";
 import { prisma } from "@octopus/db";
+import { hasOrgPermission } from "@/lib/org-permissions";
 import { compareSemver, getCachedOrFreshRelease } from "@/lib/releases";
 
 /**
@@ -35,9 +36,9 @@ export async function GET() {
 
   const member = await prisma.organizationMember.findFirst({
     where: { userId: session.user.id, organizationId: currentOrgId, deletedAt: null },
-    select: { role: true },
+    select: { role: true, scopes: true },
   });
-  if (!member || (member.role !== "owner" && member.role !== "admin")) {
+  if (!member || !hasOrgPermission(member, "settings:manage")) {
     return Response.json({ error: "Admin role required" }, { status: 403 });
   }
 

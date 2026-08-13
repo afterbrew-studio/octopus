@@ -2,6 +2,7 @@ import { headers, cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
 import { prisma } from "@octopus/db";
+import { hasOrgPermission } from "@/lib/org-permissions";
 import { InvitationsPanel } from "../invitations/invitations-panel";
 
 export default async function TeamPage() {
@@ -21,13 +22,14 @@ export default async function TeamPage() {
     },
     select: {
       role: true,
+      scopes: true,
       organizationId: true,
     },
   });
 
   if (!member) redirect("/dashboard");
 
-  const isAdmin = member.role === "owner" || member.role === "admin";
+  const isAdmin = hasOrgPermission(member, "members:manage");
 
   return <InvitationsPanel key={member.organizationId} orgId={member.organizationId} isAdmin={isAdmin} />;
 }
