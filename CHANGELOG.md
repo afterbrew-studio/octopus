@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.0.112] - 2026-08-13
 
 ### Security
-- Updated dependencies to patch known vulnerabilities — better-auth, Next.js (Server Action SSRF/DoS), sharp, convict (via cohere-ai), and mermaid — clearing all critical advisories. Moved the shadcn CLI to dev dependencies where it belongs.
+- Updated dependencies to patch known vulnerabilities — better-auth, Next.js (Server Action SSRF/DoS), convict (via cohere-ai), and mermaid — clearing all critical advisories. Moved the shadcn CLI to dev dependencies where it belongs.
 
 ## [1.0.111] - 2026-08-13
 
