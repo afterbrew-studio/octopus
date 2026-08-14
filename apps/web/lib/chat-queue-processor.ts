@@ -1,4 +1,3 @@
-import Anthropic from "@anthropic-ai/sdk";
 import { buildIndexWarning } from "@/lib/review-helpers";
 import { prisma } from "@octopus/db";
 import { pubby } from "@/lib/pubby";
@@ -14,17 +13,9 @@ import {
 } from "@/lib/qdrant";
 import { logAiUsage } from "@/lib/ai-usage";
 import { getReviewModel } from "@/lib/ai-client";
+import { streamChat } from "@/lib/chat-stream";
 import { isOrgOverSpendLimit } from "@/lib/cost";
 import { generateSparseVector } from "@/lib/sparse-vector";
-
-let anthropicClient: Anthropic | null = null;
-
-function getAnthropicClient(): Anthropic {
-  if (!anthropicClient) {
-    anthropicClient = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
-  }
-  return anthropicClient;
-}
 
 const STALE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -265,53 +256,44 @@ ${chatHistoryContext || "No relevant previous conversations found."}
 
     const chatModel = await getReviewModel(orgId);
 
-    const client = getAnthropicClient();
-    let fullResponse = "";
     let deltaBatch = "";
     let lastBroadcast = Date.now();
-
-    const anthropicStream = client.messages.stream({
-      model: chatModel,
-      max_tokens: 4096,
-      system: [
-        { type: "text" as const, text: systemInstructions, cache_control: { type: "ephemeral" as const } },
-        { type: "text" as const, text: systemContext },
-      ],
-      messages: historyMessages,
-    });
-
-    for await (const event of anthropicStream) {
-      if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
-        const text = event.delta.text;
-        fullResponse += text;
-        deltaBatch += text;
-
-        // Broadcast delta batches (~200 chars or ~500ms)
-        if (deltaBatch.length >= 200 || Date.now() - lastBroadcast >= 500) {
-          try {
-            await pubby.trigger(channel, "chat-stream-delta", { text: deltaBatch });
-          } catch {}
-          deltaBatch = "";
-          lastBroadcast = Date.now();
-        }
-      }
-    }
-
-    // Flush remaining delta
-    if (deltaBatch) {
+    const flushDelta = async () => {
+      if (!deltaBatch) return;
       try {
         await pubby.trigger(channel, "chat-stream-delta", { text: deltaBatch });
       } catch {}
-    }
+      deltaBatch = "";
+      lastBroadcast = Date.now();
+    };
 
-    // Log usage
-    const finalMessage = await anthropicStream.finalMessage();
+    const result = await streamChat({
+      orgId,
+      model: chatModel,
+      systemCacheable: systemInstructions,
+      system: systemContext,
+      messages: historyMessages,
+      maxTokens: 4096,
+      onDelta: async (text) => {
+        deltaBatch += text;
+        // Broadcast delta batches (~200 chars or ~500ms).
+        if (deltaBatch.length >= 200 || Date.now() - lastBroadcast >= 500) {
+          await flushDelta();
+        }
+      },
+    });
+    await flushDelta();
+    const fullResponse = result.text;
+
+    // Log usage against the provider that actually served the response.
     await logAiUsage({
-      provider: "anthropic",
+      provider: result.provider,
       model: chatModel,
       operation: "chat",
-      inputTokens: finalMessage.usage.input_tokens,
-      outputTokens: finalMessage.usage.output_tokens,
+      inputTokens: result.usage.inputTokens,
+      outputTokens: result.usage.outputTokens,
+      cacheReadTokens: result.usage.cacheReadTokens,
+      cacheWriteTokens: result.usage.cacheWriteTokens,
       organizationId: orgId,
     });
 
