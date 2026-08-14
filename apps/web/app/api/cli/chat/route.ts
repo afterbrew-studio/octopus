@@ -11,6 +11,7 @@ import { rerankDocuments } from "@/lib/reranker";
 import Anthropic from "@anthropic-ai/sdk";
 import { requestAgentSearch } from "@/lib/agent-search";
 import { getReviewModel } from "@/lib/ai-client";
+import { streamChat } from "@/lib/chat-stream";
 import { getOrgSpendLimitStatus } from "@/lib/cost";
 import {
   chatScopeGuardEnabled,
@@ -213,37 +214,32 @@ ${agentResult ? `<local_agent_context>\nREAL-TIME results from a local agent ("$
           encoder.encode(`data: ${JSON.stringify({ type: "conversation_id", id: conversation.id })}\n\n`),
         );
 
-        const client = getAnthropicClient();
         let fullResponse = "";
 
         const chatModel = await getReviewModel(orgId, repoId);
 
-        const anthropicStream = client.messages.stream({
+        const result = await streamChat({
+          orgId,
           model: chatModel,
-          max_tokens: 4096,
           system: systemPrompt,
           messages: historyMessages,
-        });
-
-        for await (const event of anthropicStream) {
-          if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
-            const text = event.delta.text;
+          maxTokens: 4096,
+          onDelta: (text) => {
             fullResponse += text;
             controller.enqueue(
               encoder.encode(`data: ${JSON.stringify({ type: "delta", text })}\n\n`),
             );
-          }
-        }
+          },
+        });
 
-        const finalMessage = await anthropicStream.finalMessage();
         await logAiUsage({
-          provider: "anthropic",
+          provider: result.provider,
           model: chatModel,
           operation: "chat",
-          inputTokens: finalMessage.usage.input_tokens,
-          outputTokens: finalMessage.usage.output_tokens,
-          cacheReadTokens: finalMessage.usage.cache_read_input_tokens ?? 0,
-          cacheWriteTokens: finalMessage.usage.cache_creation_input_tokens ?? 0,
+          inputTokens: result.usage.inputTokens,
+          outputTokens: result.usage.outputTokens,
+          cacheReadTokens: result.usage.cacheReadTokens,
+          cacheWriteTokens: result.usage.cacheWriteTokens,
           organizationId: orgId,
         });
 
@@ -258,7 +254,7 @@ ${agentResult ? `<local_agent_context>\nREAL-TIME results from a local agent ("$
         // Auto-generate title on first message
         if (conversation.messages.length === 0 && fullResponse) {
           try {
-            const titleResponse = await client.messages.create({
+            const titleResponse = await getAnthropicClient().messages.create({
               model: "claude-haiku-4-5-20251001",
               max_tokens: 50,
               messages: [

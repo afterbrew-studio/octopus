@@ -21,6 +21,7 @@ import { getOrgSpendLimitStatus } from "@/lib/cost";
 import { generateSparseVector } from "@/lib/sparse-vector";
 import { requestAgentSearch, findClaudeAgent, requestAgentAnswer } from "@/lib/agent-search";
 import { getReviewModel } from "@/lib/ai-client";
+import { streamChat } from "@/lib/chat-stream";
 import {
   chatScopeGuardEnabled,
   checkChatScope,
@@ -692,7 +693,6 @@ ${agentResult ? `<local_agent_context>\nREAL-TIME results from a local agent run
           } catch {}
         }
 
-        const client = getAnthropicClient();
         let fullResponse = "";
         let deltaBatch = "";
         let lastBroadcast = Date.now();
@@ -707,69 +707,50 @@ ${agentResult ? `<local_agent_context>\nREAL-TIME results from a local agent run
         }
         const chatModel = await getReviewModel(orgId, chatRepoId);
 
-        const anthropicStream = client.messages.stream({
-          model: chatModel,
-          max_tokens: 4096,
-          system: [
-            {
-              type: "text" as const,
-              text: systemInstructions,
-              cache_control: { type: "ephemeral" as const },
-            },
-            {
-              type: "text" as const,
-              text: finalSystemContext,
-            },
-          ],
-          messages: historyMessages,
-        });
+        const flushDelta = async () => {
+          if (chatChannel && deltaBatch) {
+            try {
+              await pubby.trigger(chatChannel, "chat-stream-delta", { text: deltaBatch });
+            } catch {}
+          }
+          deltaBatch = "";
+          lastBroadcast = Date.now();
+        };
 
-        for await (const event of anthropicStream) {
-          if (
-            event.type === "content_block_delta" &&
-            event.delta.type === "text_delta"
-          ) {
-            const text = event.delta.text;
+        const result = await streamChat({
+          orgId,
+          model: chatModel,
+          systemCacheable: systemInstructions,
+          system: finalSystemContext,
+          messages: historyMessages,
+          maxTokens: 4096,
+          onDelta: async (text) => {
             fullResponse += text;
             controller.enqueue(
-              encoder.encode(
-                `data: ${JSON.stringify({ type: "delta", text })}\n\n`,
-              ),
+              encoder.encode(`data: ${JSON.stringify({ type: "delta", text })}\n\n`),
             );
-
-            // Broadcast deltas for shared chats (batched)
+            // Broadcast deltas for shared chats (batched).
             if (chatChannel) {
               deltaBatch += text;
               if (deltaBatch.length >= 200 || Date.now() - lastBroadcast >= 500) {
-                try {
-                  await pubby.trigger(chatChannel, "chat-stream-delta", { text: deltaBatch });
-                } catch {}
-                deltaBatch = "";
-                lastBroadcast = Date.now();
+                await flushDelta();
               }
             }
-          }
-        }
+          },
+        });
+        await flushDelta();
 
-        // Flush remaining delta batch
-        if (chatChannel && deltaBatch) {
-          try {
-            await pubby.trigger(chatChannel, "chat-stream-delta", { text: deltaBatch });
-          } catch {}
-        }
-
-        // Log streaming chat usage
-        const finalMessage = await anthropicStream.finalMessage();
-        const inputTokens = finalMessage.usage.input_tokens;
-        const outputTokens = finalMessage.usage.output_tokens;
-        const cacheRead = finalMessage.usage.cache_read_input_tokens ?? 0;
-        const cacheWrite = finalMessage.usage.cache_creation_input_tokens ?? 0;
+        // Log streaming chat usage against the provider that served it.
+        const inputTokens = result.usage.inputTokens;
+        const outputTokens = result.usage.outputTokens;
+        const cacheRead = result.usage.cacheReadTokens;
+        const cacheWrite = result.usage.cacheWriteTokens;
         const totalTokens = inputTokens + outputTokens;
         const maxTokens = 200_000;
         const remainingTokens = maxTokens - inputTokens;
 
         await logAiUsage({
-          provider: "anthropic",
+          provider: result.provider,
           model: chatModel,
           operation: "chat",
           inputTokens,
@@ -864,7 +845,7 @@ ${agentResult ? `<local_agent_context>\nREAL-TIME results from a local agent run
         // Auto-generate title on first message
         if (isFirstMessage && fullResponse) {
           try {
-            const titleResponse = await client.messages.create({
+            const titleResponse = await getAnthropicClient().messages.create({
               model: "claude-haiku-4-5-20251001",
               max_tokens: 50,
               messages: [

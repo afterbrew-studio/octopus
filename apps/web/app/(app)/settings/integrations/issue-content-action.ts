@@ -4,10 +4,10 @@ import { headers, cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
 import { prisma } from "@octopus/db";
-import Anthropic from "@anthropic-ai/sdk";
 import { logAiUsage } from "@/lib/ai-usage";
 import { isOrgOverSpendLimit } from "@/lib/cost";
 import { getReviewModel } from "@/lib/ai-client";
+import { createAiMessage } from "@/lib/ai-router";
 
 // ── Helpers ──
 
@@ -30,13 +30,6 @@ async function getSessionAndOrg(): Promise<{ orgId: string } | { error: string }
   return { orgId };
 }
 
-let anthropicClient: Anthropic | null = null;
-function getAnthropicClient(): Anthropic {
-  if (!anthropicClient) {
-    anthropicClient = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
-  }
-  return anthropicClient;
-}
 
 // ── Generate issue content ──
 
@@ -70,9 +63,9 @@ export async function generateIssueContent(
   const model = await getReviewModel(orgId);
 
   try {
-    const response = await getAnthropicClient().messages.create({
+    const response = await createAiMessage({
       model,
-      max_tokens: 1024,
+      maxTokens: 1024,
       messages: [
         {
           role: "user",
@@ -107,20 +100,20 @@ Write everything in English. Be professional and concise. Do NOT use markdown co
 Respond ONLY with valid JSON: {"title": "...", "description": "..."}`,
         },
       ],
-    });
+    }, orgId);
 
     logAiUsage({
-      provider: model.startsWith("gpt") || model.startsWith("o1") || model.startsWith("o3") ? "openai" : "anthropic",
+      provider: response.provider,
       model,
       operation: "generate-issue-content",
-      inputTokens: response.usage.input_tokens,
-      outputTokens: response.usage.output_tokens,
-      cacheReadTokens: response.usage.cache_read_input_tokens ?? 0,
-      cacheWriteTokens: response.usage.cache_creation_input_tokens ?? 0,
+      inputTokens: response.usage.inputTokens,
+      outputTokens: response.usage.outputTokens,
+      cacheReadTokens: response.usage.cacheReadTokens,
+      cacheWriteTokens: response.usage.cacheWriteTokens,
       organizationId: orgId,
     }).catch(console.warn);
 
-    let text = response.content[0].type === "text" ? response.content[0].text : "";
+    let text = response.text;
 
     // Strip markdown code fences if present
     const fenceMatch = text.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/);
