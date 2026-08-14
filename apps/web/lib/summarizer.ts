@@ -10,7 +10,7 @@ export async function summarizeRepository(
   fullName: string,
   organizationId?: string,
 ): Promise<{ summary: string; purpose: string }> {
-  if (organizationId && await isOrgOverSpendLimit(organizationId)) {
+  if (organizationId && await isOrgOverSpendLimit(organizationId, repoId)) {
     console.warn(`[summarizer] Org ${organizationId} over spend limit — skipping summarize`);
     return { summary: "Skipped: monthly AI usage limit reached.", purpose: "Unknown" };
   }

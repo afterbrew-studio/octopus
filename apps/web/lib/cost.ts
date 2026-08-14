@@ -172,7 +172,10 @@ function orgOwnsKeyForProvider(
   }
 }
 
-export async function getOrgSpendLimitStatus(orgId: string): Promise<SpendLimitResult> {
+export async function getOrgSpendLimitStatus(
+  orgId: string,
+  repoId?: string,
+): Promise<SpendLimitResult> {
   const org = await prisma.organization.findUnique({
     where: { id: orgId },
     select: {
@@ -207,7 +210,11 @@ export async function getOrgSpendLimitStatus(orgId: string): Promise<SpendLimitR
       import("@/lib/ai-client"),
       import("@/lib/ai-router"),
     ]);
-    const provider = await getProviderForModel(await getReviewModel(orgId));
+    // Resolve the provider of the model this review will ACTUALLY use — a
+    // repo-level pin overrides the org default. Without repoId, a BYOK-Anthropic
+    // org whose default is Anthropic would be exempted even when a repo is pinned
+    // to a platform provider (e.g. Grok), letting that usage skip the credit gate.
+    const provider = await getProviderForModel(await getReviewModel(orgId, repoId));
     if (orgOwnsKeyForProvider(org, provider)) return { blocked: false };
   } catch (err) {
     console.error("[cost] spend-gate provider resolution failed; using strict BYOK check:", err);
@@ -229,8 +236,8 @@ export async function getOrgSpendLimitStatus(orgId: string): Promise<SpendLimitR
   return { blocked: false };
 }
 
-export async function isOrgOverSpendLimit(orgId: string): Promise<boolean> {
-  const status = await getOrgSpendLimitStatus(orgId);
+export async function isOrgOverSpendLimit(orgId: string, repoId?: string): Promise<boolean> {
+  const status = await getOrgSpendLimitStatus(orgId, repoId);
   return status.blocked;
 }
 

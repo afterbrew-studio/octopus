@@ -1126,7 +1126,7 @@ export async function processReview(pullRequestId: string): Promise<void> {
     // brand-new org that never got credit must not be told it "exceeded a
     // monthly limit", and the two reasons must be separable in the reviews
     // table (both used to write the same errorMessage — see credit-health).
-    const spendStatus = await getOrgSpendLimitStatus(org.id);
+    const spendStatus = await getOrgSpendLimitStatus(org.id, repo.id);
     if (spendStatus.blocked) {
       const outOfCredits = spendStatus.reason === "no_credits";
       console.warn(`[reviewer] Org ${org.id} blocked (${spendStatus.reason}) — skipping review`);
