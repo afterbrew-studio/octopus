@@ -17,6 +17,9 @@ export const dynamic = "force-dynamic";
 interface DiscoveredModel {
   id: string;
   displayName: string;
+  // $/1M tokens, only when the provider API reports pricing (OpenRouter does).
+  inputPrice?: number;
+  outputPrice?: number;
 }
 interface ProviderResult {
   keyConfigured: boolean;
@@ -107,6 +110,78 @@ async function discoverGoogle(catalog: Set<string>): Promise<ProviderResult> {
   };
 }
 
+async function discoverGrok(catalog: Set<string>): Promise<ProviderResult> {
+  const key = process.env.GROK_API_KEY || process.env.XAI_API_KEY;
+  if (!key) return { keyConfigured: false, newUpstream: [], inCatalogNotUpstream: [] };
+  // xAI is OpenAI-compatible (same as the grok provider adapter).
+  const client = new OpenAI({ apiKey: key, baseURL: "https://api.x.ai/v1" });
+  const list = await client.models.list();
+  const upstreamIds = new Set<string>();
+  const upstream: DiscoveredModel[] = [];
+  for (const m of list.data) {
+    if (!/^grok/i.test(m.id)) continue;
+    upstreamIds.add(m.id);
+    upstream.push({ id: m.id, displayName: titleCase(m.id) });
+  }
+  return {
+    keyConfigured: true,
+    newUpstream: upstream.filter((m) => !catalog.has(m.id)),
+    inCatalogNotUpstream: [...catalog].filter((id) => !upstreamIds.has(id)),
+  };
+}
+
+// OpenRouter lists 300+ models; surface only notable labs (plus anything Kimi)
+// so the panel isn't flooded. Ids are namespaced "lab/model" (the grok/
+// openrouter adapters pass them verbatim).
+const OPENROUTER_LABS = new Set([
+  "moonshotai",
+  "x-ai",
+  "deepseek",
+  "qwen",
+  "mistralai",
+  "meta-llama",
+  "cohere",
+  "nvidia",
+  "microsoft",
+  "z-ai",
+  "minimax",
+  "amazon",
+]);
+
+async function discoverOpenRouter(catalog: Set<string>): Promise<ProviderResult> {
+  const key = process.env.OPENROUTER_API_KEY;
+  if (!key) return { keyConfigured: false, newUpstream: [], inCatalogNotUpstream: [] };
+  const res = await fetch("https://openrouter.ai/api/v1/models", {
+    headers: { Authorization: `Bearer ${key}` },
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`OpenRouter models API ${res.status}`);
+  const body = (await res.json()) as {
+    data?: { id: string; name?: string; pricing?: { prompt?: string; completion?: string } }[];
+  };
+  const upstream: DiscoveredModel[] = [];
+  for (const m of body.data ?? []) {
+    if (m.id.endsWith(":free")) continue;
+    const lab = m.id.split("/")[0]?.toLowerCase() ?? "";
+    if (!OPENROUTER_LABS.has(lab) && !/kimi/i.test(m.id)) continue;
+    // OpenRouter prices are USD per token → $/1M tokens.
+    const inP = m.pricing?.prompt ? parseFloat(m.pricing.prompt) * 1e6 : NaN;
+    const outP = m.pricing?.completion ? parseFloat(m.pricing.completion) * 1e6 : NaN;
+    upstream.push({
+      id: m.id,
+      displayName: m.name || titleCase(m.id),
+      ...(isFinite(inP) ? { inputPrice: Number(inP.toFixed(3)) } : {}),
+      ...(isFinite(outP) ? { outputPrice: Number(outP.toFixed(3)) } : {}),
+    });
+  }
+  return {
+    keyConfigured: true,
+    newUpstream: upstream.filter((m) => !catalog.has(m.id)),
+    // Filtered view — don't flag catalog rows as retired from it.
+    inCatalogNotUpstream: [],
+  };
+}
+
 export async function GET(request: NextRequest) {
   if (!isAdminApiAuthorized(request)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -132,11 +207,16 @@ export async function GET(request: NextRequest) {
     }
   };
 
-  const [anthropic, openai, google] = await Promise.all([
+  const [anthropic, openai, google, grok, openrouter] = await Promise.all([
     settle(() => discoverAnthropic(byProvider("anthropic"))),
     settle(() => discoverOpenAI(byProvider("openai"))),
     settle(() => discoverGoogle(byProvider("google"))),
+    settle(() => discoverGrok(byProvider("grok"))),
+    settle(() => discoverOpenRouter(byProvider("openrouter"))),
   ]);
 
-  return NextResponse.json({ ok: true, providers: { anthropic, openai, google } });
+  return NextResponse.json({
+    ok: true,
+    providers: { anthropic, openai, google, grok, openrouter },
+  });
 }
