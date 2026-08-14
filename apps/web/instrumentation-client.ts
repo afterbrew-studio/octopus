@@ -41,6 +41,14 @@ Sentry.init({
     "Failed to execute 'insertBefore' on 'Node'",
     "The node to be removed is not a child of this node",
     "The node before which the new node is to be inserted is not a child of this node",
+    // Network-layer fetch failures: a dropped/offline connection, a navigation
+    // that aborts an in-flight request, or a bot/monitor that never completes
+    // the request. These are unactionable client noise and differ per browser.
+    // A genuine backend outage still surfaces server-side (5xx + logs), so
+    // filtering these does not blind us to real problems.
+    "Failed to fetch", // Chromium
+    "Load failed", // Safari
+    "NetworkError when attempting to fetch resource", // Firefox
   ],
   beforeSend: (event) => scrubEvent(event),
 });
