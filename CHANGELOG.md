@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.119] - 2026-08-20
+
+### Changed
+- When a review is blocked because an organization is out of credits, the pull request comment now links straight to billing, so you can top up and resume reviews in one click.
+- New workspaces open on a single "connect your code" step instead of an empty dashboard, and the repositories page now has a connect button when it's empty.
+- If Octopus loses access to your GitHub repositories (for example when the app is uninstalled), the dashboard now shows a clear prompt to reconnect and resume reviews.
+
 ## [1.0.118] - 2026-08-14
 
 ## [1.0.117] - 2026-08-14
