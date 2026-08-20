@@ -202,6 +202,31 @@ export default async function DashboardPage({
   const gitlabConnected = !!gitlabIntegration;
   const bannerDismissed = cookieStore.get("providers_banner_dismissed")?.value === "1";
 
+  // Connect-first empty state: an org with no provider and no repos gets one
+  // clear action instead of an all-zero analytics grid. Not dismissible —
+  // there is nothing else to show until code is connected. Also skips the
+  // chart queries below, which would all be empty for this cohort.
+  if (!githubConnected && !bitbucketConnected && !gitlabConnected && totalRepos === 0) {
+    return (
+      <div className="mx-auto max-w-6xl p-6 md:p-10">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">Dashboard</h1>
+          <p className="text-muted-foreground mt-1 text-sm">
+            Overview of your repositories and integrations.
+          </p>
+        </div>
+        <ProvidersBanner
+          hero
+          githubConnected={githubConnected}
+          bitbucketConnected={bitbucketConnected}
+          gitlabConnected={gitlabConnected}
+          githubAppSlug={githubAppSlug}
+          gitlabRedirectUri={process.env.GITLAB_REDIRECT_URI ?? null}
+        />
+      </div>
+    );
+  }
+
   const hasIndexedRepo = repos.some((r) => r.indexStatus === "indexed");
   const hasAnalyzedRepo = repos.some((r) => r.analysisStatus === "analyzed" || r.analysisStatus === "completed");
   const hasAutoReviewRepo = repos.some((r) => r.autoReview === true);

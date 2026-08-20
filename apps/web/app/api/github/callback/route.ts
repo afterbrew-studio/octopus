@@ -11,6 +11,7 @@ import {
 } from "@/lib/github";
 import { getGithubAppConfig } from "@/lib/github-app-config";
 import { getRedis } from "@/lib/redis";
+import { writeAuditLog } from "@/lib/audit";
 import {
   GITHUB_INSTALL_STATE_COOKIE,
   GITHUB_INSTALL_STATE_TTL_MS,
@@ -26,7 +27,15 @@ import {
 const baseUrl = process.env.BETTER_AUTH_URL || "http://localhost:3000";
 const callbackUrl = new URL("/api/github/callback", baseUrl).toString();
 
-function errorRedirect(reason: string) {
+async function errorRedirect(reason: string) {
+  // Funnel: every failed connect attempt is recorded with its reason.
+  // Actor/org are unknown on some paths (e.g. invalid state), so only the
+  // reason goes in — writeAuditLog swallows its own errors.
+  await writeAuditLog({
+    action: "integration.install_failed",
+    category: "system",
+    metadata: { provider: "github", reason },
+  });
   const url = new URL("/settings/integrations", baseUrl);
   url.searchParams.set("error", reason);
   const response = NextResponse.redirect(url);
@@ -281,6 +290,20 @@ async function finishVerification(request: NextRequest, stateParam: string) {
     caller.organizationId,
   );
   if (!binding.ok) return errorRedirect(binding.reason);
+
+  // Funnel: install completed and bound to the org.
+  await writeAuditLog({
+    action: "integration.connected",
+    category: "system",
+    actorId: verified.payload.uid,
+    organizationId: caller.organizationId,
+    targetType: "Organization",
+    targetId: caller.organizationId,
+    metadata: {
+      provider: "github",
+      installationId: verified.payload.installationId,
+    },
+  });
 
   revalidatePath("/", "layout");
   revalidatePath("/");
