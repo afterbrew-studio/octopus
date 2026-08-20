@@ -10,6 +10,7 @@ import {
   signInstallState,
 } from "@/lib/github-install-state";
 import { getGithubAppConfig } from "@/lib/github-app-config";
+import { writeAuditLog } from "@/lib/audit";
 
 const baseUrl = process.env.BETTER_AUTH_URL || "http://localhost:3000";
 
@@ -47,6 +48,18 @@ export async function GET(request: NextRequest) {
   }
 
   const returnTo = safeReturnPath(request.nextUrl.searchParams.get("returnTo"));
+
+  // Funnel: signup → install started → connected (see /api/github/callback).
+  // Fire-and-forget: telemetry must never block or fail the onboarding redirect
+  // (Octopus review #762) — a transient audit-log error can't strand the user.
+  void writeAuditLog({
+    action: "integration.install_started",
+    category: "system",
+    actorId: session.user.id,
+    actorEmail: session.user.email,
+    organizationId: membership.organizationId,
+    metadata: { provider: "github", returnTo },
+  }).catch(() => {});
 
   const nonce = crypto.randomBytes(16).toString("base64url");
   const state = signInstallState({

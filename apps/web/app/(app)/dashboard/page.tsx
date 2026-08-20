@@ -188,6 +188,11 @@ export default async function DashboardPage({
   const indexedRepos = repos.filter((r) => r.indexStatus === "indexed").length;
   const notIndexedRepos = totalRepos - indexedRepos;
   const githubConnected = org.githubInstallationId !== null;
+  // Dropped-install detection: the GitHub App was uninstalled (installationId
+  // nulled) but active GitHub repos remain, so PR webhooks are silently dropped
+  // and the org gets no reviews while still looking "connected". Prompt a
+  // reconnect. (~9 real orgs in prod — see the credit-health / onboarding scan.)
+  const githubReconnectNeeded = !githubConnected && repos.some((r) => r.provider === "github");
   const githubAppSlug = (await getGithubAppConfig())?.slug ?? undefined;
 
   const bitbucketIntegration = await prisma.bitbucketIntegration.findUnique({
@@ -201,6 +206,31 @@ export default async function DashboardPage({
   });
   const gitlabConnected = !!gitlabIntegration;
   const bannerDismissed = cookieStore.get("providers_banner_dismissed")?.value === "1";
+
+  // Connect-first empty state: an org with no provider and no repos gets one
+  // clear action instead of an all-zero analytics grid. Not dismissible —
+  // there is nothing else to show until code is connected. Also skips the
+  // chart queries below, which would all be empty for this cohort.
+  if (!githubConnected && !bitbucketConnected && !gitlabConnected && totalRepos === 0) {
+    return (
+      <div className="mx-auto max-w-6xl p-6 md:p-10">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">Dashboard</h1>
+          <p className="text-muted-foreground mt-1 text-sm">
+            Overview of your repositories and integrations.
+          </p>
+        </div>
+        <ProvidersBanner
+          hero
+          githubConnected={githubConnected}
+          bitbucketConnected={bitbucketConnected}
+          gitlabConnected={gitlabConnected}
+          githubAppSlug={githubAppSlug}
+          gitlabRedirectUri={process.env.GITLAB_REDIRECT_URI ?? null}
+        />
+      </div>
+    );
+  }
 
   const hasIndexedRepo = repos.some((r) => r.indexStatus === "indexed");
   const hasAnalyzedRepo = repos.some((r) => r.analysisStatus === "analyzed" || r.analysisStatus === "completed");
@@ -516,7 +546,26 @@ export default async function DashboardPage({
         <BuyCreditsButton card={defaultCard} />
       </div>
 
-      {(!githubConnected || !bitbucketConnected || !gitlabConnected) && !bannerDismissed && (
+      {githubReconnectNeeded && (
+        <div className="mt-6 rounded-lg border border-amber-500/40 bg-amber-500/10 p-4">
+          <p className="font-medium text-amber-700 dark:text-amber-400">
+            GitHub connection removed — reviews are paused
+          </p>
+          <p className="text-muted-foreground mt-1 text-sm">
+            Octopus no longer has access to your GitHub repositories, so new pull
+            requests aren&apos;t being reviewed. This usually happens when the GitHub
+            App is uninstalled. Reconnect to resume automatic reviews.
+          </p>
+          <a
+            href="/api/github/install?returnTo=/dashboard"
+            className="bg-primary text-primary-foreground hover:bg-primary/90 mt-3 inline-flex items-center rounded-md px-3 py-1.5 text-sm font-medium"
+          >
+            Reconnect GitHub
+          </a>
+        </div>
+      )}
+
+      {!githubReconnectNeeded && (!githubConnected || !bitbucketConnected || !gitlabConnected) && !bannerDismissed && (
         <ProvidersBanner
           githubConnected={githubConnected}
           bitbucketConnected={bitbucketConnected}

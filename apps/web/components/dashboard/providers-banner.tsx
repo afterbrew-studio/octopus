@@ -26,6 +26,7 @@ import {
   IconCheck,
 } from "@tabler/icons-react";
 import { startGitlabOAuth } from "@/app/(app)/settings/integrations/actions";
+import { trackEvent } from "@/lib/analytics";
 
 const DEFAULT_GITLAB_HOST = "https://gitlab.com";
 const GITLAB_REQUIRED_SCOPES =
@@ -47,12 +48,15 @@ export function ProvidersBanner({
   gitlabConnected,
   githubAppSlug,
   gitlabRedirectUri,
+  hero = false,
 }: {
   githubConnected: boolean;
   bitbucketConnected: boolean;
   gitlabConnected: boolean;
   githubAppSlug: string | undefined;
   gitlabRedirectUri: string | null;
+  /** Connect-first empty state: bigger headline, not dismissible. */
+  hero?: boolean;
 }) {
   const [dismissed, setDismissed] = useState(false);
   const [bbDialogOpen, setBbDialogOpen] = useState(false);
@@ -90,24 +94,28 @@ export function ProvidersBanner({
 
   return (
     <>
-      <Card className="mt-6 px-5 py-5">
+      <Card className={hero ? "mt-6 px-5 py-6 sm:px-6" : "mt-6 px-5 py-5"}>
         <div className="flex items-start justify-between">
           <div>
-            <p className="text-sm font-semibold">Connect your code providers</p>
-            <p className="text-muted-foreground mt-0.5 text-xs">
+            <p className={hero ? "text-lg font-semibold tracking-tight" : "text-sm font-semibold"}>
+              {hero ? "Connect your code to start reviewing" : "Connect your code providers"}
+            </p>
+            <p className={hero ? "text-muted-foreground mt-1 text-sm" : "text-muted-foreground mt-0.5 text-xs"}>
               Link your repositories to get AI-powered code reviews on every pull request.
             </p>
           </div>
-          <button
-            onClick={() => {
-              setCookie("providers_banner_dismissed", "1", 365);
-              setDismissed(true);
-            }}
-            className="text-muted-foreground hover:text-foreground transition-colors rounded-sm p-0.5 shrink-0"
-            aria-label="Dismiss"
-          >
-            <IconX className="size-4" />
-          </button>
+          {!hero && (
+            <button
+              onClick={() => {
+                setCookie("providers_banner_dismissed", "1", 365);
+                setDismissed(true);
+              }}
+              className="text-muted-foreground hover:text-foreground transition-colors rounded-sm p-0.5 shrink-0"
+              aria-label="Dismiss"
+            >
+              <IconX className="size-4" />
+            </button>
+          )}
         </div>
 
         <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -151,7 +159,15 @@ export function ProvidersBanner({
               ) : (
                 githubInstallUrl && (
                   <Button size="sm" variant="cta" className="h-8 w-full text-xs" asChild>
-                    <a href={githubInstallUrl}>
+                    <a
+                      href={githubInstallUrl}
+                      onClick={() =>
+                        trackEvent("cta_click", {
+                          location: hero ? "dashboard_connect_hero" : "dashboard_providers_banner",
+                          label: "connect_github",
+                        })
+                      }
+                    >
                       Connect GitHub &rarr;
                     </a>
                   </Button>

@@ -2089,6 +2089,24 @@ export function RepositoriesContent({
               <p className="text-sm text-muted-foreground">
                 {currentSearch ? "No repositories match your search" : "No repositories yet"}
               </p>
+              {!currentSearch && (
+                <div className="mt-4 flex flex-col items-center gap-2">
+                  {githubAppSlug && (
+                    <Button size="sm" variant="cta" asChild>
+                      <a href="/api/github/install?returnTo=/repositories">
+                        <IconBrandGithub className="mr-1 size-3.5" />
+                        Connect GitHub
+                      </a>
+                    </Button>
+                  )}
+                  <a
+                    href="/settings/integrations"
+                    className="text-xs text-muted-foreground underline hover:text-foreground transition-colors"
+                  >
+                    Connect GitLab or Bitbucket
+                  </a>
+                </div>
+              )}
             </div>
           ) : (
             <>
