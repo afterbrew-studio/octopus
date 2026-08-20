@@ -1130,9 +1130,13 @@ export async function processReview(pullRequestId: string): Promise<void> {
     if (spendStatus.blocked) {
       const outOfCredits = spendStatus.reason === "no_credits";
       console.warn(`[reviewer] Org ${org.id} blocked (${spendStatus.reason}) — skipping review`);
+      // Link the CTA straight to checkout: blocked users see this comment a lot
+      // (top live failure reason) but never convert — the old copy said "in
+      // Settings" with no clickable path. See credit-health diagnosis.
+      const appUrl = process.env.BETTER_AUTH_URL || process.env.NEXT_PUBLIC_APP_URL || "https://octopus-review.ai";
       const limitMsg = outOfCredits
-        ? "> 🐙 **Octopus Review** — Your organization is **out of credits**. Add credits (or your own API keys) in Settings to start receiving reviews."
-        : "> 🐙 **Octopus Review** — Your organization has reached its monthly AI usage limit.\n>\n> Please add your own API keys in Settings to continue receiving reviews.";
+        ? `> 🐙 **Octopus Review** — Your organization is **out of credits**. [**Add credits**](${appUrl}/settings/billing) or add your own [API keys](${appUrl}/settings/api-keys) to start receiving reviews again.`
+        : `> 🐙 **Octopus Review** — Your organization has reached its monthly AI usage limit.\n>\n> [Raise your limit](${appUrl}/settings/billing) or add your own [API keys](${appUrl}/settings/api-keys) to continue receiving reviews.`;
       if (reviewCommentId) {
         await providerUpdateComment(reviewCommentId, limitMsg);
       } else {
