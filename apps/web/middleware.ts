@@ -12,6 +12,7 @@ const publicPrefixes = [
   "/status",
   "/not-a-rabbit",
   "/compare",
+  "/editor",
   "/vs-",
   "/api/auth",
   "/api/github",
