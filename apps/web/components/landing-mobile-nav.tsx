@@ -4,7 +4,7 @@ import { useState } from "react";
 import Image from "next/image";
 import Link from "@/components/link";
 import { TrackedLink } from "@/components/tracked-link";
-import { IconMenu2, IconX, IconBrandGithub, IconBook, IconBug, IconCoin, IconNews, IconMessageCircle } from "@tabler/icons-react";
+import { IconMenu2, IconX, IconBrandGithub, IconBook, IconBug, IconCoin, IconNews, IconMessageCircle, IconPlugConnected } from "@tabler/icons-react";
 
 export function LandingMobileNav({ isLoggedIn }: { isLoggedIn: boolean }) {
   const [open, setOpen] = useState(false);
@@ -76,6 +76,19 @@ export function LandingMobileNav({ isLoggedIn }: { isLoggedIn: boolean }) {
               <div className="mt-2 border-t border-white/[0.06] pt-2">
                 <span className="px-3 py-1 text-xs font-semibold uppercase tracking-[0.15em] text-[#444]">Resources</span>
                 <div className="mt-1.5 grid grid-cols-2 gap-0.5">
+                  <TrackedLink
+                    href="/editor"
+                    event="nav_click"
+                    eventParams={{ label: "editor" }}
+                    onClick={() => setOpen(false)}
+                    className="col-span-2 flex items-start gap-2.5 rounded-lg border border-teal-500/15 bg-teal-500/[0.06] px-3 py-2.5 transition-colors hover:bg-teal-500/[0.1]"
+                  >
+                    <IconPlugConnected className="mt-0.5 size-4 shrink-0 text-teal-400" />
+                    <div>
+                      <div className="text-sm font-medium text-[#ccc]">Editor Plugin</div>
+                      <div className="mt-0.5 text-[11px] text-[#555]">Reviews inside Cursor &amp; Claude Code</div>
+                    </div>
+                  </TrackedLink>
                   <TrackedLink
                     href="/docs/getting-started"
                     event="nav_click"
