@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.120] - 2026-08-21
+
+### Added
+- A new page at octopus-review.ai/editor introduces the Octopus editor plugin for Cursor and Claude Code, with a plain-language walkthrough of how it reviews your code without leaving your editor.
+
 ## [1.0.119] - 2026-08-20
 
 ### Changed
