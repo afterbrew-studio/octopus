@@ -4,7 +4,7 @@ import { useState } from "react";
 import Image from "next/image";
 import Link from "@/components/link";
 import { TrackedLink } from "@/components/tracked-link";
-import { IconArrowRight, IconBook, IconBrandGithub, IconBug, IconCoin, IconNews, IconMessageCircle } from "@tabler/icons-react";
+import { IconArrowRight, IconBook, IconBrandGithub, IconBug, IconCoin, IconNews, IconMessageCircle, IconPlugConnected } from "@tabler/icons-react";
 
 export function LandingDesktopNav({ isLoggedIn }: { isLoggedIn: boolean }) {
   const [resourcesOpen, setResourcesOpen] = useState(false);
@@ -53,6 +53,18 @@ export function LandingDesktopNav({ isLoggedIn }: { isLoggedIn: boolean }) {
               }`}
             >
               <div className="grid w-[480px] grid-cols-2 gap-0.5 rounded-xl border border-white/[0.08] bg-[#161616] p-2 shadow-xl shadow-black/30">
+                <TrackedLink
+                  href="/editor"
+                  event="nav_click"
+                  eventParams={{ label: "editor" }}
+                  className="col-span-2 flex items-start gap-3 rounded-lg border border-teal-500/15 bg-teal-500/[0.06] px-3 py-3 transition-colors hover:bg-teal-500/[0.1]"
+                >
+                  <IconPlugConnected className="mt-0.5 size-5 shrink-0 text-teal-400" />
+                  <div>
+                    <div className="text-sm font-medium text-[#ccc]">Editor Plugin</div>
+                    <div className="mt-0.5 text-xs text-[#555]">Octopus reviews inside Cursor &amp; Claude Code</div>
+                  </div>
+                </TrackedLink>
                 <TrackedLink
                   href="/docs/getting-started"
                   event="nav_click"
