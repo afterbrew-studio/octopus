@@ -83,3 +83,4 @@ pentest/
 .mcp.json
 
 .vscode/**
+deploy/afterbrew/.env
