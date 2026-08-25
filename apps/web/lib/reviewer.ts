@@ -61,6 +61,7 @@ import {
 } from "@/lib/diff-truncate";
 import type { ReviewComment } from "@/lib/github";
 import { eventBus } from "@/lib/events";
+import { resolveReviewConfig } from "@/lib/review-attempt";
 import {
   touchesSharedFiles,
   extractUserInstruction,
@@ -616,7 +617,20 @@ async function syncTextDismissalsForPR(
   }
 }
 
-export async function processReview(pullRequestId: string): Promise<void> {
+export async function processReview(
+  pullRequestId: string,
+  /**
+   * The frozen attempt to execute. When present its configuration snapshot is
+   * used verbatim instead of re-merging system, organization and repository
+   * config -- so a change to any of those between enqueue and execution cannot
+   * alter the review that runs. rayf P-0007 C3.
+   *
+   * Absent for jobs enqueued before attempts existed; those keep the old
+   * behaviour rather than failing, because refusing them would strand work
+   * already in the queue.
+   */
+  attemptId?: string,
+): Promise<void> {
   // Load PR with repo and org info
   const pr = await prisma.pullRequest.findUnique({
     where: { id: pullRequestId },
@@ -676,6 +690,14 @@ export async function processReview(pullRequestId: string): Promise<void> {
   const org = repo.organization;
 
   // 3-tier config: system defaults -> org defaults -> repo overrides
+  // The frozen decision, if this job carries one.
+  const attempt = attemptId
+    ? await prisma.reviewAttempt.findUnique({
+        where: { id: attemptId },
+        select: { id: true, configSnapshot: true, state: true },
+      })
+    : null;
+
   let systemConfig: ReviewConfig = {};
   try {
     const sysRow = await prisma.systemConfig.findUnique({ where: { id: "singleton" } });
@@ -683,7 +705,10 @@ export async function processReview(pullRequestId: string): Promise<void> {
   } catch { /* table may not exist yet */ }
   const orgConfig = parseReviewConfig(org.defaultReviewConfig);
   const repoConfig = parseReviewConfig(repo.reviewConfig);
-  const reviewConfig = mergeReviewConfigs(systemConfig, orgConfig, repoConfig);
+  // The snapshot wins. Re-merging here is what C3 exists to prevent: the three
+  // sources are mutable, so the merge would answer "what is configured now"
+  // rather than "what was approved when this was enqueued".
+  const reviewConfig = resolveReviewConfig(attempt, mergeReviewConfigs(systemConfig, orgConfig, repoConfig));
 
   if (org.reviewsPaused) {
     console.log(`[reviewer] Reviews paused for org ${org.id}, skipping PR ${pr.id}`);
