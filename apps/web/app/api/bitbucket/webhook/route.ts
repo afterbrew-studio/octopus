@@ -134,6 +134,7 @@ export async function POST(request: NextRequest) {
     }
 
     await startReviewFlow({
+      source: "webhook",
       provider: "bitbucket",
       organizationId: orgId,
       repoFullName,
@@ -238,6 +239,7 @@ export async function POST(request: NextRequest) {
       }
 
       await startReviewFlow({
+        source: "webhook",
         provider: "bitbucket",
         organizationId: orgId,
         repoFullName,

@@ -96,6 +96,7 @@ export async function POST(request: NextRequest) {
       }
 
       await startReviewFlow({
+        source: "webhook",
         provider: "gitlab",
         organizationId: orgId,
         repoFullName,
@@ -175,6 +176,7 @@ export async function POST(request: NextRequest) {
     }
 
     await startReviewFlow({
+      source: "webhook",
       provider: "gitlab",
       organizationId: orgId,
       repoFullName,

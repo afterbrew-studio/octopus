@@ -342,6 +342,7 @@ export async function POST(request: NextRequest) {
     console.log(`[webhook] Auto-review enabled — starting review for PR #${prNumber}`);
 
     await startReviewFlow({
+      source: "webhook",
       provider: "github",
       installationId,
       repoFullName,
@@ -534,6 +535,7 @@ export async function POST(request: NextRequest) {
         .catch((err) => console.error("[webhook] Failed to add reaction:", err));
 
       await startReviewFlow({
+        source: "webhook",
         provider: "github",
         installationId,
         repoFullName,
