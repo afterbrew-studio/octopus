@@ -74,23 +74,27 @@ deny_head() {
 # identical to a correct refusal. Reported rather than counted, so a probe run
 # before the App exists cannot read as "signature verification works".
 echo "== is there a webhook secret to verify against? =="
+# The WEBHOOK SECRET, specifically -- not "is an App configured". `verifySignature`
+# returns false when the secret is absent, whatever else is set, so an App with
+# credentials but no secret still refuses every delivery with the same 401. Asking
+# the broader question reports the narrower one as answered.
+#
 # Two sources, because `github-app-config.ts` reads both: the SystemConfig singleton
-# when an App was provisioned through the manifest flow, and GITHUB_APP_* env vars
-# otherwise. Checking one would report "unconfigured" for a deployment configured
-# the other way -- and the query has to name a column, because a query against a
-# table that does not exist fails silently into the same "unconfigured" branch.
-app_db=$(docker compose exec -T postgres psql -U "${POSTGRES_USER:-}" -d "${POSTGRES_DB:-}" -tAc \
-  'select count(*) from system_config where "githubAppId" is not null' 2>/dev/null | tr -d '[:space:]')
-app_env=$(docker compose exec -T web sh -c 'printf "%s" "${GITHUB_APP_ID:-}"' 2>/dev/null | tr -d '[:space:]')
-if [ -z "$app_db" ]; then
-  bad "the App-configuration check" "the system_config query returned nothing -- the column or the table is not what this expects, so this probe cannot tell configured from unconfigured"
-elif [ "$app_db" != "0" ] || [ -n "$app_env" ]; then
-  ok "a GitHub App is configured, so a 401 below is a real signature refusal"
+# for a manifest-provisioned App, and GITHUB_WEBHOOK_SECRET otherwise. The query has
+# to name a column -- one against a table that does not exist fails silently into
+# the same branch as "not configured".
+secret_db=$(docker compose exec -T postgres psql -U "${POSTGRES_USER:-}" -d "${POSTGRES_DB:-}" -tAc \
+  'select count(*) from system_config where "githubAppWebhookSecretEnc" is not null' 2>/dev/null | tr -d '[:space:]')
+secret_env=$(docker compose exec -T web sh -c 'printf "%s" "${GITHUB_WEBHOOK_SECRET:-}"' 2>/dev/null | tr -d '[:space:]')
+if [ -z "$secret_db" ]; then
+  bad "the webhook-secret check" "the system_config query returned nothing -- the column or the table is not what this expects, so this probe cannot tell configured from unconfigured"
+elif [ "$secret_db" != "0" ] || [ -n "$secret_env" ]; then
+  ok "a webhook secret exists, so a 401 below is a real signature refusal"
 else
-  printf '  note  no GitHub App configuration, in the database or in the environment.\n'
+  printf '  note  no webhook secret, in the database or in the environment.\n'
   printf '        The 401s below prove the route is admitted and reaches the app.\n'
-  printf '        They do NOT prove signature verification, because an unconfigured\n'
-  printf '        deployment refuses every delivery with the same 401.\n'
+  printf '        They do NOT prove signature verification: with no secret,\n'
+  printf '        verifySignature refuses every delivery with the same 401.\n'
 fi
 
 echo "== the one admitted route reaches the application and is refused there =="
