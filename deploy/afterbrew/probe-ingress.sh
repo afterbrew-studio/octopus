@@ -76,6 +76,17 @@ resp=$(curl -sS -m 10 -o /dev/null -w '%{http_code}' -X POST "$INGRESS/api/githu
 [ "$resp" = "401" ] && ok "POST /api/github/webhook unsigned -> 401" \
                     || bad "POST /api/github/webhook unsigned" "expected 401, got $resp"
 
+# The handler must read the whole body before it can check the HMAC, so without a
+# limit an unauthenticated caller decides how much memory the application allocates.
+echo "== an oversized body is refused at the edge, before the application reads it =="
+big=$(mktemp)
+head -c 26000000 /dev/zero | tr '\0' 'a' >"$big"
+resp=$(curl -sS -m 60 -o /dev/null -w '%{http_code}' -X POST "$INGRESS/api/github/webhook" \
+  -H 'content-type: application/json' --data-binary "@$big" 2>&1)
+rm -f "$big"
+[ "$resp" = "413" ] && ok "POST /api/github/webhook with a 26 MB body -> 413" \
+                    || bad "POST /api/github/webhook oversized" "expected 413, got $resp"
+
 echo "== the dashboard and every other route are not reachable =="
 deny GET  /
 deny GET  /dashboard

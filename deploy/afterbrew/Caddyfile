@@ -11,6 +11,15 @@
 # unreachable from outside until someone edits this file, which is a change that
 # gets reviewed.
 #
+# The cost of that direction, stated rather than discovered: several product
+# features need an external callback and DO NOT WORK on this deployment. GitLab and
+# Bitbucket register webhooks pointing at /api/gitlab/webhook and
+# /api/bitbucket/webhook; Stripe posts to /api/stripe/webhook; Slack posts slash
+# commands to /api/slack/commands. All four are 404 here. That is correct for a
+# deployment that reviews one GitHub organisation and bills nobody -- and it is a
+# silent failure if someone connects one of them, because the vendor's delivery log
+# is the only place the 404 appears. Enabling one means adding it here, deliberately.
+#
 # The tunnel terminates TLS and connects to this over the loopback publication in
 # docker-compose.yml, so this speaks plain HTTP deliberately -- it never listens on
 # a routable interface.
@@ -35,6 +44,14 @@
 		path /api/github/webhook
 	}
 	handle @webhook {
+		# The handler reads the whole body before it can verify the HMAC -- it has to,
+		# since the signature covers the body. So an unauthenticated caller decides how
+		# much memory the application allocates, in a process that also runs the
+		# dashboard and the review workers. 25 MB is GitHub's own delivery ceiling;
+		# anything larger is refused here, before Node sees it.
+		request_body {
+			max_size 25MB
+		}
 		reverse_proxy web:3000 {
 			header_up X-Forwarded-Proto https
 		}

@@ -47,6 +47,13 @@ on its own schedule; under a blocklist each new one would be exposed the moment 
 Under an allowlist it is unreachable until somebody edits `Caddyfile`, which is a reviewed
 change.
 
+**Four product features do not work under this allowlist**, and the failure is quiet: GitLab
+and Bitbucket webhooks, Stripe billing callbacks, and Slack slash commands all need an
+external callback, and all four get a 404 here. The only place that shows up is the vendor's
+own delivery log. That is the right trade for a deployment reviewing one GitHub organisation
+and billing nobody -- but connecting any of them means adding its route to `Caddyfile`
+deliberately, not discovering the omission later.
+
 The tunnel is pointed at the ingress, never at `web`. Like the dashboard, the ingress
 publishes on loopback only -- a tunnel client runs on the host as an unprivileged process
 and dials it locally, so nothing on the LAN reaches either one.
@@ -62,7 +69,8 @@ unsigned request is refused either way, and the app's refusal is the one under t
 ```
 
 Asserts the whole boundary in one run: the admitted route reaches the application and is
-refused there with `401 Invalid signature`; 18 other routes -- the dashboard, `/api/health`,
+refused there with `401 Invalid signature`; a 26 MB body is refused with `413` before the
+application allocates for it; 18 other routes -- the dashboard, `/api/health`,
 `/api/admin/*`, `/api/cli/*`, `/api/agent/*`, the other providers' webhooks, and the webhook
 path under the wrong method -- are refused at the edge; and no datastore answers on a host
 port.
@@ -71,7 +79,7 @@ A denied route has to be **404 with an empty body**. Status alone would not do: 
 also answers 404, with an HTML page, so a status-only check passes just as happily when the
 request reached the application and the allowlist did not hold.
 
-Measured on the deployment, 2026-08-26: 26 checks, 26 passed.
+Measured on the deployment, 2026-08-26: 27 checks, 27 passed.
 
 ### What is not here yet
 
