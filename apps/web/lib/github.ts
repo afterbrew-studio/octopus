@@ -352,6 +352,17 @@ export async function createPullRequestReview(
   comments: ReviewComment[],
   /** Pre-resolved token (bot-account mode). Skips getInstallationToken when provided. */
   providedToken?: string,
+  /**
+   * The commit this review actually read.
+   *
+   * Omitting it does NOT mean "unspecified" - GitHub stamps the review with the
+   * PR's head at the moment this POST lands. A review takes minutes (model
+   * calls, verification, cross-file fetches), so on a PR that is being pushed to
+   * that stamp routinely names a commit the reviewer never saw. Anything that
+   * later treats `commit_id` as evidence of what was reviewed is then reading a
+   * value that means the opposite.
+   */
+  commitId?: string,
 ): Promise<number> {
   // The review-record `body` is subject to the same 65,536-char limit as
   // issue/PR comments; without this the standard-pipeline review path can
@@ -370,6 +381,7 @@ export async function createPullRequestReview(
         body: safeBody,
         event,
         comments,
+        ...(commitId ? { commit_id: commitId } : {}),
       }),
     },
   );

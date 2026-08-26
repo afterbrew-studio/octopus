@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { isCleanReview, shouldFailReviewCheck, formatPastReviews, formatPrIntent, buildRetrievalQuery, cappedConfidence, UNCITED_HIGH_SEV_CAP, filterByConfidence, resolveConfidenceThreshold, type PastReviewHit } from "@/lib/review-helpers";
+import { mayApprove, isCleanReview, shouldFailReviewCheck, formatPastReviews, formatPrIntent, buildRetrievalQuery, cappedConfidence, UNCITED_HIGH_SEV_CAP, filterByConfidence, resolveConfidenceThreshold, type PastReviewHit } from "@/lib/review-helpers";
 
 describe("formatPastReviews", () => {
   const hit = (o: Partial<PastReviewHit> = {}): PastReviewHit => ({
@@ -197,5 +197,46 @@ describe("isCleanReview", () => {
     const withCritical = sev({ hasCritical: true });
     expect(shouldFailReviewCheck(withCritical, "none")).toBe(false);
     expect(isCleanReview(withCritical)).toBe(false);
+  });
+});
+
+describe("mayApprove", () => {
+  const clean = { hasCritical: false, hasHigh: false, hasMedium: false };
+  const ok = { optedIn: true, found: clean, parsedOutput: true, readWholeDiff: true };
+
+  it("approves only a clean, complete review of the whole diff, when opted in", () => {
+    expect(mayApprove(ok)).toBe(true);
+  });
+
+  it("refuses when the org never granted the authority", () => {
+    expect(mayApprove({ ...ok, optedIn: false })).toBe(false);
+  });
+
+  it("refuses a re-review that found a HIGH, which the display filter would hide", () => {
+    // On a follow-up review the reviewer keeps only critical findings for
+    // DISPLAY. Deciding approval from that filtered set makes every re-review
+    // read as "no high, no medium" - and every review after the first is a
+    // re-review, so it is the common case, not an edge one.
+    expect(mayApprove({ ...ok, found: { ...clean, hasHigh: true } })).toBe(false);
+    expect(mayApprove({ ...ok, found: { ...clean, hasMedium: true } })).toBe(false);
+  });
+
+  it("refuses when the model response did not arrive whole", () => {
+    // A response truncated mid-emission parses to zero findings, which is the
+    // same value a genuinely clean review produces.
+    expect(mayApprove({ ...ok, parsedOutput: false })).toBe(false);
+  });
+
+  it("refuses when part of the diff was never read", () => {
+    // Truncated or ignore-filtered: an approval vouches for the change, and a
+    // partly-read change cannot be vouched for. The dangerous shape is a large
+    // PR whose auth file was dropped by truncation while a lockfile survived.
+    expect(mayApprove({ ...ok, readWholeDiff: false })).toBe(false);
+  });
+
+  it("needs every condition, not a majority of them", () => {
+    for (const key of ["optedIn", "parsedOutput", "readWholeDiff"] as const) {
+      expect(mayApprove({ ...ok, [key]: false })).toBe(false);
+    }
   });
 });
