@@ -387,6 +387,13 @@ model RepoConfigExtraction {
 }
 
 model PullRequest {
+
+  /// Identifies ONE execution of a review, written when a worker claims this row.
+  /// pg-boss times a handler out with Promise.race and aborts a signal nobody
+  /// observes, so the original worker keeps running while the reaper marks the row
+  /// failed and enqueues a retry. Both then publish. A worker compares this before
+  /// it publishes or finalises; a mismatch means it lost the row and stops.
+  claimToken     String?
   id                 String    @id @default(cuid())
   number             Int
   title              String
