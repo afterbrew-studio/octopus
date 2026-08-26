@@ -5,11 +5,25 @@ deployment rayf's P-0007 describes, and every difference from upstream is delibe
 
 ## Deploy
 
+**Order matters.** `web` starts its queue workers and reconciliation immediately, against a
+database that on a fresh deployment has no tables yet -- so it must not start until the
+schema exists. Compose only waits for the datastores to be *healthy*, which they are while
+still empty.
+
 ```sh
 ./generate-secrets.sh                 # writes .env, mode 600, never prints a value
-docker compose up -d
-BASELINE=1 ./migrate.sh ./prisma      # first time only
+
+# The runtime image carries no migrations, so bring the schema to the host from a
+# checkout of the matching tag. It is read-only to everything that follows.
+cp -R /path/to/octopus/packages/db/prisma ./prisma
+
+docker compose up -d postgres qdrant  # datastores first
+BASELINE=1 ./migrate.sh               # first time only; refuses if tables exist
+docker compose up -d                  # now web and the ingress
 ```
+
+`migrate.sh` finds the compose network by inspecting the running `postgres` container, so
+it does not care what the project is called.
 
 Then reach the dashboard over an SSH tunnel, because it binds loopback only:
 
@@ -59,8 +73,27 @@ read-only. That is not incidental: the runtime image carries no migrations and t
 publishes no port, so there is nothing on the host to connect to. Nothing is installed on
 the host and nothing is left behind.
 
-## Rotating secrets
+## Rotating secrets, and which one encrypts the data
 
 `generate-secrets.sh` refuses to overwrite an existing `.env`. The PostgreSQL password is
-fixed at initdb time, so regenerating it locks the deployment out of its own volume. Use
-`--rotate-app` for the application secrets, which are safe to change.
+fixed at initdb time, so regenerating it locks the deployment out of its own volume.
+`--rotate-app` replaces `BETTER_AUTH_SECRET` and preserves everything else, including any
+provider keys and OAuth settings you added by hand.
+
+**`OCTOPUS_DATA_KEY` is the key that encrypts stored credentials.** `apps/web/lib/crypto.ts`
+uses it, and falls back to `sha256(BETTER_AUTH_SECRET)` when it is unset. That fallback is
+the trap: without a data key, "rotating the app secret" *is* rotating the encryption key, and
+every encrypted row becomes unreadable. So this script generates a data key up front and
+carries it across every rotation, and `--rotate-app` **refuses** on an `.env` that has none.
+
+Adding one to a deployment that was provisioned without it, with nothing to re-encrypt:
+
+```sh
+# The key the fallback is already using, written down explicitly. Existing
+# ciphertext stays readable byte for byte, and the secret is never printed.
+set -a; . ./.env; set +a
+printf 'OCTOPUS_DATA_KEY=%s\n' \
+  "$(printf '%s' "$BETTER_AUTH_SECRET" | sha256sum | cut -d' ' -f1)" >> .env
+docker compose up -d --force-recreate web
+```
+

@@ -10,28 +10,53 @@
 # read-only. Nothing is installed on the host, nothing is left behind, and the
 # database stays unreachable from outside the network the whole time.
 #
-#   ./migrate.sh /path/to/octopus/packages/db/prisma
+#   ./migrate.sh                       # schema copied to ./prisma, see the README
+#   ./migrate.sh /path/to/packages/db/prisma
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PRISMA_DIR="${1:-$DIR/prisma}"
-NETWORK="${OCTOPUS_NETWORK:-octopus-afterbrew_default}"
 NODE_IMAGE="${NODE_IMAGE:-node:22-alpine}"
 # BASELINE=1 for a database that has never been built. See the note in the runner.
 BASELINE="${BASELINE:-0}"
 
-[ -f "$PRISMA_DIR/schema.prisma" ] || { echo "no schema.prisma under $PRISMA_DIR" >&2; exit 1; }
+[ -f "$PRISMA_DIR/schema.prisma" ] || {
+  echo "no schema.prisma under $PRISMA_DIR" >&2
+  echo "copy packages/db/prisma from a checkout of the matching tag, or pass its path" >&2
+  exit 1
+}
 [ -d "$PRISMA_DIR/migrations" ] || { echo "no migrations/ under $PRISMA_DIR" >&2; exit 1; }
 [ -f "$DIR/.env" ] || { echo "no .env; run ./generate-secrets.sh first" >&2; exit 1; }
 
 # Read the credentials without echoing them, and build the URL inside the
 # container rather than passing it on a command line where `ps` would show it.
+# shellcheck source=/dev/null
 set -a; . "$DIR/.env"; set +a
 
-docker network inspect "$NETWORK" >/dev/null 2>&1 || {
-  echo "network $NETWORK not found; is the stack up?" >&2
-  exit 1
-}
+# Asked of the running container rather than guessed. Compose derives the network
+# name from the project name, which is the DIRECTORY the compose file sits in --
+# so a hard-coded `octopus-afterbrew_default` was right only for one checkout path
+# and wrong for the one the README documents.
+cd "$DIR"
+PG_CID="$(docker compose ps -q postgres)"
+[ -n "$PG_CID" ] || { echo "postgres is not running; start the datastores first" >&2; exit 1; }
+NETWORK="${OCTOPUS_NETWORK:-$(docker inspect "$PG_CID" \
+  --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{end}}')}"
+[ -n "$NETWORK" ] || { echo "could not determine the compose network" >&2; exit 1; }
+
+# A baseline PUSHES the schema, which is destructive by nature. It is only ever
+# correct against a database that has never been built, so that is checked rather
+# than trusted to the operator remembering which command they ran last month.
+if [ "$BASELINE" = "1" ]; then
+  tables="$(docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc \
+    "select count(*) from information_schema.tables where table_schema = 'public'" | tr -d '[:space:]')"
+  if [ "${tables:-0}" != "0" ]; then
+    echo "refusing to baseline: $POSTGRES_DB already has $tables table(s) in public." >&2
+    echo "BASELINE=1 runs \`prisma db push\`, which drops whatever the schema does not" >&2
+    echo "describe. Run without BASELINE to apply new migrations to an existing database." >&2
+    exit 1
+  fi
+fi
 
 echo "applying migrations from $PRISMA_DIR ($(find "$PRISMA_DIR/migrations" -maxdepth 1 -mindepth 1 -type d | wc -l | tr -d ' ') present)"
 # Prisma 7 takes the datasource url from a config file, not from the schema --
@@ -72,9 +97,15 @@ CONFIG
     # than replaying history against tables that already exist.
     if [ "$BASELINE" = "1" ]; then
       echo "baselining: pushing schema, then recording migrations as applied"
-      $PRISMA db push --config /work/prisma.config.mjs --accept-data-loss
+      # No --accept-data-loss: the caller proved the database has no tables, so
+      # there is no data to lose. If push wants the flag anyway, that is push
+      # disagreeing about emptiness and the run should stop.
+      $PRISMA db push --config /work/prisma.config.mjs
       for m in /work/prisma/migrations/*/; do
-        $PRISMA migrate resolve --applied "$(basename "$m")" --config /work/prisma.config.mjs >/dev/null 2>&1 || true
+        # Fatal, not `|| true`. Swallowing these printed "baseline complete" over an
+        # incomplete history, and the next `migrate deploy` would then replay a
+        # migration against tables that already exist.
+        $PRISMA migrate resolve --applied "$(basename "$m")" --config /work/prisma.config.mjs >/dev/null
       done
       echo "baseline complete"
     else
