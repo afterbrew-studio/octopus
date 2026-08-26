@@ -704,6 +704,23 @@ export function generateVerificationQueries(
  * REQUEST_CHANGES review event), so the two providers can never drift.
  * threshold: "none" | "critical" | "high" | "medium".
  */
+/**
+ * Whether a review found nothing worth a human's attention.
+ *
+ * Deliberately stricter than `!shouldFailReviewCheck`. That asks "is anything
+ * above the org's gate", so with the default `critical` threshold a review
+ * carrying a HIGH finding does not fail the check - but it has still found
+ * something real, and approving it would tell an automated merge that nothing
+ * was found. Approval is the stronger claim and needs the stronger test.
+ */
+export function isCleanReview(sev: {
+  hasCritical: boolean;
+  hasHigh: boolean;
+  hasMedium: boolean;
+}): boolean {
+  return !sev.hasCritical && !sev.hasHigh && !sev.hasMedium;
+}
+
 export function shouldFailReviewCheck(
   sev: { hasCritical: boolean; hasHigh: boolean; hasMedium: boolean },
   threshold: string,

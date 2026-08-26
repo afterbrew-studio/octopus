@@ -81,6 +81,7 @@ import {
   resolveIndexClaimWait,
   normalizeScoreDenominators,
   shouldFailReviewCheck,
+  isCleanReview,
   formatPastReviews,
   formatPrIntent,
   buildRetrievalQuery,
@@ -2380,7 +2381,14 @@ Rules:
       { hasCritical, hasHigh, hasMedium },
       threshold,
     );
-    const reviewEvent = shouldRequestChanges ? "REQUEST_CHANGES" : "COMMENT";
+    // APPROVE is what an automated merge waits on, so it is emitted only when
+    // the org has opted in AND the review found nothing at any severity - not
+    // merely nothing above the configured gate. See `isCleanReview`.
+    const reviewEvent: "COMMENT" | "REQUEST_CHANGES" | "APPROVE" = shouldRequestChanges
+      ? "REQUEST_CHANGES"
+      : org.approveWhenClean && isCleanReview({ hasCritical, hasHigh, hasMedium })
+        ? "APPROVE"
+        : "COMMENT";
 
     // Track the actual number of findings visible to the user (inline + summary table)
     // This gets set by the GitHub/Bitbucket posting logic below

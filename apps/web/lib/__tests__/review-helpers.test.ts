@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { formatPastReviews, formatPrIntent, buildRetrievalQuery, cappedConfidence, UNCITED_HIGH_SEV_CAP, filterByConfidence, resolveConfidenceThreshold, type PastReviewHit } from "@/lib/review-helpers";
+import { isCleanReview, shouldFailReviewCheck, formatPastReviews, formatPrIntent, buildRetrievalQuery, cappedConfidence, UNCITED_HIGH_SEV_CAP, filterByConfidence, resolveConfidenceThreshold, type PastReviewHit } from "@/lib/review-helpers";
 
 describe("formatPastReviews", () => {
   const hit = (o: Partial<PastReviewHit> = {}): PastReviewHit => ({
@@ -158,5 +158,44 @@ describe("resolveConfidenceThreshold (#652)", () => {
   it("maps HIGH to 85 and default to 70", () => {
     expect(resolveConfidenceThreshold({ confidenceThreshold: "HIGH" })).toBe(85);
     expect(resolveConfidenceThreshold({})).toBe(70);
+  });
+});
+
+describe("isCleanReview", () => {
+  const sev = (o: Partial<{ hasCritical: boolean; hasHigh: boolean; hasMedium: boolean }> = {}) => ({
+    hasCritical: false,
+    hasHigh: false,
+    hasMedium: false,
+    ...o,
+  });
+
+  it("is true only when nothing was found at any severity", () => {
+    expect(isCleanReview(sev())).toBe(true);
+    expect(isCleanReview(sev({ hasCritical: true }))).toBe(false);
+    expect(isCleanReview(sev({ hasHigh: true }))).toBe(false);
+    expect(isCleanReview(sev({ hasMedium: true }))).toBe(false);
+  });
+
+  it("is stricter than not failing the check, which is the whole point", () => {
+    // With the default `critical` threshold a HIGH finding does not fail the
+    // check - but the review still found something real. Approving there would
+    // tell an automated merge that nothing was found, so approval needs its own
+    // test rather than reusing the gate's.
+    const withHigh = sev({ hasHigh: true });
+    expect(shouldFailReviewCheck(withHigh, "critical")).toBe(false);
+    expect(isCleanReview(withHigh)).toBe(false);
+
+    const withMedium = sev({ hasMedium: true });
+    expect(shouldFailReviewCheck(withMedium, "high")).toBe(false);
+    expect(isCleanReview(withMedium)).toBe(false);
+  });
+
+  it("does not approve merely because the org disabled its check gate", () => {
+    // `threshold: "none"` means "never fail my check run". It must not read as
+    // "approve everything", which would hand an automated merge a green light
+    // on a review carrying critical findings.
+    const withCritical = sev({ hasCritical: true });
+    expect(shouldFailReviewCheck(withCritical, "none")).toBe(false);
+    expect(isCleanReview(withCritical)).toBe(false);
   });
 });
