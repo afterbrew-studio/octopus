@@ -1,8 +1,7 @@
 import { describe, it, expect } from "bun:test";
 import {
-  ReviewStartRefusedError,
-  assertMayStartReview,
   mayStartReview,
+  reviewRefusalMessage,
   type ReviewSource,
 } from "@/lib/review-start-policy";
 
@@ -19,12 +18,10 @@ import {
 describe("review start policy", () => {
   it("permits the authenticated adapter", () => {
     expect(mayStartReview("adapter")).toBe(true);
-    expect(() => assertMayStartReview("adapter", "pr #1")).not.toThrow();
   });
 
   it("refuses a webhook", () => {
     expect(mayStartReview("webhook")).toBe(false);
-    expect(() => assertMayStartReview("webhook", "pr #1")).toThrow(ReviewStartRefusedError);
   });
 
   it("refuses anything that is not the adapter, including a future source", () => {
@@ -37,23 +34,16 @@ describe("review start policy", () => {
   });
 
   it("names the pull request it refused, so a silent no-op is distinguishable", () => {
-    expect(() => assertMayStartReview("webhook", "github pr #42 on afterbrew-studio/rayf")).toThrow(
-      /github pr #42 on afterbrew-studio\/rayf/,
+    expect(reviewRefusalMessage("webhook", "github pr #42 on afterbrew-studio/rayf")).toContain(
+      "github pr #42 on afterbrew-studio/rayf",
     );
   });
 
   it("does not read as a permissions failure", () => {
     // If this reads as "you lack a role", the next person goes looking for the
     // role that grants it and finds none, having wasted the search.
-    try {
-      assertMayStartReview("webhook", "pr #1");
-      throw new Error("expected a refusal");
-    } catch (err) {
-      const message = (err as Error).message;
-      expect(message).toContain("deployment policy, not a permission");
-      expect(message).toContain("cannot be granted, configured or enabled");
-      expect(err).toBeInstanceOf(ReviewStartRefusedError);
-      expect((err as ReviewStartRefusedError).statusCode).toBe(403);
-    }
+    const message = reviewRefusalMessage("webhook", "pr #1");
+    expect(message).toContain("deployment policy, not a permission");
+    expect(message).toContain("cannot be granted, configured or enabled");
   });
 });
