@@ -23,6 +23,18 @@
 
 export type UrlValidationOptions = {
   /**
+   * Keep the path as part of the returned base. Off by default, because an
+   * org-supplied URL is user input and a predictable origin is the safer shape.
+   *
+   * On for OPERATOR-supplied (env) gateway URLs, which are already trusted
+   * enough to be a fetch target and whose API may simply not live at `/v1`:
+   * Z.AI serves `/api/paas/v4/chat/completions`, and discarding the path made it
+   * unreachable through this provider whatever origin was configured. The SSRF
+   * control here is the host check below; dropping the path never contributed to
+   * it.
+   */
+  keepPath?: boolean;
+  /**
    * When true, block private / loopback / link-local hosts. Defaults to
    * `process.env.SELF_HOSTED !== "true"` so cloud deployments are protected
    * by default and self-hosted users can point at localhost / 10.x / 192.168.x.
@@ -97,6 +109,12 @@ export function validateProviderUrl(
     }
   }
 
-  // Return origin only — drop any path / query / fragment that came in.
-  return parsed.origin;
+  if (!options.keepPath) {
+    // Origin only — drop any path / query / fragment that came in.
+    return parsed.origin;
+  }
+  // Origin plus path, with query, fragment and a trailing slash removed so the
+  // caller can append a route without doubling a separator.
+  const path = parsed.pathname.replace(/\/+$/, "");
+  return `${parsed.origin}${path}`;
 }

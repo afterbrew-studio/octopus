@@ -1,6 +1,7 @@
 import "server-only";
 import OpenAI from "openai";
 import type { AiCreateParams, AiResponse, AiProvider } from "./index";
+import { splitReasoning } from "./reasoning";
 
 /**
  * Shared implementation for OpenAI-compatible gateway providers (acp, opencode,
@@ -17,7 +18,13 @@ import type { AiCreateParams, AiResponse, AiProvider } from "./index";
 export type GatewayCallOptions = {
   name: AiProvider;
   modelPrefix: string;
-  baseUrl: string;
+  /**
+   * The API base INCLUDING its version segment -- `https://api.deepseek.com/v1`
+   * or `https://api.z.ai/api/paas/v4`. The caller decides, because not every
+   * OpenAI-compatible API is served at `/v1` and appending it here made those
+   * unreachable.
+   */
+  apiBase: string;
   apiKey: string;
 };
 
@@ -27,10 +34,8 @@ export async function callOpenAiGateway(
 ): Promise<AiResponse> {
   // Not cached across calls: with per-org config the base URL + token vary by
   // org, so a per-provider client singleton would leak one org's gateway/token
-  // to another. opts.baseUrl is already a validated origin (path/query stripped
-  // by the resolve path), so the SDK builds `<origin>/v1/chat/completions`.
-  const baseURL = `${opts.baseUrl}/v1`;
-  const client = new OpenAI({ apiKey: opts.apiKey, baseURL });
+  // to another.
+  const client = new OpenAI({ apiKey: opts.apiKey, baseURL: opts.apiBase });
 
   const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [];
   if (params.system) messages.push({ role: "system", content: params.system });
@@ -58,12 +63,34 @@ export async function callOpenAiGateway(
       : {}),
   });
 
-  const text = response.choices[0]?.message?.content ?? "";
+  const finishReason = response.choices[0]?.finish_reason ?? "unknown";
+  const raw = response.choices[0]?.message?.content ?? "";
+
+  // Gateways do not agree on where reasoning goes. MiniMax puts it inline in
+  // `content`; left alone it becomes the review. See ./reasoning.ts.
+  const { text, strippedReasoning, truncatedInReasoning } = splitReasoning(raw);
+
+  if (truncatedInReasoning) {
+    // Distinct from "returned nothing": the model opened a reasoning block and
+    // never closed it, so the answer was never written. That is a budget
+    // problem, and saying so is the difference between a fix and a retry.
+    throw new Error(
+      `${opts.name} gateway (${params.model}) spent its whole ${params.maxTokens}-token budget ` +
+        `on reasoning and never began the answer (finish_reason: ${finishReason}). ` +
+        "Raise maxTokens, or choose a model that reasons less.",
+    );
+  }
   // Surface an empty completion as an error instead of returning a blank review
   // that downstream code would post as an empty PR comment.
   if (!text) {
     throw new Error(
-      `${opts.name} gateway returned no text (finish_reason: ${response.choices[0]?.finish_reason ?? "unknown"})`,
+      `${opts.name} gateway returned no text (finish_reason: ${finishReason})`,
+    );
+  }
+  if (strippedReasoning) {
+    console.log(
+      `[${opts.name}] stripped inline reasoning from ${params.model}: ` +
+        `${raw.length} chars in, ${text.length} out`,
     );
   }
 
