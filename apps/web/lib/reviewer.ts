@@ -1223,7 +1223,14 @@ export async function processReview(
           where: { id: pr.id },
           data: { status: "queued", updatedAt: new Date() },
         });
-        await enqueueAfter("process-review", { pullRequestId: pr.id }, 30);
+        // The attempt travels with the deferral. This re-queue is the same
+        // approved review waiting for capacity, not a new decision, so dropping
+        // the id here would let it come back re-merged against live config.
+        await enqueueAfter(
+          "process-review",
+          attemptId ? { pullRequestId: pr.id, attemptId } : { pullRequestId: pr.id },
+          30,
+        );
         return;
       }
     }

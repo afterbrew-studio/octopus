@@ -41,7 +41,20 @@ export async function reapStuckReviews(
         { status: "queued", updatedAt: { lt: queuedStale } },
       ],
     },
-    select: { id: true, createdAt: true },
+    select: {
+      id: true,
+      createdAt: true,
+      // The frozen decision the dead review was carrying. A reaped review is a
+      // retry of the same approved attempt, so the retry has to carry the same
+      // snapshot: addressing the requeue by pull request id alone drops it and
+      // the retry silently re-merges whatever is configured now.
+      attempts: {
+        where: { terminalAt: null },
+        orderBy: { createdAt: "desc" },
+        take: 1,
+        select: { id: true },
+      },
+    },
   });
 
   const requeueCutoff = new Date(now.getTime() - REQUEUE_MAX_AGE_MS);
@@ -56,14 +69,31 @@ export async function reapStuckReviews(
     });
     if (updated.count === 0) continue;
 
+    // Absent for reviews enqueued before attempts existed. Those keep the old
+    // behaviour rather than being refused, which would strand real work.
+    const attemptId = pr.attempts[0]?.id;
+
     if (pr.createdAt > requeueCutoff) {
       await enqueue(
         "process-review",
-        { pullRequestId: pr.id },
+        attemptId ? { pullRequestId: pr.id, attemptId } : { pullRequestId: pr.id },
         { singletonKey: `reap:${pr.id}`, singletonSeconds: 3600 },
       );
       requeued++;
     } else {
+      // No retry is coming, so the attempt is over. This is the only place that
+      // knows: the worker that would have finalised it is gone. The terminalAt
+      // guard keeps the "written once" property under a race with a late worker.
+      if (attemptId) {
+        await prisma.reviewAttempt.updateMany({
+          where: { id: attemptId, terminalAt: null },
+          data: {
+            state: "failed",
+            terminalAt: now,
+            terminalDetail: REAP_FAILED_MESSAGE,
+          },
+        });
+      }
       failed++;
     }
   }
