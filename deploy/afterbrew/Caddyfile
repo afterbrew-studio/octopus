@@ -1,0 +1,86 @@
+# The public edge of the afterbrew deployment. rayf P-0007 C4, ADR-0056.
+#
+# Octopus serves roughly 110 API routes plus a dashboard from one origin. Exactly
+# one of them is meant to be reachable from the internet: the GitHub webhook. The
+# rest -- /api/admin/*, /api/cli/*, /api/agent/*, the OAuth callbacks, the whole
+# dashboard -- are for the operator over an SSH tunnel and for the compose network.
+#
+# So this is an ALLOWLIST, not a blocklist. Everything is 404 unless it is named
+# below. That direction matters: upstream adds routes on its own schedule, and a
+# blocklist would silently expose each new one. Under an allowlist a new route is
+# unreachable from outside until someone edits this file, which is a change that
+# gets reviewed.
+#
+# The cost of that direction, stated rather than discovered: several product
+# features need an external callback and DO NOT WORK on this deployment. GitLab and
+# Bitbucket register webhooks pointing at /api/gitlab/webhook and
+# /api/bitbucket/webhook; Stripe posts to /api/stripe/webhook; Slack posts slash
+# commands to /api/slack/commands. All four are 404 here. That is correct for a
+# deployment that reviews one GitHub organisation and bills nobody -- and it is a
+# silent failure if someone connects one of them, because the vendor's delivery log
+# is the only place the 404 appears. Enabling one means adding it here, deliberately.
+#
+# The tunnel terminates TLS and connects to this over the loopback publication in
+# docker-compose.yml, so this speaks plain HTTP deliberately -- it never listens on
+# a routable interface.
+{
+	# No admin API. It is unauthenticated on 2019 by default and would be the one
+	# genuinely privileged thing on this container.
+	admin off
+	# No certificate management: nothing here is ever addressed by a public name.
+	auto_https off
+	log {
+		output stdout
+		format console
+	}
+}
+
+:8080 {
+	# Exact path, and POST only. GitHub only ever POSTs here; anything else is a
+	# probe. Caddy's `path` matcher is exact without a wildcard, so /api/github/webhook/x
+	# does not match and is not proxied.
+	@webhook {
+		method POST
+		path /api/github/webhook
+	}
+	handle @webhook {
+		# The handler reads the whole body before it can verify the HMAC -- it has to,
+		# since the signature covers the body. So without a limit an unauthenticated
+		# caller decides how much memory the application allocates, in a process that
+		# also runs the dashboard and the review workers.
+		#
+		# 10MB, not GitHub's 25MB delivery ceiling. Next.js truncates a request body at
+		# 10MB of its own accord, so a larger delivery reaches the handler incomplete,
+		# fails its signature check and returns 401 -- which reads as a signature
+		# problem and which GitHub retries. Refusing it here returns 413 instead: the
+		# same outcome, named correctly and reached before Node buffers anything.
+		request_body {
+			max_size 10MB
+		}
+		reverse_proxy web:3000 {
+			header_up X-Forwarded-Proto https
+		}
+	}
+
+	# Everything else. 404 rather than 403: a refusal that distinguishes "exists but
+	# denied" from "no such route" tells a scanner which routes are real.
+	handle {
+		respond 404
+	}
+}
+
+# Container-local liveness only. NOT published in docker-compose.yml and not what
+# the tunnel addresses, so it cannot be reached from outside the compose network.
+# It exists because the allowlist above answers 404 to everything a health check
+# could ask for, and a 404 is indistinguishable from a dead listener to wget.
+:8081 {
+	# Two handle blocks rather than a bare `respond /healthz 200` beside a catch-all:
+	# Caddy orders `handle` ahead of `respond`, so the catch-all would answer /healthz
+	# 404 and the container would never become healthy. Observed, not assumed.
+	handle /healthz {
+		respond 200
+	}
+	handle {
+		respond 404
+	}
+}

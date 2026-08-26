@@ -5,6 +5,10 @@ import { eventBus } from "@/lib/events";
 import * as github from "@/lib/github";
 import * as bitbucket from "@/lib/bitbucket";
 import * as gitlab from "@/lib/gitlab";
+import { mayStartReview, reviewRefusalMessage, type ReviewSource } from "@/lib/review-start-policy";
+// The same helpers reviewer.ts uses, so the snapshot cannot drift from the
+// merge the worker would otherwise have performed itself.
+import { mergeReviewConfigs, parseReviewConfig } from "@/lib/review-helpers";
 
 /**
  * Post a neutral "skipped" check run so the PR isn't blocked forever.
@@ -36,6 +40,10 @@ async function postSkippedCheckRun(
  * Works for GitHub, Bitbucket, and GitLab.
  */
 export async function startReviewFlow(params: {
+  /** Who is asking. Required: a default would let a new call site start reviews silently. */
+  source: ReviewSource;
+  /** The dispatcher's id for this request, so a paid review is attributable to one ask. */
+  correlationId?: string;
   provider: "github" | "bitbucket" | "gitlab";
   // GitHub-specific
   installationId?: number;
@@ -53,6 +61,23 @@ export async function startReviewFlow(params: {
   triggerCommentId: number;
   triggerCommentBody: string;
 }) {
+  // Before every side effect -- no upsert, placeholder comment, check run,
+  // dashboard notification or enqueue happens for a refused caller, which is what
+  // "side-effect-free" means in P-0007 C2.
+  //
+  // Returns rather than throws: none of the six webhook routes catches, so a throw
+  // is a 500 and the provider retries the delivery. See review-start-policy.ts.
+  if (!mayStartReview(params.source)) {
+    console.log(
+      "[webhook] " +
+        reviewRefusalMessage(
+          params.source,
+          `${params.provider} pr #${params.prNumber} on ${params.repoFullName}`,
+        ),
+    );
+    return;
+  }
+
   const {
     provider,
     installationId,
@@ -222,6 +247,43 @@ export async function startReviewFlow(params: {
     prUrl,
   });
 
-  // Enqueue review job — pg-boss persists it in DB, survives container restarts
-  await enqueue("process-review", { pullRequestId: pr.id });
+  // Freeze the attempt BEFORE enqueueing.
+  //
+  // `processReview` merges its configuration from three mutable sources at
+  // execution time -- system, organization and repository -- so a change to any of
+  // them between enqueue and execution silently changes the review that runs. What
+  // executed would not be what was approved, and the record of it would be
+  // unreliable in exactly the case anyone would want to audit.
+  //
+  // Snapshotting here and addressing the attempt id downstream is rayf P-0007 C3.
+  // The merge order must match the one in reviewer.ts; `mergeReviewConfigs` is
+  // shared so the two cannot drift apart silently.
+  const [sysRow, orgRow, repoRow] = await Promise.all([
+    prisma.systemConfig.findUnique({ where: { id: "singleton" }, select: { defaultReviewConfig: true } }),
+    prisma.organization.findUnique({ where: { id: orgId }, select: { defaultReviewConfig: true } }),
+    prisma.repository.findUnique({ where: { id: repoId }, select: { reviewConfig: true } }),
+  ]);
+  const configSnapshot = mergeReviewConfigs(
+    sysRow ? parseReviewConfig(sysRow.defaultReviewConfig) : {},
+    parseReviewConfig(orgRow?.defaultReviewConfig),
+    parseReviewConfig(repoRow?.reviewConfig),
+  );
+
+  const attempt = await prisma.reviewAttempt.create({
+    data: {
+      pullRequestId: pr.id,
+      source: params.source,
+      correlationId: params.correlationId ?? null,
+      headSha: headSha || null,
+      provider,
+      configSnapshot: configSnapshot as object,
+      state: "pending",
+    },
+    select: { id: true },
+  });
+
+  // Enqueue review job — pg-boss persists it in DB, survives container restarts.
+  // The attempt id travels with it so the worker reads the frozen decision rather
+  // than re-resolving live configuration.
+  await enqueue("process-review", { pullRequestId: pr.id, attemptId: attempt.id });
 }

@@ -23,6 +23,13 @@ export interface WelcomeEmailJob {
 
 export interface ProcessReviewJob {
   pullRequestId: string;
+  /**
+   * The frozen attempt this job executes. Optional only because jobs enqueued
+   * before this field existed are still in the queue; a job without one falls
+   * back to resolving live configuration, which is the behaviour it was enqueued
+   * under. New enqueues always set it. See rayf P-0007 C3.
+   */
+  attemptId?: string;
 }
 
 export async function registerWorkers(boss: PgBoss, config: QueueConfig): Promise<void> {
@@ -40,7 +47,7 @@ export async function registerWorkers(boss: PgBoss, config: QueueConfig): Promis
       for (const job of jobs) {
         console.log(`[queue] Processing review for PR ${job.data.pullRequestId}`);
         try {
-          await processReview(job.data.pullRequestId);
+          await processReview(job.data.pullRequestId, job.data.attemptId);
         } catch (err) {
           console.error(`[queue] Review failed for PR ${job.data.pullRequestId} (job ${job.id}):`, err);
           throw err;

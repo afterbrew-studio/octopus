@@ -408,10 +408,51 @@ model PullRequest {
   repository   Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
 
   reviewIssues ReviewIssue[]
+  attempts     ReviewAttempt[]
 
   @@unique([repositoryId, number])
   @@index([repositoryId, status])
   @@map("pull_requests")
+}
+
+/// One review attempt, frozen at the moment it was enqueued.
+///
+/// `processReview` resolves its configuration by merging three MUTABLE sources at
+/// execution time -- system, organization and repository. A change to any of them
+/// between enqueue and execution silently changes the review that runs, so what
+/// executed is not what was approved and the record of it is unreliable.
+///
+/// This row is the snapshot. It is written before the job is enqueued and never
+/// updated except to advance `state`, so the worker and the reaper can address an
+/// attempt id and get back exactly what was decided, not what is currently
+/// configured. See rayf P-0007 C3 and ADR-0056.
+model ReviewAttempt {
+  id            String   @id @default(cuid())
+  /// Ties this attempt to the dispatching side, so a paid review is attributable
+  /// to one request rather than inferred from timing.
+  correlationId String?
+  /// What started it. Only `adapter` may, but the value is recorded rather than
+  /// assumed so a refusal that somehow got through is visible afterwards.
+  source        String
+  /// The exact commit reviewed. An attempt against a head that has moved is a
+  /// different attempt, not a continuation of this one.
+  headSha       String?
+  provider      String
+  /// The merged review configuration AS IT WAS at enqueue. The whole point.
+  configSnapshot Json
+  /// pending | running | succeeded | failed | cancelled
+  state         String   @default("pending")
+  /// Set once, when the attempt reaches a terminal state. A second write is a bug.
+  terminalAt    DateTime?
+  terminalDetail String?
+  createdAt     DateTime @default(now())
+
+  pullRequestId String
+  pullRequest   PullRequest @relation(fields: [pullRequestId], references: [id], onDelete: Cascade)
+
+  @@index([pullRequestId, createdAt])
+  @@index([state])
+  @@map("review_attempts")
 }
 
 model ReviewIssue {
