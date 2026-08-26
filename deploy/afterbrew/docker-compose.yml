@@ -39,6 +39,12 @@ services:
       - DATABASE_URL=postgresql://${POSTGRES_USER:?set POSTGRES_USER}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:?set POSTGRES_DB}
       - QDRANT_URL=http://qdrant:6333
       - ENABLE_REVIEW_WORKERS=true
+      # See the `ollama` service for why these are set and why the dimension
+      # cannot be changed after the first index.
+      - OCTOPUS_EMBED_PROVIDER=ollama
+      - OCTOPUS_EMBED_MODEL=nomic-embed-text
+      - OCTOPUS_EMBED_DIM=768
+      - OCTOPUS_OLLAMA_BASE_URL=http://ollama:11434
       # Better Auth's `trustedOrigins` is exactly `[BETTER_AUTH_URL]`. Unset, that
       # array holds `undefined`, every sign-in request is rejected as "Invalid
       # origin", and nothing says why. Derived from the published port here so the
@@ -52,6 +58,8 @@ services:
       postgres:
         condition: service_healthy
       qdrant:
+        condition: service_healthy
+      ollama:
         condition: service_healthy
     # Reboot survival without root: the docker daemon is enabled at boot on the
     # target host, so a restart policy brings these back with no systemd unit and
@@ -82,6 +90,33 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
+  # Embeddings, locally. The review path is not optional about them: reviewer.ts
+  # awaits `indexRepository` and a retrieval `createEmbeddings` with no diff-only
+  # fallback, so with no embedding provider a review throws rather than degrades.
+  #
+  # Local rather than a hosted provider because the alternative is an API key for
+  # a third vendor, per-token cost on every indexed file, and the contents of a
+  # private repository leaving the host to be embedded. `nomic-embed-text` is
+  # ~270 MB and runs on CPU.
+  #
+  # THE DIMENSION IS A ONE-WAY DOOR. Qdrant collections are created with a fixed
+  # vector size and vectors from different models are not comparable, so changing
+  # the model after the first index means wiping the collections and re-indexing.
+  # 768 is nomic-embed-text's native size; `embeddings.ts` compares what comes
+  # back against OCTOPUS_EMBED_DIM and fails loudly on a mismatch.
+  ollama:
+    image: ollama/ollama@sha256:08ddf4b4dbfdc4fc1f5b0fe535915998581085402e307b57bb308db68460e372
+    # No `ports:`. Reached by service name from `web`, like the datastores.
+    volumes:
+      - ollama_models:/root/.ollama
+    healthcheck:
+      # `ollama list` rather than an HTTP probe: the image carries neither curl
+      # nor wget, and the CLI talks to the same server over the same socket.
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 10s
+      retries: 6
+      start_period: 30s
     restart: unless-stopped
 
   postgres:
@@ -131,3 +166,4 @@ services:
 volumes:
   postgres_data:
   qdrant_data:
+  ollama_models:
