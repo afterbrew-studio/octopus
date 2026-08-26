@@ -19,7 +19,7 @@ import { validateProviderUrl } from "./url-validation";
  * operator-controlled and may legitimately point at an internal host, so it is
  * only normalized to an origin (private ranges allowed).
  */
-async function resolveConfig(orgId?: string | null): Promise<{ baseUrl: string; apiKey: string } | null> {
+async function resolveConfig(orgId?: string | null): Promise<{ apiBase: string; apiKey: string } | null> {
   // Per-org config overrides the deployment env default.
   if (orgId) {
     const org = await prisma.organization.findUnique({
@@ -27,12 +27,24 @@ async function resolveConfig(orgId?: string | null): Promise<{ baseUrl: string; 
       select: { opencodeBaseUrl: true, opencodeApiKey: true },
     });
     if (org?.opencodeBaseUrl && org?.opencodeApiKey) {
-      return { baseUrl: validateProviderUrl(org.opencodeBaseUrl), apiKey: decryptStringMaybeLegacy(org.opencodeApiKey) };
+      // Org-supplied: origin only, then the conventional `/v1`. User input
+      // stays on the predictable shape.
+      return {
+        apiBase: `${validateProviderUrl(org.opencodeBaseUrl)}/v1`,
+        apiKey: decryptStringMaybeLegacy(org.opencodeApiKey),
+      };
     }
   }
   const envBase = process.env.OPENCODE_BASE_URL;
   const envKey = process.env.OPENCODE_API_KEY;
-  if (envBase && envKey) return { baseUrl: validateProviderUrl(envBase, { hosted: false }), apiKey: envKey };
+  if (envBase && envKey) {
+    // Operator-supplied: the path is kept, and `/v1` is appended only when none
+    // was given. An API served at `/api/paas/v4` is configured as such rather
+    // than being unreachable.
+    const base = validateProviderUrl(envBase, { hosted: false, keepPath: true });
+    const apiBase = new URL(base).pathname === "/" ? `${base}/v1` : base;
+    return { apiBase, apiKey: envKey };
+  }
   return null;
 }
 
@@ -54,7 +66,7 @@ export const opencodeProvider: Provider = {
     return callOpenAiGateway(params, {
       name: "opencode",
       modelPrefix: "opencode:",
-      baseUrl: config.baseUrl,
+      apiBase: config.apiBase,
       apiKey: config.apiKey,
     });
   },
