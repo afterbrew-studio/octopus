@@ -61,6 +61,7 @@ export async function POST(
       }
 
       await startReviewFlow({
+        source: "adapter",
         provider: repo.provider as "github" | "gitlab" | "bitbucket",
         installationId: repo.installationId ?? undefined,
         organizationId: result.org.id,
