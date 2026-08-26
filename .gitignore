@@ -84,3 +84,4 @@ pentest/
 
 .vscode/**
 deploy/afterbrew/.env
+deploy/afterbrew/backups/
