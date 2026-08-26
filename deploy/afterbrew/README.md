@@ -73,6 +73,43 @@ read-only. That is not incidental: the runtime image carries no migrations and t
 publishes no port, so there is nothing on the host to connect to. Nothing is installed on
 the host and nothing is left behind.
 
+## Reaching it: a public hostname behind Cloudflare Access
+
+The dashboard is not published to the internet by the compose file, and it is not meant to be
+reached over an SSH tunnel either. A tunnel makes the whole deployment depend on one
+workstation, and `BETTER_AUTH_URL` is not a convenience setting - cookies, redirects and the
+OAuth `redirect_uri` all derive from it, so a `localhost` value bakes "only a browser with a
+tunnel open can complete an auth flow" into permanent configuration, including the GitHub
+App's own callback URL.
+
+So it is published through an existing Cloudflare tunnel, with Access in front:
+
+| | |
+|---|---|
+| Hostname | `octopus.afterbrew.studio` |
+| Tunnel route | `HTTP` → `web:3000` |
+| Access policy | Allow, by email |
+
+`web:3000` and not a host port: the connector container is joined to this deployment's compose
+network, so it reaches the service by name. The published ports stay bound to loopback - sharing
+a network is what makes the service reachable without widening that publication. That join must
+be declared in the connector's own compose file, or it disappears the next time that stack is
+recreated.
+
+`BETTER_AUTH_URL` is then the public origin. It is a **one-way switch**: `trustedOrigins` is
+exactly `[BETTER_AUTH_URL]`, so loopback sign-in stops working the moment it changes. The
+loopback publication stays anyway, because diagnosing from the host is easier without a
+browser.
+
+What Access is doing here is the whole security control - the ingress allowlist fronts a
+different path and is not in this one. Verified by an unauthenticated request:
+
+```
+$ curl -I https://octopus.afterbrew.studio/login
+HTTP/2 302
+location: https://<team>.cloudflareaccess.com/cdn-cgi/access/login/octopus.afterbrew.studio
+```
+
 ## Registering the GitHub App
 
 ```sh
