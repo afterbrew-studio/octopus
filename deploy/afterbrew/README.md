@@ -100,7 +100,7 @@ refuses rather than half-working when one of them disagrees.
 | `postgres.dump` | `pg_dump -Fc`, a single transaction snapshot -- consistent without stopping the service |
 | `qdrant/*.snapshot` | taken through Qdrant's own snapshot API, not by copying the volume under a running process |
 | `docker-compose.yml` | the pins. Restoring against "whatever `:latest` is now" is not restoring |
-| `manifest.json` | embedding provider/model/dim, collections and their vector sizes, per-table row counts, and SHA-256 fingerprints of the secrets |
+| `manifest.json` | embedding provider/model/dim, collections with their vector sizes **and point counts**, per-table row counts, and a fingerprint of the **resolved** data key |
 | `SHA256SUMS` | a truncated dump restores partially and reports no error |
 
 **Secrets are not included by default.** `--with-secrets` writes `secrets.env` into the
@@ -130,19 +130,39 @@ Each of these is a silent failure elsewhere, which is why each is named here:
 | Refusal | What it would otherwise be |
 |---|---|
 | checksum mismatch | a partial dump restores without error and looks complete |
-| wrong `ENCRYPTION_KEY` | encrypted columns decode to nothing; the restore reports success |
+| wrong data key | encrypted columns decode to nothing; the restore reports success |
 | missing key the archive was taken with | the same, discovered much later |
 | row count differs from the manifest | "0 rows restored" reads identically whether the source had none or the dump lost all of them |
 | collection set or vector dim differs | a Qdrant 400 on the first upsert, long after anyone connects it to the restore |
+| **point count** differs | a snapshot taken mid-reindex recovers the right shape with none of the vectors; search returns nothing, with no error |
+| embedding **provider or model** differs | dimension is not identity - `text-embedding-3-small` and `ada-002` are both 1536 and produce vectors that are not comparable |
 | `OCTOPUS_EMBED_DIM` disagrees with the restored collection | the same, on the first indexed commit |
+| an image the manifest names is not a digest-pinned `postgres` or `qdrant/qdrant` | `SHA256SUMS` proves an archive agrees with itself, not that anyone trustworthy wrote it - and this script starts what the manifest names, with database credentials in its environment |
+
+**The key checked is the one the application resolves**, not whichever variable happens to be
+set: `crypto.ts` reads `OCTOPUS_DATA_KEY` and falls back to `sha256(BETTER_AUTH_SECRET)`, so
+checking a single variable answers the wrong question.
+
+**The env file is parsed, never sourced.** It can be `secrets.env` out of an archive, and
+sourcing an archive lets an archive run commands.
 
 ### Measured on the deployment, 2026-08-26
 
-A round trip with a seeded row: one organization row and one 8-dimension collection backed
-up and restored into a disposable project, both matching the manifest exactly. Negative
-paths exercised too -- a wrong `ENCRYPTION_KEY`, an absent one, and a one-byte-longer dump
-each exited non-zero with the diagnostic naming the cause. The seeded row and probe
-collection were removed afterwards; the live deployment ended healthy.
+A round trip with seeded data: one organization row and one 8-dimension collection holding
+two points, backed up and restored into a disposable project, all three matching the
+manifest exactly.
+
+Negative paths exercised, each exiting non-zero with the diagnostic naming the cause: a
+wrong `OCTOPUS_DATA_KEY`, a wrong `BETTER_AUTH_SECRET`, an absent key, a one-byte-longer
+dump, and a manifest doctored to name `evil.example.com/pg:latest` as the PostgreSQL image.
+
+The seeded row and probe collection were removed afterwards; the live deployment ended
+healthy on all four services.
+
+**Backups refuse to run while reviews are in flight.** The dump, the snapshot and the row
+counts are three separate reads, and they only describe one state if nothing is writing.
+Pause admission first (`docker compose stop ingress`, see R-0004), or pass `--allow-live` to
+accept an archive whose three reads may disagree.
 
 ## Two upstream problems this works around
 

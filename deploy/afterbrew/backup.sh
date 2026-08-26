@@ -3,6 +3,7 @@
 #
 #   ./backup.sh [destination-dir]        # default: ./backups
 #   ./backup.sh --with-secrets           # also copies .env -- read the warning
+#   ./backup.sh --allow-live             # accept a skewed archive; see the refusal below
 #
 # "Readable again" is a higher bar than "the files are somewhere". Restoring a
 # PostgreSQL dump next to a Qdrant volume gets you a database whose review rows
@@ -38,9 +39,11 @@ umask 077
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEST_ROOT="${DIR}/backups"
 WITH_SECRETS=0
+ALLOW_LIVE=0
 for arg in "$@"; do
   case "$arg" in
     --with-secrets) WITH_SECRETS=1 ;;
+    --allow-live) ALLOW_LIVE=1 ;;
     -*) echo "unknown option: $arg" >&2; exit 2 ;;
     *) DEST_ROOT="$arg" ;;
   esac
@@ -48,21 +51,48 @@ done
 
 command -v jq >/dev/null || { echo "jq is required" >&2; exit 1; }
 [ -f "$DIR/.env" ] || { echo "no .env beside the compose file" >&2; exit 1; }
+# shellcheck source=/dev/null
 set -a; . "$DIR/.env"; set +a
 
 cd "$DIR"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 OUT="$DEST_ROOT/octopus-$STAMP"
-mkdir -p "$OUT/qdrant"
+# Built in a sibling directory and moved into place at the end. A run that dies
+# half way leaves `.partial`, which nobody will mistake for an archive -- whereas a
+# half-written `octopus-<stamp>/` looks exactly like a complete one, and the
+# timestamp has one-second resolution, so two overlapping runs would otherwise
+# publish into the same directory.
+STAGE="$DEST_ROOT/.octopus-$STAMP.partial.$$"
+mkdir -p "$STAGE/qdrant"
 echo "backing up to $OUT"
+
+# The dump, the Qdrant snapshot and the row counts are three separate reads. They
+# only describe one state if nothing is writing, which is why this refuses rather
+# than silently recording a skewed archive. `./probe-ingress.sh` and R-0004 describe
+# the pause: `docker compose stop ingress`, then wait for these to drain.
+inflight="$(docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc \
+  "select count(*) from pull_requests where status in ('reviewing','queued')" 2>/dev/null \
+  | tr -d '[:space:]')"
+if [ -n "$inflight" ] && [ "$inflight" != "0" ]; then
+  if [ "$ALLOW_LIVE" -eq 1 ]; then
+    echo "  WARNING: $inflight review(s) in flight; the dump, the snapshot and the counts"
+    echo "           are three reads of a moving target and may not agree."
+  else
+    rm -rf "$STAGE"
+    echo "refusing: $inflight review(s) are in flight." >&2
+    echo "Pause admission first (docker compose stop ingress) and let them finish, or" >&2
+    echo "pass --allow-live to accept an archive whose three reads may disagree." >&2
+    exit 1
+  fi
+fi
 
 # --- PostgreSQL -------------------------------------------------------------
 # -Fc (custom format) rather than plain SQL: it is compressed, and pg_restore can
 # read it selectively, which is what makes a partial recovery possible at all.
 echo "  postgres: dumping $POSTGRES_DB"
 docker compose exec -T postgres \
-  pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc > "$OUT/postgres.dump"
-[ -s "$OUT/postgres.dump" ] || { echo "pg_dump produced an empty file" >&2; exit 1; }
+  pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc > "$STAGE/postgres.dump"
+[ -s "$STAGE/postgres.dump" ] || { echo "pg_dump produced an empty file" >&2; exit 1; }
 
 # --- Qdrant -----------------------------------------------------------------
 # Spoken over /dev/tcp from inside the container. The image has neither curl nor
@@ -96,11 +126,16 @@ done
 echo "  qdrant: creating a storage snapshot"
 snap=$(qdrant_http POST /snapshots | jq -r '.result.name // empty')
 [ -n "$snap" ] || { echo "qdrant refused to create a snapshot" >&2; exit 1; }
+# Registered BEFORE the copy. Snapshots live in the data volume, so one left behind
+# grows the deployment's own disk -- and a copy that fails is exactly when the
+# script exits early, which is exactly when the cleanup after it would not run.
+cleanup_snapshot() {
+  qdrant_http DELETE "/snapshots/$snap" >/dev/null 2>&1 || true
+  rm -rf "$STAGE"
+}
+trap cleanup_snapshot EXIT
 qdrant_cid=$(docker compose ps -q qdrant)
-docker cp "$qdrant_cid:/qdrant/snapshots/$snap" "$OUT/qdrant/$snap"
-# Delete it inside the container: snapshots live in the data volume, so keeping
-# them there doubles the deployment's disk for every backup ever taken.
-qdrant_http DELETE "/snapshots/$snap" >/dev/null || true
+docker cp "$qdrant_cid:/qdrant/snapshots/$snap" "$STAGE/qdrant/$snap"
 echo "  qdrant: $snap"
 
 # --- Row counts -------------------------------------------------------------
@@ -117,9 +152,22 @@ for table in organizations repositories pull_requests review_attempts; do
 done
 
 # --- Pins and configuration -------------------------------------------------
-cp docker-compose.yml "$OUT/docker-compose.yml"
+cp docker-compose.yml "$STAGE/docker-compose.yml"
 
 fingerprint() { printf '%s' "$1" | sha256sum | cut -c1-16; }
+
+# The key the application would actually use, not the variable that happens to be
+# set. `apps/web/lib/crypto.ts` reads OCTOPUS_DATA_KEY and falls back to
+# sha256(BETTER_AUTH_SECRET), so two deployments -- one with the key set explicitly,
+# one relying on the fallback -- can hold the same key under different variables.
+# Fingerprinting the resolved value is what lets a restore compare them.
+resolved_data_key() {
+  if [ -n "${OCTOPUS_DATA_KEY:-}" ]; then
+    printf '%s' "$OCTOPUS_DATA_KEY"
+  elif [ -n "${BETTER_AUTH_SECRET:-}" ]; then
+    printf '%s' "$BETTER_AUTH_SECRET" | sha256sum | cut -d' ' -f1
+  fi
+}
 
 # The embedding values are recorded AS SET, with unset spelled out, because the
 # defaults live in application code (apps/web/lib/embed-config.ts) and change with
@@ -129,7 +177,7 @@ jq -n \
   --arg stamp "$STAMP" \
   --arg pg_db "$POSTGRES_DB" \
   --arg pg_user "$POSTGRES_USER" \
-  --arg fp_enc "$(fingerprint "${ENCRYPTION_KEY:-}")" \
+  --arg fp_data "$(fingerprint "$(resolved_data_key)")" \
   --arg fp_auth "$(fingerprint "${BETTER_AUTH_SECRET:-}")" \
   --arg fp_pgpass "$(fingerprint "${POSTGRES_PASSWORD:-}")" \
   --arg embed_provider "${OCTOPUS_EMBED_PROVIDER:-unset}" \
@@ -148,16 +196,16 @@ jq -n \
     images: $images,
     secret_fingerprints: {
       note: "sha256, first 16 hex chars. Identity check only -- not reversible.",
-      ENCRYPTION_KEY: $fp_enc,
+      resolved_data_key: $fp_data,
       BETTER_AUTH_SECRET: $fp_auth,
       POSTGRES_PASSWORD: $fp_pgpass
     },
     secrets_included: ($with_secrets == "1")
-  }' > "$OUT/manifest.json"
+  }' > "$STAGE/manifest.json"
 
 if [ "$WITH_SECRETS" -eq 1 ]; then
-  cp .env "$OUT/secrets.env"
-  chmod 600 "$OUT/secrets.env"
+  cp .env "$STAGE/secrets.env"
+  chmod 600 "$STAGE/secrets.env"
   echo "  secrets: secrets.env written -- this archive now decrypts itself. Store it accordingly."
 else
   echo "  secrets: fingerprints only. Keep a copy of .env somewhere else or the encrypted columns are unrecoverable."
@@ -166,7 +214,12 @@ fi
 # `docker cp` writes with its own permissions, not the umask, so the snapshot lands
 # world-readable. Tighten the whole tree rather than that one file: the next thing
 # copied out of a container would have the same problem.
-chmod -R go-rwx "$OUT"
+chmod -R go-rwx "$STAGE"
 
-( cd "$OUT" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS )
+( cd "$STAGE" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS )
+
+# Published by rename, so `octopus-<stamp>/` appears complete or not at all. The
+# trap still deletes the snapshot inside the container; there is no longer a stage
+# directory for it to remove.
+mv "$STAGE" "$OUT"
 echo "done: $OUT ($(du -sh "$OUT" | cut -f1))"
