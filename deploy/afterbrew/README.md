@@ -234,14 +234,20 @@ per-organization settings that override them. Model ids are namespaced: `acp:<mo
 path. So a provider is usable through these slots only if its API lives at `/v1` on its own
 host.
 
-| Provider | Fits? | |
-|---|---|---|
-| MiniMax | yes | `https://api.minimax.io` → `/v1/chat/completions`. Wired to `acp`. Models: `MiniMax-M3`, `M2.7`, `M2.5`, `M2` |
-| DeepSeek | yes | `https://api.deepseek.com` → `/v1/chat/completions`. **Deliberately not wired** - it is the only pay-as-you-go route, and nothing here enforces the monthly ceiling yet |
-| Z.AI | **no** | its API is at `/api/paas/v4/chat/completions`. The forced `/v1` and the origin-stripping between them make that unreachable, whatever origin is configured |
+| Slot | Provider | Origin | Models |
+|---|---|---|---|
+| `acp` | MiniMax | `https://api.minimax.io` | `MiniMax-M3`, `M2.7`, `M2.5`, `M2` |
+| `opencode` | DeepSeek | `https://api.deepseek.com` | `deepseek-v4-flash`, `deepseek-v4-pro` |
 
-All three keys were verified against their `/models` endpoint, and MiniMax additionally with
-a real completion through the exact URL the slot builds.
+Both verified with a **real completion through the exact URL the slot builds**, not just a
+`/models` call. DeepSeek's ceiling is the account balance itself - $5.00 topped up, nothing
+granted - so the cap is arithmetic rather than a setting that can be misread.
+
+**Z.AI does not fit, and there is no third slot.** Its API is at
+`/api/paas/v4/chat/completions`; the forced `/v1` and the origin-stripping between them make
+that unreachable whatever origin is configured, and `https://api.z.ai/v1` is a 404. Even if
+the path worked, `acp` and `opencode` are the only two generic slots and both are taken.
+Tracked in rayf#142.
 
 Selecting which model a repository reviews with is per-organization, in the dashboard.
 
