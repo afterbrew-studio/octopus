@@ -1325,6 +1325,11 @@ async function runReview(
         // drive the PR to "completed"/"failed" via post-large-review-result.
         await enqueue("process-large-review", {
           pullRequestId: pr.id,
+          // Carried so internal-cli can echo it back with the result. It is not in
+          // this repository, so this is a request rather than a guarantee -- the
+          // result handler falls back to resolving the attempt from the pull
+          // request when it comes back without one.
+          attemptId,
           orgId: org.id,
           repositoryId: repo.id,
           repoFullName: repo.fullName,
