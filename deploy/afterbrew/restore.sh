@@ -1,0 +1,197 @@
+#!/usr/bin/env bash
+# Restore a backup into DISPOSABLE service identities and prove it is readable.
+# rayf P-0007 C7.
+#
+#   ./restore.sh backups/octopus-20260826T005456Z
+#   ./restore.sh <archive> --env /path/to/.env      # keys other than the live ones
+#   ./restore.sh <archive> --keep                   # leave the restored stack up
+#
+# Disposable is the point. This never writes to the running deployment: it brings
+# up a second compose project, with its own volumes, under the digests the archive
+# recorded, and tears it down again. Nothing here can reach GitHub -- the `web`
+# service is deliberately NOT started, so there is no worker, no queue consumer and
+# no token in play. "Restore into disposable identities before enabling GitHub
+# writes" is the requirement; not starting the thing that writes is how it is met.
+#
+# What it proves, and what each failure would otherwise look like:
+#
+#   archive integrity   a truncated dump restores partially and looks fine
+#   key identity        the wrong ENCRYPTION_KEY decodes encrypted columns to
+#                       nothing; the restore "succeeds" and the data is gone
+#   embedding dim       a collection restored at a different dim than the running
+#                       embedder produces gets a Qdrant 400 on the first upsert,
+#                       long after the restore was called a success
+#   row readability     a dump that restores with zero rows is not a backup
+#
+# Each of those is checked here and named. A silent success is the failure mode
+# this exists to remove.
+set -uo pipefail
+
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ARCHIVE=""
+ENV_FILE="$DIR/.env"
+KEEP=0
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --env) ENV_FILE="$2"; shift 2 ;;
+    --keep) KEEP=1; shift ;;
+    -*) echo "unknown option: $1" >&2; exit 2 ;;
+    *) ARCHIVE="$1"; shift ;;
+  esac
+done
+
+fail() { echo "RESTORE FAILED: $*" >&2; exit 1; }
+
+[ -n "$ARCHIVE" ] || fail "usage: ./restore.sh <archive-dir> [--env FILE] [--keep]"
+ARCHIVE="$(cd "$ARCHIVE" 2>/dev/null && pwd)" || fail "no such archive directory"
+[ -f "$ARCHIVE/manifest.json" ] || fail "no manifest.json in $ARCHIVE -- not an archive this script wrote"
+command -v jq >/dev/null || fail "jq is required"
+
+echo "== archive integrity =="
+( cd "$ARCHIVE" && sha256sum -c --quiet SHA256SUMS ) \
+  || fail "checksums do not match. A file in this archive changed or was truncated since it was written; a partial dump restores without error and looks complete."
+echo "  ok    every file matches SHA256SUMS"
+
+echo "== key identity =="
+[ -f "$ENV_FILE" ] || fail "no env file at $ENV_FILE. Without the original keys the encrypted columns cannot be read, and a restore that skipped this check would look successful."
+set -a; . "$ENV_FILE"; set +a
+fingerprint() { printf '%s' "$1" | sha256sum | cut -c1-16; }
+check_key() {
+  local name="$1" value="${2:-}"
+  local want have
+  want=$(jq -r --arg k "$name" '.secret_fingerprints[$k] // empty' "$ARCHIVE/manifest.json")
+  [ -n "$want" ] || { echo "  skip  $name not recorded in this archive"; return; }
+  [ -n "$value" ] || fail "$name is not set in $ENV_FILE. The archive was taken with one (fingerprint $want)."
+  have=$(fingerprint "$value")
+  [ "$have" = "$want" ] \
+    || fail "$name does not match this archive (env $have, archive $want). Restoring anyway would decode encrypted columns to nothing and report success."
+  echo "  ok    $name matches ($have)"
+}
+check_key ENCRYPTION_KEY "${ENCRYPTION_KEY:-}"
+check_key BETTER_AUTH_SECRET "${BETTER_AUTH_SECRET:-}"
+
+# --- the disposable stack ----------------------------------------------------
+STAMP="$(jq -r .taken_at "$ARCHIVE/manifest.json")"
+# Lowercased with tr rather than ${VAR,,}: compose refuses an uppercase project
+# name, and the bash 4 expansion would fail on a host still shipping bash 3.
+PROJECT="octopus-restore-$(printf '%s' "$STAMP" | tr '[:upper:]' '[:lower:]')"
+WORK="$(mktemp -d)"
+chmod 700 "$WORK"
+cleanup() {
+  if [ "$KEEP" -eq 1 ]; then
+    echo
+    echo "left running as project '$PROJECT'. Remove it with:"
+    echo "  docker compose -p $PROJECT -f $WORK/compose.yml down -v"
+    return
+  fi
+  docker compose -p "$PROJECT" -f "$WORK/compose.yml" down -v >/dev/null 2>&1 || true
+  rm -rf "$WORK"
+}
+trap cleanup EXIT
+
+# The digests come from the manifest, not from the current compose file: the point
+# of restoring is to read data with the software that wrote it. A restore under a
+# newer image is a migration test, which is a different question.
+PG_IMAGE=$(jq -r '.images[] | select(.service=="postgres") | .image' "$ARCHIVE/manifest.json")
+QD_IMAGE=$(jq -r '.images[] | select(.service=="qdrant") | .image' "$ARCHIVE/manifest.json")
+SNAPSHOT="$ARCHIVE/$(jq -r .qdrant.snapshot "$ARCHIVE/manifest.json")"
+[ -f "$SNAPSHOT" ] || fail "the manifest names a Qdrant snapshot that is not in the archive: $SNAPSHOT"
+
+cat > "$WORK/compose.yml" <<COMPOSE
+# Generated by restore.sh. Disposable: no published ports, no web service, fresh
+# volumes scoped to this project. Deleted with the project on teardown.
+services:
+  postgres:
+    image: $PG_IMAGE
+    environment:
+      POSTGRES_USER: \${POSTGRES_USER:?}
+      POSTGRES_PASSWORD: \${POSTGRES_PASSWORD:?}
+      POSTGRES_DB: \${POSTGRES_DB:?}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \$\${POSTGRES_USER}"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+  qdrant:
+    image: $QD_IMAGE
+    # Full-storage snapshots have no HTTP recovery endpoint -- only per-collection
+    # ones do -- so recovery happens at startup. --force-snapshot is required
+    # because the default is to leave existing collections alone, and on a fresh
+    # volume that would silently start empty.
+    entrypoint: ["/qdrant/qdrant", "--storage-snapshot", "/restore/snapshot", "--force-snapshot"]
+    volumes:
+      - "$SNAPSHOT:/restore/snapshot:ro"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "bash",
+          "-c",
+          "exec 3<>/dev/tcp/127.0.0.1/6333 && printf 'GET /readyz HTTP/1.0\r\n\r\n' >&3 && head -1 <&3 | grep -q '200 OK'",
+        ]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+COMPOSE
+
+echo "== bringing up disposable project '$PROJECT' =="
+docker compose -p "$PROJECT" -f "$WORK/compose.yml" --env-file "$ENV_FILE" up -d --wait >/dev/null 2>&1 \
+  || fail "the disposable stack did not become healthy. Run with --keep and inspect: docker compose -p $PROJECT -f $WORK/compose.yml logs"
+echo "  ok    postgres and qdrant healthy under the archive's digests"
+
+dc() { docker compose -p "$PROJECT" -f "$WORK/compose.yml" --env-file "$ENV_FILE" "$@"; }
+
+echo "== postgres =="
+dc exec -T postgres pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --no-owner --no-acl --clean --if-exists \
+  < "$ARCHIVE/postgres.dump" >/dev/null 2>"$WORK/pg.err" \
+  || { sed -n '1,20p' "$WORK/pg.err" >&2; fail "pg_restore failed; see the lines above"; }
+
+# Compared against what the archive recorded, not merely counted. A count on its
+# own says nothing -- "0 rows restored" reads identically whether the source had
+# none or the dump lost all of them. The comparison is what makes it evidence.
+total=0
+for table in $(jq -r '.postgres.row_counts // {} | keys[]' "$ARCHIVE/manifest.json"); do
+  want=$(jq -r --arg t "$table" '.postgres.row_counts[$t]' "$ARCHIVE/manifest.json")
+  have=$(dc exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc \
+          "select count(*) from \"$table\"" 2>/dev/null | tr -d '[:space:]')
+  [ -n "$have" ] || fail "table \"$table\" is not readable after the restore; the archive recorded $want rows in it"
+  [ "$have" = "$want" ] \
+    || fail "table \"$table\" restored $have rows, the archive recorded $want. A partially restored dump reports no error."
+  echo "  ok    $table: $have rows, as recorded"
+  total=$((total + have))
+done
+[ "$total" -gt 0 ] || echo "  note  every counted table was empty in the source, so this compared zero against zero"
+
+echo "== qdrant =="
+qd() {
+  dc exec -T qdrant bash -c "
+    exec 3<>/dev/tcp/127.0.0.1/6333
+    printf 'GET $1 HTTP/1.0\r\nHost: localhost\r\n\r\n' >&3
+    cat <&3
+  " | sed -n '/^\r\{0,1\}$/,$p' | tail -n +2
+}
+restored=$(qd /collections | jq -r '[.result.collections[]?.name] | sort | join(" ")')
+expected=$(jq -r '[.qdrant.collections[]?.name] | sort | join(" ")' "$ARCHIVE/manifest.json")
+[ "$restored" = "$expected" ] \
+  || fail "collections differ. archive recorded [$expected], restore produced [$restored]. A snapshot that recovers a subset returns empty search results rather than an error."
+echo "  ok    collections: [${restored:-none}]"
+
+# The dimension check. A collection restored at a different dim than the running
+# embedder produces fails on the first upsert with a Qdrant 400 -- long after
+# anyone would still connect it to the restore.
+env_dim="${OCTOPUS_EMBED_DIM:-}"
+for name in $restored; do
+  want=$(jq -r --arg n "$name" '.qdrant.collections[] | select(.name==$n) | .vectors.size // .vectors[""].size // empty' "$ARCHIVE/manifest.json")
+  have=$(qd "/collections/$name" | jq -r '.result.config.params.vectors.size // .result.config.params.vectors[""].size // empty')
+  [ "$have" = "$want" ] \
+    || fail "collection \"$name\" restored with dim ${have:-unknown}, archive recorded ${want:-unknown}."
+  echo "  ok    $name: dim $have as recorded"
+  if [ -n "$env_dim" ] && [ "$env_dim" != "$have" ]; then
+    fail "collection \"$name\" is dim $have but OCTOPUS_EMBED_DIM is $env_dim in $ENV_FILE. The first upsert after this restore would be rejected by Qdrant."
+  fi
+done
+
+echo
+echo "restore verified: $total rows across the core tables (all matching the archive), $(printf '%s' "$restored" | wc -w | tr -d ' ') collection(s) at their recorded dimensions."
+echo "no GitHub-facing service was started."
