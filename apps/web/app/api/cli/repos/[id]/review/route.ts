@@ -1,6 +1,5 @@
 import { authenticateApiToken } from "@/lib/api-auth";
 import { prisma } from "@octopus/db";
-import { processReview } from "@/lib/reviewer";
 import * as github from "@/lib/github";
 import * as gitlab from "@/lib/gitlab";
 import * as bitbucket from "@/lib/bitbucket";
@@ -26,7 +25,7 @@ export async function POST(
     return Response.json({ error: "Repository not found" }, { status: 404 });
   }
 
-  const { prNumber } = await request.json();
+  const { prNumber, correlationId } = await request.json();
   if (!prNumber) {
     return Response.json({ error: "Missing prNumber" }, { status: 400 });
   }
@@ -38,64 +37,61 @@ export async function POST(
     where: { repositoryId: repo.id, number: prNumber },
   });
 
-  if (!pr) {
-    // On-demand: the PR/MR exists on the provider but isn't synced into our DB yet
-    // (e.g. opened before the repo was connected, so no webhook ever fired for it).
-    // Fetch it straight from the provider API and kick off the full review flow.
-    const parts = repo.fullName.split("/");
-    if (parts.length < 2) {
-      return Response.json({ error: "Invalid repository name" }, { status: 500 });
-    }
-    const [owner, repoName] = parts;
-    try {
-      let details;
-      if (repo.provider === "github") {
-        if (!repo.installationId) throw new Error("Missing installation id");
-        details = await github.getPullRequestDetails(repo.installationId, owner, repoName, prNumber);
-      } else if (repo.provider === "gitlab") {
-        details = await gitlab.getPullRequestDetails(result.org.id, repo.fullName, prNumber);
-      } else if (repo.provider === "bitbucket") {
-        details = await bitbucket.getPullRequestDetails(result.org.id, owner, repoName, prNumber);
-      } else {
-        return Response.json({ error: `${prLabel} not found` }, { status: 404 });
-      }
-
-      await startReviewFlow({
-        source: "adapter",
-        provider: repo.provider as "github" | "gitlab" | "bitbucket",
-        installationId: repo.installationId ?? undefined,
-        organizationId: result.org.id,
-        repoFullName: repo.fullName,
-        repoId: repo.id,
-        orgId: result.org.id,
-        prNumber: details.number,
-        prTitle: details.title,
-        prUrl: details.url,
-        prAuthor: details.author,
-        headSha: details.headSha,
-        triggerCommentId: 0,
-        triggerCommentBody: "",
-      });
-
-      return Response.json({ message: "Review started", prNumber: details.number });
-    } catch (err) {
-      console.error(`[cli] Failed to fetch ${repo.provider} ${prLabel} #${prNumber}:`, err);
-      return Response.json({ error: `${prLabel} not found` }, { status: 404 });
-    }
-  }
-
-  if (pr.status === "reviewing") {
+  // In progress already: pg-boss retries and processReview's claim guard both
+  // handle duplicates, but enqueuing on top of a live review is waste.
+  if (pr?.status === "reviewing") {
     return Response.json({ error: "Review already in progress" }, { status: 409 });
   }
 
-  // Start review in the background
-  processReview(pr.id).catch((err) => {
-    console.error(`[cli] Review failed for PR #${prNumber}:`, err);
-  });
+  // Details are fetched from the provider whether or not the pull request is
+  // already known. The stored row's head SHA is as old as the last event that
+  // touched it, and the attempt records the commit it reviewed -- so starting
+  // from a stale one produces an attestation naming the wrong commit.
+  const parts = repo.fullName.split("/");
+  if (parts.length < 2) {
+    return Response.json({ error: "Invalid repository name" }, { status: 500 });
+  }
+  const [owner, repoName] = parts;
 
-  return Response.json({
-    message: "Review started",
-    pullRequestId: pr.id,
-    prNumber: pr.number,
-  });
+  try {
+    let details;
+    if (repo.provider === "github") {
+      if (!repo.installationId) throw new Error("Missing installation id");
+      details = await github.getPullRequestDetails(repo.installationId, owner, repoName, prNumber);
+    } else if (repo.provider === "gitlab") {
+      details = await gitlab.getPullRequestDetails(result.org.id, repo.fullName, prNumber);
+    } else if (repo.provider === "bitbucket") {
+      details = await bitbucket.getPullRequestDetails(result.org.id, owner, repoName, prNumber);
+    } else {
+      return Response.json({ error: `${prLabel} not found` }, { status: 404 });
+    }
+
+    // One path for both cases. This branch used to call `processReview` directly
+    // when the pull request was already known, which skipped `startReviewFlow` --
+    // and with it the attempt record. Every review started that way ran on live
+    // configuration and left nothing attributable behind, which is the property
+    // the attempt exists to provide. rayf#122.
+    await startReviewFlow({
+      source: "adapter",
+      ...(correlationId ? { correlationId: String(correlationId) } : {}),
+      provider: repo.provider as "github" | "gitlab" | "bitbucket",
+      installationId: repo.installationId ?? undefined,
+      organizationId: result.org.id,
+      repoFullName: repo.fullName,
+      repoId: repo.id,
+      orgId: result.org.id,
+      prNumber: details.number,
+      prTitle: details.title,
+      prUrl: details.url,
+      prAuthor: details.author,
+      headSha: details.headSha,
+      triggerCommentId: 0,
+      triggerCommentBody: "",
+    });
+
+    return Response.json({ message: "Review started", prNumber: details.number });
+  } catch (err) {
+    console.error(`[cli] Failed to start review for ${repo.provider} ${prLabel} #${prNumber}:`, err);
+    return Response.json({ error: `${prLabel} not found` }, { status: 404 });
+  }
 }
