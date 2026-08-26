@@ -4,6 +4,7 @@
 #   ./configure-github-app.sh --app-id 123 --slug my-app --key /path/to/app.pem \
 #     [--client-id Iv23...] [--client-secret ...] [--webhook-secret whsec_...]
 #
+#   GITHUB_APP_CLIENT_SECRET=... ./configure-github-app.sh --update
 #   ./configure-github-app.sh --update [--client-secret ...] [--webhook-secret ...]
 #     Fill in a secret on an App that is already registered. The identity columns
 #     are left alone, so this cannot quietly repoint the deployment at another App.
@@ -45,9 +46,17 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# Secrets may arrive in the environment instead of the argument vector, which is
+# where `ps` can read them. The flags stay for convenience; the env vars are the
+# form to prefer for anything long-lived.
+: "${GITHUB_APP_CLIENT_SECRET:=}"
+: "${GITHUB_APP_WEBHOOK_SECRET:=}"
+[ -z "$CLIENT_SECRET" ] && CLIENT_SECRET="$GITHUB_APP_CLIENT_SECRET"
+[ -z "$WEBHOOK_SECRET" ] && WEBHOOK_SECRET="$GITHUB_APP_WEBHOOK_SECRET"
+
 if [ "$UPDATE" -eq 1 ]; then
   [ -n "$CLIENT_SECRET" ] || [ -n "$WEBHOOK_SECRET" ] || [ -n "$CLIENT_ID" ] \
-    || { echo "--update needs at least one of --client-id, --client-secret, --webhook-secret" >&2; exit 2; }
+    || { echo "--update needs a client id, or a client/webhook secret (flag or GITHUB_APP_*_SECRET)" >&2; exit 2; }
 else
   [ -n "$APP_ID" ] && [ -n "$SLUG" ] && [ -n "$KEY_PATH" ] \
     || { echo "usage: --app-id ID --slug SLUG --key PEM [--client-id ID] [--client-secret S] [--webhook-secret S]" >&2; exit 2; }
