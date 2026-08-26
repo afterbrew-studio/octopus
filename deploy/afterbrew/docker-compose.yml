@@ -29,7 +29,20 @@
 services:
   web:
     container_name: octopus-web
-    image: ghcr.io/octopusreview/octopus-selfhost@sha256:38b160c4f996ecdc6067ec80caf2b4cf8371fb086fd38ab1bfe1baf453000ce7
+    # The image is a VARIABLE, not a literal, and that is the point. This
+    # deployment runs a build of THIS FORK -- the webhook refusal, the frozen
+    # review decision, the reasoning stripper and the gateway path fix are all
+    # ours, and none of them exist in upstream's published image.
+    #
+    # It was a literal pin, edited on the host with sed after every sync. The
+    # first repo sync that followed silently restored upstream's image, and the
+    # deployment ran without any of those controls until a provider 404 gave it
+    # away. A value the host has to override is a value the next sync overwrites.
+    #
+    # Build one with:
+    #   docker build -f apps/web/Dockerfile -t octopus-afterbrew:$(git rev-parse --short HEAD) \
+    #     --build-arg NEXT_PUBLIC_OCTOPUS_SELF_HOSTED=true .
+    image: ${OCTOPUS_IMAGE:?set OCTOPUS_IMAGE to a tag built from this fork}
     ports:
       # Loopback only. Changing this to `${PORT}:3000` publishes the dashboard to
       # every interface on the host, which is the thing C4 exists to prevent.
