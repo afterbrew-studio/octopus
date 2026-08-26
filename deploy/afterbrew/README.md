@@ -83,8 +83,8 @@ unsigned request is refused either way, and the app's refusal is the one under t
 ```
 
 Asserts the whole boundary in one run: the admitted route reaches the application and is
-refused there with `401 Invalid signature`; a 26 MB body is refused with `413` before the
-application allocates for it; 18 other routes -- the dashboard, `/api/health`,
+refused there with `401 Invalid signature`; oversized bodies are refused with `413` before the
+application allocates for them; 18 other routes -- the dashboard, `/api/health`,
 `/api/admin/*`, `/api/cli/*`, `/api/agent/*`, the other providers' webhooks, and the webhook
 path under the wrong method -- are refused at the edge; and no datastore answers on a host
 port.
@@ -93,7 +93,7 @@ A denied route has to be **404 with an empty body**. Status alone would not do: 
 also answers 404, with an HTML page, so a status-only check passes just as happily when the
 request reached the application and the allowlist did not hold.
 
-Measured on the deployment, 2026-08-26: 28 checks, 28 passed.
+Measured on the deployment, 2026-08-26: 29 checks, 29 passed.
 
 Two things it will not let you believe. The datastore-port check is a raw TCP connect via
 bash's `/dev/tcp`, preceded by a guard that the probe can see an open port at all -- an

@@ -120,13 +120,22 @@ resp=$(curl -sS -m 10 -o /dev/null -w '%{http_code}' -X POST "$INGRESS/api/githu
 # The handler must read the whole body before it can check the HMAC, so without a
 # limit an unauthenticated caller decides how much memory the application allocates.
 echo "== an oversized body is refused at the edge, before the application reads it =="
-big=$(mktemp)
-head -c 26000000 /dev/zero | tr '\0' 'a' >"$big"
-resp=$(curl -sS -m 60 -o /dev/null -w '%{http_code}' -X POST "$INGRESS/api/github/webhook" \
-  -H 'content-type: application/json' --data-binary "@$big" 2>&1)
-rm -f "$big"
-[ "$resp" = "413" ] && ok "POST /api/github/webhook with a 26 MB body -> 413" \
-                    || bad "POST /api/github/webhook oversized" "expected 413, got $resp"
+oversized() {
+  local mb="$1" big resp
+  big=$(mktemp)
+  head -c "$((mb * 1000000))" /dev/zero | tr '\0' 'a' >"$big"
+  resp=$(curl -sS -m 90 -o /dev/null -w '%{http_code}' -X POST "$INGRESS/api/github/webhook" \
+    -H 'content-type: application/json' --data-binary "@$big" 2>&1)
+  rm -f "$big"
+  [ "$resp" = "413" ] && ok "POST /api/github/webhook with a ${mb} MB body -> 413" \
+                      || bad "POST /api/github/webhook ${mb} MB" "expected 413, got $resp"
+}
+# 12 MB is the case that matters. It is under GitHub's 25 MB ceiling, so an earlier
+# 25 MB limit let it through -- and Next.js then truncated it at 10 MB, so the
+# handler saw an incomplete body, failed the signature and answered 401. That reads
+# as a signature problem and GitHub retries it.
+oversized 12
+oversized 26
 
 echo "== the dashboard and every other route are not reachable =="
 deny GET  /
