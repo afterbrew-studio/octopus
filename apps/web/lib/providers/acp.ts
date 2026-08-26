@@ -2,7 +2,7 @@ import "server-only";
 import { prisma } from "@octopus/db";
 import { decryptStringMaybeLegacy } from "@/lib/crypto";
 import type { Provider, AiCreateParams, AiResponse } from "./index";
-import { callOpenAiGateway } from "./openai-gateway";
+import { callOpenAiGateway, parseExtraBody } from "./openai-gateway";
 import { validateProviderUrl } from "./url-validation";
 
 /**
@@ -68,6 +68,8 @@ export const acpProvider: Provider = {
       modelPrefix: "acp:",
       apiBase: config.apiBase,
       apiKey: config.apiKey,
+      // Operator-supplied vendor extensions, e.g. disabling a model's thinking.
+      extraBody: parseExtraBody(process.env.ACP_EXTRA_BODY, "ACP_EXTRA_BODY"),
     });
   },
 };
