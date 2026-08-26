@@ -19,7 +19,9 @@
 #
 # 3. The dashboard binds 127.0.0.1 only. Reachable over an SSH tunnel, not from the
 #    LAN. ADR-0056 keeps the dashboard private and admits only the signature-verified
-#    webhook route publicly, which is a separate ingress this file does not create.
+#    webhook route publicly. That admission is the `ingress` service: a route
+#    allowlist in front of `web`, so what a tunnel can reach is one POST path rather
+#    than all ~110 API routes and the dashboard.
 #
 # 4. No credential has a default. Upstream ships `octopus:octopus`; `${VAR:?}` here
 #    means compose REFUSES to start when a variable is unset rather than silently
@@ -45,6 +47,32 @@ services:
     # Reboot survival without root: the docker daemon is enabled at boot on the
     # target host, so a restart policy brings these back with no systemd unit and
     # no privileged install. See rayf P-0007 C6.
+    restart: unless-stopped
+
+  # The only service a tunnel is ever pointed at. See ./Caddyfile for what it
+  # admits and why it is an allowlist.
+  #
+  # Published on loopback for the same reason as `web`: the tunnel client runs on
+  # the host as an unprivileged process and dials this locally. Nothing on the LAN
+  # can reach it, so the exposure is exactly the tunnel and nothing else.
+  ingress:
+    # caddy 2.11.4. Pinned by digest for the same reason as every other image here.
+    image: caddy@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
+    ports:
+      - "127.0.0.1:${OCTOPUS_INGRESS_PORT:-43310}:8080"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      - web
+    healthcheck:
+      # Against :8081, which has no host publication and is not what the tunnel is
+      # pointed at. Probing :8080 instead would mean either adding a 200 route to
+      # the allowlist -- reachable from the internet, for a container's benefit --
+      # or asserting on a 404, which wget reports as a failure.
+      test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:8081/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
     restart: unless-stopped
 
   postgres:
