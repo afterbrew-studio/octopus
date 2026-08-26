@@ -13,6 +13,12 @@
  * Refusing at each webhook instead would be six checks, and the seventh caller
  * somebody adds would have none.
  *
+ * The refusal is a BOOLEAN, and the caller returns. It was an exception first, and
+ * that was wrong: no webhook route catches, so the throw became a 500, the provider
+ * read a failed delivery and retried it. A policy meaning "this event starts no
+ * review" would have meant "this event fails loudly, on a retry schedule". The
+ * delivery genuinely succeeded; it simply started nothing.
+ *
  * `ReviewSource` is a REQUIRED parameter rather than an optional one with a default.
  * A default is the failure this is guarding against: a new call site inherits the
  * permissive value and nobody notices. Required means the compiler rejects a caller
@@ -30,34 +36,23 @@ export type ReviewSource =
   /** An authenticated request from the dispatching adapter. The only positive case. */
   | "adapter";
 
-export class ReviewStartRefusedError extends Error {
-  readonly source: ReviewSource;
-  readonly statusCode = 403;
-
-  constructor(source: ReviewSource, detail: string) {
-    super(
-      `a review may not be started from "${source}" on this deployment: ${detail}. ` +
-        "This is a deployment policy, not a permission: it cannot be granted, " +
-        "configured or enabled. See ADR-0056 and rayf P-0007 C2.",
-    );
-    this.name = "ReviewStartRefusedError";
-    this.source = source;
-  }
-}
-
 /** True when this deployment permits `source` to start a review. */
 export function mayStartReview(source: ReviewSource): boolean {
   return source === "adapter";
 }
 
 /**
- * Throws unless the caller is the authenticated adapter. Called at the top of
- * `startReviewFlow`, before any upsert, placeholder comment, check run, dashboard
- * notification or enqueue -- so a refusal leaves no trace on the pull request,
- * which is what "side-effect-free" in C2 means.
+ * What gets logged when a start is refused.
+ *
+ * Worded so nobody mistakes it for a permissions problem they could go and fix:
+ * somebody reading "forbidden" goes looking for the role that grants it, finds
+ * none, and has spent the search for nothing. `detail` names the pull request, so
+ * a refusal is distinguishable in a log from a no-op.
  */
-export function assertMayStartReview(source: ReviewSource, detail: string): void {
-  if (!mayStartReview(source)) {
-    throw new ReviewStartRefusedError(source, detail);
-  }
+export function reviewRefusalMessage(source: ReviewSource, detail: string): string {
+  return (
+    `a review may not be started from "${source}" on this deployment: ${detail}. ` +
+    "This is a deployment policy, not a permission: it cannot be granted, " +
+    "configured or enabled. See ADR-0056 and rayf P-0007 C2."
+  );
 }

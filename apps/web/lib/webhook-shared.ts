@@ -5,7 +5,7 @@ import { eventBus } from "@/lib/events";
 import * as github from "@/lib/github";
 import * as bitbucket from "@/lib/bitbucket";
 import * as gitlab from "@/lib/gitlab";
-import { assertMayStartReview, type ReviewSource } from "@/lib/review-start-policy";
+import { mayStartReview, reviewRefusalMessage, type ReviewSource } from "@/lib/review-start-policy";
 
 /**
  * Post a neutral "skipped" check run so the PR isn't blocked forever.
@@ -59,7 +59,19 @@ export async function startReviewFlow(params: {
   // Before every side effect -- no upsert, placeholder comment, check run,
   // dashboard notification or enqueue happens for a refused caller, which is what
   // "side-effect-free" means in P-0007 C2.
-  assertMayStartReview(params.source, `${params.provider} pr #${params.prNumber} on ${params.repoFullName}`);
+  //
+  // Returns rather than throws: none of the six webhook routes catches, so a throw
+  // is a 500 and the provider retries the delivery. See review-start-policy.ts.
+  if (!mayStartReview(params.source)) {
+    console.log(
+      "[webhook] " +
+        reviewRefusalMessage(
+          params.source,
+          `${params.provider} pr #${params.prNumber} on ${params.repoFullName}`,
+        ),
+    );
+    return;
+  }
 
   const {
     provider,
