@@ -2,7 +2,11 @@ import { beforeEach, describe, expect, it, mock } from "bun:test";
 
 mock.module("server-only", () => ({}));
 
-type Orphan = { id: string; createdAt: Date; attempts: Array<{ id: string }> };
+type Orphan = {
+  id: string;
+  createdAt: Date;
+  attempts: Array<{ id: string; createdAt: Date }>;
+};
 
 let orphans: Orphan[] = [];
 let updateCount = 1;
@@ -62,7 +66,7 @@ describe("reapStuckReviews", () => {
 
   it("carries the live attempt into the retry so it keeps its frozen config", async () => {
     orphans = [
-      { id: "pr_attempt", createdAt: minutesAgo(30), attempts: [{ id: "att_1" }] },
+      { id: "pr_attempt", createdAt: minutesAgo(30), attempts: [{ id: "att_1", createdAt: minutesAgo(30) }] },
     ];
     const res = await reapStuckReviews(NOW);
     expect(res).toEqual({ requeued: 1, failed: 0 });
@@ -99,7 +103,7 @@ describe("reapStuckReviews", () => {
 
   it("terminates the attempt of an orphan that will never be retried", async () => {
     orphans = [
-      { id: "pr_old", createdAt: daysAgo(40), attempts: [{ id: "att_dead" }] },
+      { id: "pr_old", createdAt: daysAgo(40), attempts: [{ id: "att_dead", createdAt: daysAgo(40) }] },
     ];
     const res = await reapStuckReviews(NOW);
     expect(res).toEqual({ requeued: 0, failed: 1 });
@@ -111,6 +115,26 @@ describe("reapStuckReviews", () => {
         terminalDetail: REAP_FAILED_MESSAGE,
       },
     });
+  });
+
+  it("retries a fresh attempt on an old pull request", async () => {
+    // The two ages diverge here, which is the whole point: a review dispatched
+    // half an hour ago against a month-old pull request is fresh work. Comparing
+    // the pull request's age would refuse it.
+    orphans = [
+      {
+        id: "pr_old_attempt_new",
+        createdAt: daysAgo(40),
+        attempts: [{ id: "att_fresh", createdAt: minutesAgo(30) }],
+      },
+    ];
+    const res = await reapStuckReviews(NOW);
+    expect(res).toEqual({ requeued: 1, failed: 0 });
+    expect(enqueue).toHaveBeenCalledWith(
+      "process-review",
+      { pullRequestId: "pr_old_attempt_new", attemptId: "att_fresh" },
+      { singletonKey: "reap:pr_old_attempt_new", singletonSeconds: 3600 },
+    );
   });
 
   it("skips a row a live worker already finished (update matched nothing)", async () => {

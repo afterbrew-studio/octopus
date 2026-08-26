@@ -52,7 +52,7 @@ export async function reapStuckReviews(
         where: { terminalAt: null },
         orderBy: { createdAt: "desc" },
         take: 1,
-        select: { id: true },
+        select: { id: true, createdAt: true },
       },
     },
   });
@@ -71,9 +71,17 @@ export async function reapStuckReviews(
 
     // Absent for reviews enqueued before attempts existed. Those keep the old
     // behaviour rather than being refused, which would strand real work.
-    const attemptId = pr.attempts[0]?.id;
+    const attempt = pr.attempts[0];
+    const attemptId = attempt?.id;
 
-    if (pr.createdAt > requeueCutoff) {
+    // The age that decides a retry is the ATTEMPT's, not the pull request's. They
+    // diverge exactly where it matters: a review dispatched an hour ago against a
+    // pull request opened last month is fresh work, and comparing the pull request's
+    // age would refuse to retry it. The pull request's date is the fallback for
+    // reviews that predate attempts.
+    const startedAt = attempt?.createdAt ?? pr.createdAt;
+
+    if (startedAt > requeueCutoff) {
       await enqueue(
         "process-review",
         attemptId ? { pullRequestId: pr.id, attemptId } : { pullRequestId: pr.id },

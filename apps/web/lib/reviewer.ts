@@ -61,7 +61,7 @@ import {
 } from "@/lib/diff-truncate";
 import type { ReviewComment } from "@/lib/github";
 import { eventBus } from "@/lib/events";
-import { resolveReviewConfig } from "@/lib/review-attempt";
+import { attemptOutcomeForStatus, resolveReviewConfig } from "@/lib/review-attempt";
 import {
   touchesSharedFiles,
   extractUserInstruction,
@@ -617,18 +617,64 @@ async function syncTextDismissalsForPR(
   }
 }
 
+/**
+ * Execute a review, and record what happened to its attempt.
+ *
+ * The lifecycle lives here rather than inside `runReview` because that function
+ * has around a dozen exits and one of them is always the one somebody forgets.
+ * `attemptOutcomeForStatus` reads the outcome off the pull request afterwards, so
+ * a new exit inherits the behaviour instead of needing to opt into it.
+ *
+ * @param attemptId The frozen attempt to execute. When present its configuration
+ * snapshot is used verbatim instead of re-merging system, organization and
+ * repository config -- so a change to any of those between enqueue and execution
+ * cannot alter the review that runs. rayf P-0007 C3. Absent for jobs enqueued
+ * before attempts existed; those keep the old behaviour rather than failing,
+ * because refusing them would strand work already in the queue.
+ */
 export async function processReview(
   pullRequestId: string,
-  /**
-   * The frozen attempt to execute. When present its configuration snapshot is
-   * used verbatim instead of re-merging system, organization and repository
-   * config -- so a change to any of those between enqueue and execution cannot
-   * alter the review that runs. rayf P-0007 C3.
-   *
-   * Absent for jobs enqueued before attempts existed; those keep the old
-   * behaviour rather than failing, because refusing them would strand work
-   * already in the queue.
-   */
+  attemptId?: string,
+): Promise<void> {
+  if (!attemptId) return runReview(pullRequestId, undefined);
+
+  // Guarded on `pending`, so a replayed job cannot restart an attempt that already
+  // reached a terminal state. A deferred attempt coming back round is already
+  // `running` and matches nothing here, which is correct: it never stopped.
+  await prisma.reviewAttempt.updateMany({
+    where: { id: attemptId, state: "pending" },
+    data: { state: "running" },
+  });
+
+  try {
+    await runReview(pullRequestId, attemptId);
+  } catch (err) {
+    await finalizeAttempt(attemptId, "failed", `review threw: ${String(err)}`);
+    throw err;
+  }
+
+  const pr = await prisma.pullRequest.findUnique({
+    where: { id: pullRequestId },
+    select: { status: true },
+  });
+  const outcome = attemptOutcomeForStatus(pr?.status);
+  if (outcome) await finalizeAttempt(attemptId, outcome.state, outcome.detail);
+}
+
+/** Written once. The `terminalAt` guard is what makes that true under a race. */
+async function finalizeAttempt(
+  attemptId: string,
+  state: "succeeded" | "failed" | "cancelled",
+  detail: string,
+): Promise<void> {
+  await prisma.reviewAttempt.updateMany({
+    where: { id: attemptId, terminalAt: null },
+    data: { state, terminalAt: new Date(), terminalDetail: detail },
+  });
+}
+
+async function runReview(
+  pullRequestId: string,
   attemptId?: string,
 ): Promise<void> {
   // Load PR with repo and org info

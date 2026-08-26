@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { resolveReviewConfig } from "@/lib/review-attempt";
+import { attemptOutcomeForStatus, resolveReviewConfig } from "@/lib/review-attempt";
 import type { ReviewConfig } from "@/lib/review-helpers";
 
 /**
@@ -52,5 +52,33 @@ describe("resolveReviewConfig", () => {
     // `{}` is a real decision -- every default -- and must not be confused with
     // "no snapshot", which is the one case that legitimately falls back.
     expect(resolveReviewConfig({ configSnapshot: {} }, live)).toEqual({} as ReviewConfig);
+  });
+});
+
+describe("attemptOutcomeForStatus", () => {
+  it("succeeds on a completed review and fails on a failed one", () => {
+    expect(attemptOutcomeForStatus("completed")?.state).toBe("succeeded");
+    expect(attemptOutcomeForStatus("failed")?.state).toBe("failed");
+  });
+
+  it("leaves a queued pull request non-terminal", () => {
+    // Both the large-review handoff and the low-balance deferral park a review in
+    // `queued` with something else due to pick it up. Terminalising here would
+    // claim a review ended when it had only moved -- and the reaper, which selects
+    // the newest non-terminal attempt, would then stop finding it.
+    expect(attemptOutcomeForStatus("queued")).toBeNull();
+  });
+
+  it("cancels rather than fails when execution returned without running", () => {
+    // Reviews paused, a blocked author, a duplicate claim: none ran the review and
+    // none is a failure of it. What matters most is that neither stays `pending`,
+    // which would read as a paid review still in flight forever.
+    for (const status of ["reviewing", "pending", "unexpected", null, undefined]) {
+      expect(attemptOutcomeForStatus(status)?.state).toBe("cancelled");
+    }
+  });
+
+  it("says which status it saw, so a cancellation is diagnosable", () => {
+    expect(attemptOutcomeForStatus("reviewing")?.detail).toContain("reviewing");
   });
 });
