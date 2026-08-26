@@ -739,14 +739,77 @@ export function isCleanReview(sev: {
  * removed. An approval is a claim about the code; none of those three support
  * the same claim.
  */
+/**
+ * A change an automated approval should not vouch for, whatever the findings
+ * said.
+ *
+ * A reviewer answers "is anything wrong with this diff". That is not the same
+ * question as "is this worth merging unattended", and in a loop where the AUTHOR
+ * is also a model the second question is the one with no other asker. A change
+ * can carry no defects and still be unreviewable: a rewrite too large to have
+ * been read, a diff that is all deletion, a change with no stated purpose.
+ *
+ * Deliberately mechanical. Every signal is a property of the diff, not a
+ * judgement about it - a model asked whether a model's work is good enough is
+ * the same failure this exists to catch, one level up.
+ */
+export interface ChangeShape {
+  /** Files the review actually read. */
+  filesChanged: number;
+  linesAdded: number;
+  linesRemoved: number;
+  /** The PR body, minus template boilerplate. */
+  statedPurpose: string;
+}
+
+export interface SlopVerdict {
+  readonly mergeableUnattended: boolean;
+  readonly reasons: readonly string[];
+}
+
+/** Above this a change is too large to have been reviewed with real attention. */
+export const UNATTENDED_MAX_FILES = 40;
+export const UNATTENDED_MAX_LINES = 1500;
+
+export function assessChangeShape(shape: ChangeShape): SlopVerdict {
+  const reasons: string[] = [];
+
+  if (shape.filesChanged > UNATTENDED_MAX_FILES) {
+    reasons.push(`${shape.filesChanged} files is more than a review can attend to`);
+  }
+  const touched = shape.linesAdded + shape.linesRemoved;
+  if (touched > UNATTENDED_MAX_LINES) {
+    reasons.push(`${touched} changed lines is more than a review can attend to`);
+  }
+  // Not a defect, and not something findings capture: a change nobody explained
+  // cannot be checked against what it was for. A human author gets asked; an
+  // automated one has to be.
+  if (shape.statedPurpose.trim().length < 40) {
+    reasons.push('no stated purpose to check the change against');
+  }
+  // A pure deletion passes every "is this code correct" test trivially, because
+  // there is no code left to be wrong.
+  if (shape.linesAdded === 0 && shape.linesRemoved > 0) {
+    reasons.push('deletion only, so a clean review says nothing about what was lost');
+  }
+
+  return { mergeableUnattended: reasons.length === 0, reasons };
+}
+
 export function mayApprove(input: {
   optedIn: boolean;
   found: { hasCritical: boolean; hasHigh: boolean; hasMedium: boolean };
   parsedOutput: boolean;
   readWholeDiff: boolean;
+  /** Absent means the shape was not assessed, which does not block approval. */
+  shape?: SlopVerdict;
 }): boolean {
   return (
-    input.optedIn && isCleanReview(input.found) && input.parsedOutput && input.readWholeDiff
+    input.optedIn &&
+    isCleanReview(input.found) &&
+    input.parsedOutput &&
+    input.readWholeDiff &&
+    (input.shape?.mergeableUnattended ?? true)
   );
 }
 
