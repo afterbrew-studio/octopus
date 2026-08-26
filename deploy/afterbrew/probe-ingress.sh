@@ -74,12 +74,20 @@ deny_head() {
 # identical to a correct refusal. Reported rather than counted, so a probe run
 # before the App exists cannot read as "signature verification works".
 echo "== is there a webhook secret to verify against? =="
-app_rows=$(docker compose exec -T postgres psql -U "${POSTGRES_USER:-}" -d "${POSTGRES_DB:-}" -tAc \
-  "select count(*) from github_app_configs" 2>/dev/null | tr -d '[:space:]')
-if [ -n "$app_rows" ] && [ "$app_rows" != "0" ]; then
-  ok "a GitHub App configuration exists, so a 401 below is a real signature refusal"
+# Two sources, because `github-app-config.ts` reads both: the SystemConfig singleton
+# when an App was provisioned through the manifest flow, and GITHUB_APP_* env vars
+# otherwise. Checking one would report "unconfigured" for a deployment configured
+# the other way -- and the query has to name a column, because a query against a
+# table that does not exist fails silently into the same "unconfigured" branch.
+app_db=$(docker compose exec -T postgres psql -U "${POSTGRES_USER:-}" -d "${POSTGRES_DB:-}" -tAc \
+  'select count(*) from system_config where "githubAppId" is not null' 2>/dev/null | tr -d '[:space:]')
+app_env=$(docker compose exec -T web sh -c 'printf "%s" "${GITHUB_APP_ID:-}"' 2>/dev/null | tr -d '[:space:]')
+if [ -z "$app_db" ]; then
+  bad "the App-configuration check" "the system_config query returned nothing -- the column or the table is not what this expects, so this probe cannot tell configured from unconfigured"
+elif [ "$app_db" != "0" ] || [ -n "$app_env" ]; then
+  ok "a GitHub App is configured, so a 401 below is a real signature refusal"
 else
-  printf '  note  no GitHub App configuration in the database.\n'
+  printf '  note  no GitHub App configuration, in the database or in the environment.\n'
   printf '        The 401s below prove the route is admitted and reaches the app.\n'
   printf '        They do NOT prove signature verification, because an unconfigured\n'
   printf '        deployment refuses every delivery with the same 401.\n'
