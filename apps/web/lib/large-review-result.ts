@@ -21,13 +21,44 @@ import {
   type ReviewConfig,
 } from "@/lib/review-helpers";
 import { eventBus } from "@/lib/events";
+import { attemptOutcomeForStatus, resolveReviewConfig } from "@/lib/review-attempt";
 
 export type LargeReviewResultJob = {
   pullRequestId: string;
   reviewBody: string;
   durationMs?: number;
   error?: string;
+  /**
+   * The frozen attempt this result belongs to, when internal-cli echoed it back.
+   * Absent otherwise, and the attempt is then looked up from the pull request --
+   * see `activeAttempt`.
+   */
+  attemptId?: string;
 };
+
+/**
+ * The attempt this result belongs to.
+ *
+ * Addressed by id when the job carries one. When it does not -- internal-cli owns
+ * that payload and is not in this repository -- the newest attempt that has not
+ * reached a terminal state is used. That is weaker: it is inference rather than
+ * identity, and a pull request with two overlapping dispatches could resolve to
+ * the other one. It is still better than the alternative, which was re-merging
+ * live configuration and finalising nothing at all.
+ */
+export async function activeAttempt(pullRequestId: string, attemptId?: string) {
+  if (attemptId) {
+    return prisma.reviewAttempt.findUnique({
+      where: { id: attemptId },
+      select: { id: true, configSnapshot: true },
+    });
+  }
+  return prisma.reviewAttempt.findFirst({
+    where: { pullRequestId, terminalAt: null },
+    orderBy: { createdAt: "desc" },
+    select: { id: true, configSnapshot: true },
+  });
+}
 
 const SEVERITY_TO_DB: Record<string, string> = {
   "🔴": "critical",
@@ -104,6 +135,12 @@ export async function handleLargeReviewResult(
       where: { id: pr.id },
       data: { status: "failed", errorMessage: data.error },
     });
+    // This path returns before the config block, so it resolves its own attempt.
+    await finalizeAttempt(
+      await activeAttempt(pr.id, data.attemptId),
+      "failed",
+      `large review failed: ${data.error ?? "unknown"}`,
+    );
 
     eventBus.emit({
       type: "review-failed",
@@ -131,10 +168,17 @@ export async function handleLargeReviewResult(
   } catch {
     // SystemConfig unavailable — fall back to org/repo config only.
   }
-  const reviewConfig = mergeReviewConfigs(
-    systemConfig,
-    parseReviewConfig(org.defaultReviewConfig),
-    parseReviewConfig(repo.reviewConfig),
+  // The snapshot wins, exactly as on the standard path. Without this the largest
+  // and most expensive reviews were the ones that silently ran against whatever
+  // was configured at the moment the result came back. rayf P-0007 C3.
+  const attempt = await activeAttempt(pr.id, data.attemptId);
+  const reviewConfig = resolveReviewConfig(
+    attempt,
+    mergeReviewConfigs(
+      systemConfig,
+      parseReviewConfig(org.defaultReviewConfig),
+      parseReviewConfig(repo.reviewConfig),
+    ),
   );
   const parsedFindings = parseFindings(reviewBody);
   const { kept: findings, truncatedCount } = sortAndCapFindings(
@@ -346,7 +390,29 @@ export async function handleLargeReviewResult(
     filesChanged: 0, // not known on this path; could be passed from internal-cli later
   });
 
+  // The attempt was left non-terminal when the review was handed off -- `queued`
+  // means work is still in flight, and this is where it stops being in flight.
+  const finished = await prisma.pullRequest.findUnique({
+    where: { id: pr.id },
+    select: { status: true },
+  });
+  const outcome = attemptOutcomeForStatus(finished?.status);
+  if (outcome) await finalizeAttempt(attempt, outcome.state, `large ${outcome.detail}`);
+
   console.log(
     `[large-review-result] Completed PR #${pr.number} (duration ${data.durationMs ?? "?"}ms)`,
   );
+}
+
+/** Written once. The `terminalAt` guard is what makes that true under a race. */
+async function finalizeAttempt(
+  attempt: { id: string } | null,
+  state: "succeeded" | "failed" | "cancelled",
+  detail: string,
+): Promise<void> {
+  if (!attempt) return;
+  await prisma.reviewAttempt.updateMany({
+    where: { id: attempt.id, terminalAt: null },
+    data: { state, terminalAt: new Date(), terminalDetail: detail },
+  });
 }

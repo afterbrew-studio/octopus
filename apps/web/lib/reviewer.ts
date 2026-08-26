@@ -61,6 +61,7 @@ import {
 } from "@/lib/diff-truncate";
 import type { ReviewComment } from "@/lib/github";
 import { eventBus } from "@/lib/events";
+import { attemptOutcomeForStatus, resolveReviewConfig } from "@/lib/review-attempt";
 import {
   touchesSharedFiles,
   extractUserInstruction,
@@ -616,7 +617,66 @@ async function syncTextDismissalsForPR(
   }
 }
 
-export async function processReview(pullRequestId: string): Promise<void> {
+/**
+ * Execute a review, and record what happened to its attempt.
+ *
+ * The lifecycle lives here rather than inside `runReview` because that function
+ * has around a dozen exits and one of them is always the one somebody forgets.
+ * `attemptOutcomeForStatus` reads the outcome off the pull request afterwards, so
+ * a new exit inherits the behaviour instead of needing to opt into it.
+ *
+ * @param attemptId The frozen attempt to execute. When present its configuration
+ * snapshot is used verbatim instead of re-merging system, organization and
+ * repository config -- so a change to any of those between enqueue and execution
+ * cannot alter the review that runs. rayf P-0007 C3. Absent for jobs enqueued
+ * before attempts existed; those keep the old behaviour rather than failing,
+ * because refusing them would strand work already in the queue.
+ */
+export async function processReview(
+  pullRequestId: string,
+  attemptId?: string,
+): Promise<void> {
+  if (!attemptId) return runReview(pullRequestId, undefined);
+
+  // Guarded on `pending`, so a replayed job cannot restart an attempt that already
+  // reached a terminal state. A deferred attempt coming back round is already
+  // `running` and matches nothing here, which is correct: it never stopped.
+  await prisma.reviewAttempt.updateMany({
+    where: { id: attemptId, state: "pending" },
+    data: { state: "running" },
+  });
+
+  try {
+    await runReview(pullRequestId, attemptId);
+  } catch (err) {
+    await finalizeAttempt(attemptId, "failed", `review threw: ${String(err)}`);
+    throw err;
+  }
+
+  const pr = await prisma.pullRequest.findUnique({
+    where: { id: pullRequestId },
+    select: { status: true },
+  });
+  const outcome = attemptOutcomeForStatus(pr?.status);
+  if (outcome) await finalizeAttempt(attemptId, outcome.state, outcome.detail);
+}
+
+/** Written once. The `terminalAt` guard is what makes that true under a race. */
+async function finalizeAttempt(
+  attemptId: string,
+  state: "succeeded" | "failed" | "cancelled",
+  detail: string,
+): Promise<void> {
+  await prisma.reviewAttempt.updateMany({
+    where: { id: attemptId, terminalAt: null },
+    data: { state, terminalAt: new Date(), terminalDetail: detail },
+  });
+}
+
+async function runReview(
+  pullRequestId: string,
+  attemptId?: string,
+): Promise<void> {
   // Load PR with repo and org info
   const pr = await prisma.pullRequest.findUnique({
     where: { id: pullRequestId },
@@ -676,6 +736,14 @@ export async function processReview(pullRequestId: string): Promise<void> {
   const org = repo.organization;
 
   // 3-tier config: system defaults -> org defaults -> repo overrides
+  // The frozen decision, if this job carries one.
+  const attempt = attemptId
+    ? await prisma.reviewAttempt.findUnique({
+        where: { id: attemptId },
+        select: { id: true, configSnapshot: true, state: true },
+      })
+    : null;
+
   let systemConfig: ReviewConfig = {};
   try {
     const sysRow = await prisma.systemConfig.findUnique({ where: { id: "singleton" } });
@@ -683,7 +751,10 @@ export async function processReview(pullRequestId: string): Promise<void> {
   } catch { /* table may not exist yet */ }
   const orgConfig = parseReviewConfig(org.defaultReviewConfig);
   const repoConfig = parseReviewConfig(repo.reviewConfig);
-  const reviewConfig = mergeReviewConfigs(systemConfig, orgConfig, repoConfig);
+  // The snapshot wins. Re-merging here is what C3 exists to prevent: the three
+  // sources are mutable, so the merge would answer "what is configured now"
+  // rather than "what was approved when this was enqueued".
+  const reviewConfig = resolveReviewConfig(attempt, mergeReviewConfigs(systemConfig, orgConfig, repoConfig));
 
   if (org.reviewsPaused) {
     console.log(`[reviewer] Reviews paused for org ${org.id}, skipping PR ${pr.id}`);
@@ -1198,7 +1269,14 @@ export async function processReview(pullRequestId: string): Promise<void> {
           where: { id: pr.id },
           data: { status: "queued", updatedAt: new Date() },
         });
-        await enqueueAfter("process-review", { pullRequestId: pr.id }, 30);
+        // The attempt travels with the deferral. This re-queue is the same
+        // approved review waiting for capacity, not a new decision, so dropping
+        // the id here would let it come back re-merged against live config.
+        await enqueueAfter(
+          "process-review",
+          attemptId ? { pullRequestId: pr.id, attemptId } : { pullRequestId: pr.id },
+          30,
+        );
         return;
       }
     }
@@ -1247,6 +1325,11 @@ export async function processReview(pullRequestId: string): Promise<void> {
         // drive the PR to "completed"/"failed" via post-large-review-result.
         await enqueue("process-large-review", {
           pullRequestId: pr.id,
+          // Carried so internal-cli can echo it back with the result. It is not in
+          // this repository, so this is a request rather than a guarantee -- the
+          // result handler falls back to resolving the attempt from the pull
+          // request when it comes back without one.
+          attemptId,
           orgId: org.id,
           repositoryId: repo.id,
           repoFullName: repo.fullName,
