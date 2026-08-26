@@ -239,6 +239,44 @@ sign-in each need their own client id and secret. Note that these are **sign-in*
 separate from the GitHub App credentials the reviewer uses - configuring one does not configure
 the other.
 
+## Embeddings run locally
+
+The review path is not optional about embeddings: `reviewer.ts` awaits `indexRepository`
+and a retrieval `createEmbeddings` with **no diff-only fallback**, so a deployment without an
+embedding provider does not produce a worse review - it throws, and the pull request is marked
+failed.
+
+Neither of the wired chat providers helps. The gateway slot speaks
+`/v1/chat/completions` and nothing else, and DeepSeek publishes no embeddings API at all. So
+`ollama` runs in this stack with `nomic-embed-text`: no API key, no per-token cost, and no
+private repository content leaving the host to be embedded by a third vendor.
+
+```
+provider=ollama  model=nomic-embed-text  dim=768  url=http://ollama:11434
+```
+
+### The dimension is a one-way door
+
+Qdrant collections are created with a fixed vector size, and vectors from different models are
+not comparable. Changing the embedding model after the first index means wiping the collections
+and re-indexing - it is not a settings change.
+
+This is not hypothetical. The application creates `code_chunks` from whatever
+`getEmbedConfig().dim` says at the time, and on this deployment it had already done so at
+**3072**, the OpenAI default, before any of this was configured. Left alone, the first index
+would have written 768-dim vectors into a 3072-dim collection, and Qdrant would have rejected
+the upsert with a 400 well after anyone would connect it to the embedding setting.
+
+It was empty, so it was dropped and is recreated lazily at 768 on the first index. **Check the
+collection's size before the first review, not after:**
+
+```sh
+docker compose exec -T qdrant bash -c \
+  'exec 3<>/dev/tcp/127.0.0.1/6333; printf "GET /collections/code_chunks HTTP/1.0\r\n\r\n" >&3; cat <&3'
+```
+
+`backup.sh` records the size and `restore.sh` refuses on a mismatch, for the same reason.
+
 ## Model provider slots
 
 Octopus reaches non-first-party models through two OpenAI-compatible gateway slots,
