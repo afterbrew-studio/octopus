@@ -4,6 +4,7 @@ import { auth } from "@/lib/auth";
 import { prisma } from "@octopus/db";
 import { hasOrgPermission } from "@/lib/org-permissions";
 import { ReviewSettingsForm } from "./review-settings-form";
+import { ApproveWhenCleanSwitch } from "./approve-when-clean-switch";
 import { ReviewsPausedSwitch } from "./reviews-paused-switch";
 import { OrgReviewConfigForm } from "./org-review-config-form";
 import { ReviewLanguageForm } from "./review-language-form";
@@ -30,6 +31,7 @@ export default async function ReviewsSettingsPage() {
         select: {
           id: true,
           checkFailureThreshold: true,
+          approveWhenClean: true,
           reviewsPaused: true,
           defaultReviewConfig: true,
           reviewLanguage: true,
@@ -61,6 +63,10 @@ export default async function ReviewsSettingsPage() {
       <ReviewSettingsForm
         isOwner={canManage}
         currentThreshold={member.organization.checkFailureThreshold}
+      />
+      <ApproveWhenCleanSwitch
+        isOwner={canManage}
+        enabled={member.organization.approveWhenClean}
       />
       <OrgReviewConfigForm
         isOwner={canManage}

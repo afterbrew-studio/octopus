@@ -860,6 +860,58 @@ export async function cancelIndexing(repoId: string): Promise<{ error?: string }
   return {};
 }
 
+/**
+ * Grant or revoke this org's authority to submit APPROVE on a clean review.
+ *
+ * Separate from every other review setting because of what it enables: an
+ * approval is what an automated merge waits on, so turning this on is what lets
+ * code reach the default branch with no human in the loop. It is owner/admin
+ * only and writes an audit entry, because "who turned this on, and when" is the
+ * first question anyone asks after a merge nobody expected.
+ */
+export async function updateApproveWhenClean(
+  _prevState: { error?: string; success?: boolean },
+  formData: FormData,
+): Promise<{ error?: string; success?: boolean }> {
+  const user = await getUser();
+  const cookieStore = await cookies();
+  const orgId = cookieStore.get("current_org_id")?.value;
+
+  if (!orgId) return { error: "No organization selected." };
+
+  const member = await prisma.organizationMember.findFirst({
+    where: { organizationId: orgId, userId: user.id, deletedAt: null },
+    select: { role: true, scopes: true },
+  });
+
+  if (!hasOrgPermission(member, "reviews:configure")) {
+    return { error: "Only organization owners and admins can change review settings." };
+  }
+
+  const enabled = formData.get("approveWhenClean") === "true";
+
+  await prisma.organization.update({
+    where: { id: orgId },
+    data: { approveWhenClean: enabled },
+  });
+
+  await prisma.auditLog.create({
+    data: {
+      action: enabled ? "review.approve_authority_granted" : "review.approve_authority_revoked",
+      category: "review",
+      actorId: user.id,
+      actorEmail: user.email ?? null,
+      targetType: "organization",
+      targetId: orgId,
+      organizationId: orgId,
+      metadata: { approveWhenClean: enabled },
+    },
+  });
+
+  revalidatePath("/settings/reviews");
+  return { success: true };
+}
+
 const VALID_THRESHOLDS = ["critical", "high", "medium", "none"] as const;
 
 export async function updateCheckFailureThreshold(
