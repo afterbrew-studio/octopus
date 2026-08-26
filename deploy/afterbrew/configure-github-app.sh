@@ -56,7 +56,8 @@ done
 
 if [ "$UPDATE" -eq 1 ]; then
   [ -n "$CLIENT_SECRET" ] || [ -n "$WEBHOOK_SECRET" ] || [ -n "$CLIENT_ID" ] \
-    || { echo "--update needs a client id, or a client/webhook secret (flag or GITHUB_APP_*_SECRET)" >&2; exit 2; }
+    || [ -n "$SLUG" ] \
+    || { echo "--update needs a slug, a client id, or a client/webhook secret" >&2; exit 2; }
 else
   [ -n "$APP_ID" ] && [ -n "$SLUG" ] && [ -n "$KEY_PATH" ] \
     || { echo "usage: --app-id ID --slug SLUG --key PEM [--client-id ID] [--client-secret S] [--webhook-secret S]" >&2; exit 2; }
@@ -107,11 +108,18 @@ if [ "$UPDATE" -eq 1 ]; then
   configured="$(psql 'select coalesce("githubAppSlug", '"''"') from system_config where id = '"'singleton'"'' | tr -d '[:space:]')"
   [ -n "$configured" ] || { echo "no App is registered yet; run without --update first" >&2; exit 1; }
   sets=""
+  # The slug tracks the App's NAME on GitHub, so a rename breaks every URL built
+  # from it -- the install redirect most visibly. Permitted here because the app
+  # id is never touched, so this cannot repoint the deployment at a different App.
+  if [ -n "$SLUG" ]; then
+    echo "  slug: $configured -> $SLUG"
+    sets="$sets\"githubAppSlug\" = '$SLUG', \"githubAppHtmlUrl\" = 'https://github.com/apps/$SLUG',"
+  fi
   [ -n "$CLIENT_ID" ] && sets="$sets\"githubAppClientId\" = '$CLIENT_ID',"
   [ -n "$CLIENT_SECRET_ENC" ] && sets="$sets\"githubAppClientSecretEnc\" = '$CLIENT_SECRET_ENC',"
   [ -n "$SECRET_ENC" ] && sets="$sets\"githubAppWebhookSecretEnc\" = '$SECRET_ENC',"
   psql "update system_config set ${sets}\"updatedAt\" = now() where id = 'singleton'" >/dev/null
-  echo "updated $configured:${CLIENT_ID:+ client id}${CLIENT_SECRET_ENC:+ client secret}${SECRET_ENC:+ webhook secret}"
+  echo "updated:${SLUG:+ slug}${CLIENT_ID:+ client id}${CLIENT_SECRET_ENC:+ client secret}${SECRET_ENC:+ webhook secret}"
   docker compose up -d --force-recreate web >/dev/null
   echo "web recreated; give it ~30s"
   exit 0

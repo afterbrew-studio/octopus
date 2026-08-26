@@ -113,7 +113,7 @@ location: https://<team>.cloudflareaccess.com/cdn-cgi/access/login/octopus.after
 ## Registering the GitHub App
 
 ```sh
-./configure-github-app.sh --app-id 4717565 --slug companion-afterbrew \
+./configure-github-app.sh --app-id 4717565 --slug octopus-afterbrew \
   --client-id Iv23... --key ~/companion/secrets/github-app.pem
 ```
 
@@ -152,8 +152,11 @@ credential, generated on the App settings page. Store it with:
 ./configure-github-app.sh --update --client-secret <secret>
 ```
 
-`--update` touches only the secret columns, so it cannot quietly repoint the deployment at a
-different App.
+`--update` also takes `--slug`, which is what a **rename on GitHub** needs: the slug tracks the
+App's name, so renaming it breaks every URL built from it - the install redirect most visibly,
+which starts sending people to `github.com/apps/<old-slug>`. The app id, the private key and
+the client id are unaffected by a rename, so reviews keep working and only the redirect breaks.
+`--update` never touches the app id, so it cannot repoint the deployment at a different App.
 
 ## Signing in
 
