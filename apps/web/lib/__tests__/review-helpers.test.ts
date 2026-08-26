@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { formatPastReviews, formatPrIntent, buildRetrievalQuery, cappedConfidence, UNCITED_HIGH_SEV_CAP, filterByConfidence, resolveConfidenceThreshold, type PastReviewHit } from "@/lib/review-helpers";
+import { mayApprove, isCleanReview, shouldFailReviewCheck, formatPastReviews, formatPrIntent, buildRetrievalQuery, cappedConfidence, UNCITED_HIGH_SEV_CAP, filterByConfidence, resolveConfidenceThreshold, type PastReviewHit } from "@/lib/review-helpers";
 
 describe("formatPastReviews", () => {
   const hit = (o: Partial<PastReviewHit> = {}): PastReviewHit => ({
@@ -158,5 +158,85 @@ describe("resolveConfidenceThreshold (#652)", () => {
   it("maps HIGH to 85 and default to 70", () => {
     expect(resolveConfidenceThreshold({ confidenceThreshold: "HIGH" })).toBe(85);
     expect(resolveConfidenceThreshold({})).toBe(70);
+  });
+});
+
+describe("isCleanReview", () => {
+  const sev = (o: Partial<{ hasCritical: boolean; hasHigh: boolean; hasMedium: boolean }> = {}) => ({
+    hasCritical: false,
+    hasHigh: false,
+    hasMedium: false,
+    ...o,
+  });
+
+  it("is true only when nothing was found at any severity", () => {
+    expect(isCleanReview(sev())).toBe(true);
+    expect(isCleanReview(sev({ hasCritical: true }))).toBe(false);
+    expect(isCleanReview(sev({ hasHigh: true }))).toBe(false);
+    expect(isCleanReview(sev({ hasMedium: true }))).toBe(false);
+  });
+
+  it("is stricter than not failing the check, which is the whole point", () => {
+    // With the default `critical` threshold a HIGH finding does not fail the
+    // check - but the review still found something real. Approving there would
+    // tell an automated merge that nothing was found, so approval needs its own
+    // test rather than reusing the gate's.
+    const withHigh = sev({ hasHigh: true });
+    expect(shouldFailReviewCheck(withHigh, "critical")).toBe(false);
+    expect(isCleanReview(withHigh)).toBe(false);
+
+    const withMedium = sev({ hasMedium: true });
+    expect(shouldFailReviewCheck(withMedium, "high")).toBe(false);
+    expect(isCleanReview(withMedium)).toBe(false);
+  });
+
+  it("does not approve merely because the org disabled its check gate", () => {
+    // `threshold: "none"` means "never fail my check run". It must not read as
+    // "approve everything", which would hand an automated merge a green light
+    // on a review carrying critical findings.
+    const withCritical = sev({ hasCritical: true });
+    expect(shouldFailReviewCheck(withCritical, "none")).toBe(false);
+    expect(isCleanReview(withCritical)).toBe(false);
+  });
+});
+
+describe("mayApprove", () => {
+  const clean = { hasCritical: false, hasHigh: false, hasMedium: false };
+  const ok = { optedIn: true, found: clean, parsedOutput: true, readWholeDiff: true };
+
+  it("approves only a clean, complete review of the whole diff, when opted in", () => {
+    expect(mayApprove(ok)).toBe(true);
+  });
+
+  it("refuses when the org never granted the authority", () => {
+    expect(mayApprove({ ...ok, optedIn: false })).toBe(false);
+  });
+
+  it("refuses a re-review that found a HIGH, which the display filter would hide", () => {
+    // On a follow-up review the reviewer keeps only critical findings for
+    // DISPLAY. Deciding approval from that filtered set makes every re-review
+    // read as "no high, no medium" - and every review after the first is a
+    // re-review, so it is the common case, not an edge one.
+    expect(mayApprove({ ...ok, found: { ...clean, hasHigh: true } })).toBe(false);
+    expect(mayApprove({ ...ok, found: { ...clean, hasMedium: true } })).toBe(false);
+  });
+
+  it("refuses when the model response did not arrive whole", () => {
+    // A response truncated mid-emission parses to zero findings, which is the
+    // same value a genuinely clean review produces.
+    expect(mayApprove({ ...ok, parsedOutput: false })).toBe(false);
+  });
+
+  it("refuses when part of the diff was never read", () => {
+    // Truncated or ignore-filtered: an approval vouches for the change, and a
+    // partly-read change cannot be vouched for. The dangerous shape is a large
+    // PR whose auth file was dropped by truncation while a lockfile survived.
+    expect(mayApprove({ ...ok, readWholeDiff: false })).toBe(false);
+  });
+
+  it("needs every condition, not a majority of them", () => {
+    for (const key of ["optedIn", "parsedOutput", "readWholeDiff"] as const) {
+      expect(mayApprove({ ...ok, [key]: false })).toBe(false);
+    }
   });
 });

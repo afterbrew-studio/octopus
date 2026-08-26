@@ -704,6 +704,52 @@ export function generateVerificationQueries(
  * REQUEST_CHANGES review event), so the two providers can never drift.
  * threshold: "none" | "critical" | "high" | "medium".
  */
+/**
+ * Whether a review found nothing worth a human's attention.
+ *
+ * Deliberately stricter than `!shouldFailReviewCheck`. That asks "is anything
+ * above the org's gate", so with the default `critical` threshold a review
+ * carrying a HIGH finding does not fail the check - but it has still found
+ * something real, and approving it would tell an automated merge that nothing
+ * was found. Approval is the stronger claim and needs the stronger test.
+ */
+export function isCleanReview(sev: {
+  hasCritical: boolean;
+  hasHigh: boolean;
+  hasMedium: boolean;
+}): boolean {
+  return !sev.hasCritical && !sev.hasHigh && !sev.hasMedium;
+}
+
+/**
+ * Whether this review may submit APPROVE.
+ *
+ * Separate from `isCleanReview` because "found nothing" is only one of the ways
+ * a review can be unfit to approve, and the others are not about findings at
+ * all. Each argument answers a different question, and every one of them
+ * defaults to refusing:
+ *
+ *  - `optedIn`      did the org grant this authority
+ *  - `found`        what the model found, BEFORE any display filter narrowed it
+ *  - `parsedOutput` did the model's response arrive whole
+ *  - `readWholeDiff` did the model see the whole change
+ *
+ * The third and fourth exist because zero findings is the same value whether a
+ * review was clean, truncated mid-emission, or run against a diff with files
+ * removed. An approval is a claim about the code; none of those three support
+ * the same claim.
+ */
+export function mayApprove(input: {
+  optedIn: boolean;
+  found: { hasCritical: boolean; hasHigh: boolean; hasMedium: boolean };
+  parsedOutput: boolean;
+  readWholeDiff: boolean;
+}): boolean {
+  return (
+    input.optedIn && isCleanReview(input.found) && input.parsedOutput && input.readWholeDiff
+  );
+}
+
 export function shouldFailReviewCheck(
   sev: { hasCritical: boolean; hasHigh: boolean; hasMedium: boolean },
   threshold: string,

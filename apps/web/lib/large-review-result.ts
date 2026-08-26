@@ -18,6 +18,7 @@ import {
   mergeReviewConfigs,
   MAX_FINDINGS_PER_REVIEW,
   shouldFailReviewCheck,
+  isCleanReview,
   type ReviewConfig,
 } from "@/lib/review-helpers";
 import { eventBus } from "@/lib/events";
@@ -246,9 +247,14 @@ export async function handleLargeReviewResult(
     { hasCritical, hasHigh, hasMedium },
     threshold,
   );
-  const reviewEvent: "COMMENT" | "REQUEST_CHANGES" = shouldRequestChanges
+  // Same rule as the ordinary path: APPROVE only when the org opted in and the
+  // review found nothing at any severity. A large PR is not a reason to hold
+  // approval back, nor to grant it more easily.
+  const reviewEvent: "COMMENT" | "REQUEST_CHANGES" | "APPROVE" = shouldRequestChanges
     ? "REQUEST_CHANGES"
-    : "COMMENT";
+    : org.approveWhenClean && isCleanReview({ hasCritical, hasHigh, hasMedium })
+      ? "APPROVE"
+      : "COMMENT";
 
   const findingsBlock = buildLowSeveritySummary(findings);
   const summaryHeader = `Large PR — ${findings.length} finding${findings.length !== 1 ? "s" : ""}${

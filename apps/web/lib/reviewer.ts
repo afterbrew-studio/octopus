@@ -81,6 +81,8 @@ import {
   resolveIndexClaimWait,
   normalizeScoreDenominators,
   shouldFailReviewCheck,
+  isCleanReview,
+  mayApprove,
   formatPastReviews,
   formatPrIntent,
   buildRetrievalQuery,
@@ -1306,6 +1308,12 @@ async function runReview(
     // Fetch the diff first, fall back to internal-cli if oversized, then
     // fetch the tree. Sequencing avoids orphaning a tree request when the
     // diff fetch throws (which we want to handle separately for large PRs).
+    // Whether the model saw the WHOLE change. Both are reasons not to approve:
+    // an approval vouches for the diff, and a partly-read diff is a partly-read
+    // vouch. They are set at the points that actually drop content, so a new
+    // filter added later has to opt into the same honesty.
+    let diffWasTruncated = false;
+    let diffWasFiltered = false;
     let rawDiff: string;
     try {
       rawDiff = await providerGetDiff(pr.number);
@@ -1408,7 +1416,9 @@ async function runReview(
 
         if (ignoreContent) {
           octopusIg = parseOctopusIgnore(ignoreContent);
+          const beforeFilter = diff.length;
           diff = filterDiff(diff, octopusIg);
+          diffWasFiltered = diff.length !== beforeFilter;
           console.log(`[reviewer] Applied .octopusignore — diff reduced from ${rawDiff.length} to ${diff.length} chars`);
         }
       } catch (err) {
@@ -1421,6 +1431,7 @@ async function runReview(
     if (diff.length > MAX_DIFF_CHARS) {
       const before = diff.length;
       diff = truncateDiff(diff);
+      diffWasTruncated = true;
       console.log(`[reviewer] Capped filtered diff ${before} → ${diff.length} chars`);
     }
 
@@ -1430,6 +1441,7 @@ async function runReview(
     if (rawDiff.length >= MAX_FETCH_DIFF_CHARS && !diff.includes(TRUNCATION_MARKER)) {
       diff += truncationNotice(MAX_FETCH_DIFF_CHARS);
     }
+    if (diff.includes(TRUNCATION_MARKER)) diffWasTruncated = true;
 
     const diffFiles = extractDiffFiles(diff);
     const filesChanged = diffFiles.size;
@@ -2292,6 +2304,17 @@ Rules:
       }
     }
 
+    // What the model actually found, BEFORE the re-review filter below discards
+    // everything non-critical. The filter decides what to SHOW on a follow-up
+    // review; it must not decide whether the review found anything, or a
+    // re-review carrying a HIGH finding reads as clean and can be approved.
+    // Every review after the first is a re-review, so that is the common case.
+    const foundBeforeReReviewFilter = {
+      hasCritical: allParsedFindings.some((f) => f.severity === "🔴"),
+      hasHigh: allParsedFindings.some((f) => f.severity === "🟠"),
+      hasMedium: allParsedFindings.some((f) => f.severity === "🟡"),
+    };
+
     // Re-review filter: only keep critical findings on follow-up reviews.
     // This is a hard filter — prompt instructions alone are not reliable enough.
     if (isReReview) {
@@ -2380,7 +2403,40 @@ Rules:
       { hasCritical, hasHigh, hasMedium },
       threshold,
     );
-    const reviewEvent = shouldRequestChanges ? "REQUEST_CHANGES" : "COMMENT";
+    // APPROVE is what an automated merge waits on, so every condition below is a
+    // reason NOT to emit it. Each answers a different way this review could be
+    // wrong rather than clean.
+    //
+    //  - severities come from `foundBeforeReReviewFilter`, not from the filtered
+    //    `findings`, so a re-review that found a HIGH cannot read as clean.
+    //  - a review whose model output produced no parseable findings block is
+    //    UNKNOWN, not clean: `parseFindings` returns [] for a truncated response
+    //    exactly as it does for a genuinely clean one.
+    //  - a diff that was truncated or filtered was only partly read, and
+    //    approving it would vouch for files the model never saw.
+    // A findings block that opened and never closed is a response cut off
+    // mid-emission - `parseFindings` returns [] for that exactly as it does for
+    // a genuinely clean review, so without this the two are the same value.
+    const truncatedModelOutput =
+      reviewBody.includes(FINDINGS_START_MARKER) && !reviewBody.includes(FINDINGS_END_MARKER);
+    const parsedSomething = reviewBody.trim().length > 0 && !truncatedModelOutput;
+    const readWholeDiff = !diffWasTruncated && !diffWasFiltered;
+    const approvable = mayApprove({
+      optedIn: org.approveWhenClean,
+      found: foundBeforeReReviewFilter,
+      parsedOutput: parsedSomething,
+      readWholeDiff,
+    });
+    const reviewEvent: "COMMENT" | "REQUEST_CHANGES" | "APPROVE" = shouldRequestChanges
+      ? "REQUEST_CHANGES"
+      : approvable
+        ? "APPROVE"
+        : "COMMENT";
+    if (org.approveWhenClean && !approvable && !shouldRequestChanges) {
+      console.log(
+        `[reviewer] not approving PR ${pr.number}: clean=${isCleanReview(foundBeforeReReviewFilter)} parsed=${parsedSomething} wholeDiff=${readWholeDiff}`,
+      );
+    }
 
     // Track the actual number of findings visible to the user (inline + summary table)
     // This gets set by the GitHub/Bitbucket posting logic below
@@ -2407,10 +2463,35 @@ Rules:
       return parts.join("\n\n");
     };
 
-    // Determine which findings go into the review summary (non-inline ones)
+    // Every review below is stamped with `pr.headSha` - the commit this job was
+    // claimed for and whose check run it already owns.
+    //
+    // Omitting it is NOT "unspecified": GitHub stamps the review with the PR's
+    // head at the moment the POST lands, and a review takes minutes (model
+    // calls, verification, cross-file fetches). On a PR being pushed to, that
+    // routinely names a commit this review never read - so a consumer treating
+    // `commit_id` as evidence of what was reviewed would read the opposite of
+    // the truth.
+    //
+    // `pr.headSha` fails safe in both directions. If the live diff turned out
+    // newer, the stamp is OLDER than the merged head and a consumer holds; if
+    // the head moves afterwards, the stamp mismatches and a consumer holds.
+    // Only the omitted case silently agrees with whatever is current.
     let inlineReviewSucceeded = false;
 
     if (isGitHub && installationId) {
+      // The row can be taken from under a worker that pg-boss timed out but did
+      // not stop. Checked HERE, above the inline/summary split, because BOTH
+      // branches publish: a clean review has no inline comments and so takes the
+      // summary path, which is exactly the review that can carry APPROVE. A
+      // fence that guards only the inline branch leaves the approval unfenced.
+      if (!(await stillOurs(pr.id, claimToken))) {
+        console.log(
+          `[reviewer] PR ${pr.id} was re-claimed while this worker was running; not publishing`,
+        );
+        return;
+      }
+
       // GitHub: use the PR review API for inline comments
       if (inlineComments.length > 0) {
         // Dedup: skip inline comments where the bot already posted on the same file+line
@@ -2444,21 +2525,11 @@ Rules:
         effectiveFindingsCount = visibleFindingsCount;
         const summaryLine = buildReviewSummary(findingsBlock, visibleFindingsCount);
 
-        // The row can be taken from under a worker that pg-boss timed out but did
-        // not stop. Checked HERE because publication is the irreversible half: a
-        // second review comment cannot be withdrawn, and the terminal write that
-        // would have caught it happens afterwards.
-        if (!(await stillOurs(pr.id, claimToken))) {
-          console.log(
-            `[reviewer] PR ${pr.id} was re-claimed while this worker was running; not publishing`,
-          );
-          return;
-        }
 
         try {
           const reviewId = await ghCreatePullRequestReview(
             installationId, owner, repoName, pr.number,
-            summaryLine, reviewEvent as "COMMENT" | "REQUEST_CHANGES", dedupedComments,
+            summaryLine, reviewEvent, dedupedComments, undefined, pr.headSha ?? undefined,
           );
           inlineReviewSucceeded = true;
           console.log(`[reviewer] PR review submitted with ${dedupedComments.length} inline comments, ${nonInlineWithUnmappable.length} in summary (${reviewEvent}), reviewId: ${reviewId}`);
@@ -2505,7 +2576,7 @@ Rules:
         try {
           await ghCreatePullRequestReview(
             installationId, owner, repoName, pr.number,
-            summaryBody, reviewEvent as "COMMENT" | "REQUEST_CHANGES", [],
+            summaryBody, reviewEvent, [], undefined, pr.headSha ?? undefined,
           );
           console.log(`[reviewer] PR review submitted without inline comments, ${allSummaryFindings.length} in summary (${reviewEvent})`);
         } catch (err) {
