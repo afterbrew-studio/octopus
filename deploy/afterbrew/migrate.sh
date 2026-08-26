@@ -16,9 +16,15 @@ set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PRISMA_DIR="${1:-$DIR/prisma}"
-NODE_IMAGE="${NODE_IMAGE:-node:22-alpine}"
+# Pinned by digest: this container writes the production schema, and a floating
+# tag means the thing that migrates the database can change with no review here.
+# node 22-alpine, resolved 2026-08-26.
+NODE_IMAGE="${NODE_IMAGE:-node@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32}"
 # BASELINE=1 for a database that has never been built. See the note in the runner.
 BASELINE="${BASELINE:-0}"
+# Exact, not `prisma@7`. A floating major means a later run installs a different
+# CLI against the same schema, and the migration is the last place to discover it.
+PRISMA_VERSION="${PRISMA_VERSION:-7.5.0}"
 
 [ -f "$PRISMA_DIR/schema.prisma" ] || {
   echo "no schema.prisma under $PRISMA_DIR" >&2
@@ -28,8 +34,10 @@ BASELINE="${BASELINE:-0}"
 [ -d "$PRISMA_DIR/migrations" ] || { echo "no migrations/ under $PRISMA_DIR" >&2; exit 1; }
 [ -f "$DIR/.env" ] || { echo "no .env; run ./generate-secrets.sh first" >&2; exit 1; }
 
-# Read the credentials without echoing them, and build the URL inside the
-# container rather than passing it on a command line where `ps` would show it.
+# Read the credentials without echoing them. The URL is assembled INSIDE the
+# container from component variables: `docker run -e DATABASE_URL=postgres://user:pass@...`
+# puts the password in the host's argument vector, where any process under this
+# account can read it out of `ps`.
 # shellcheck source=/dev/null
 set -a; . "$DIR/.env"; set +a
 
@@ -67,17 +75,22 @@ echo "applying migrations from $PRISMA_DIR ($(find "$PRISMA_DIR/migrations" -max
 docker run --rm \
   --network "$NETWORK" \
   -v "$PRISMA_DIR:/work/prisma:ro" \
-  -e DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}" \
+  -e POSTGRES_USER \
+  -e POSTGRES_PASSWORD \
+  -e POSTGRES_DB \
   -e BASELINE="$BASELINE" \
+  -e PRISMA_VERSION="$PRISMA_VERSION" \
   -w /work \
   "$NODE_IMAGE" \
   sh -c '
     set -e
+    # Assembled here, not passed in: see the note above about `ps`.
+    export DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}"
     # Installed into /work rather than run through npx: the config file imports
     # `prisma/config`, and npx resolves the CLI in a temp directory where that
     # import cannot be found from /work.
     npm init -y >/dev/null 2>&1
-    npm install --no-audit --no-fund --loglevel=error prisma@7 >/dev/null
+    npm install --no-audit --no-fund --loglevel=error prisma@$PRISMA_VERSION >/dev/null
     cat > /work/prisma.config.mjs <<CONFIG
 import { defineConfig, env } from "prisma/config";
 export default defineConfig({
