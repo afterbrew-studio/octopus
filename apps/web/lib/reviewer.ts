@@ -62,6 +62,7 @@ import {
 import type { ReviewComment } from "@/lib/github";
 import { eventBus } from "@/lib/events";
 import { attemptOutcomeForStatus, resolveReviewConfig } from "@/lib/review-attempt";
+import { stillOurs } from "@/lib/claim-fence";
 import {
   touchesSharedFiles,
   extractUserInstruction,
@@ -710,6 +711,9 @@ async function runReview(
   const queueConfig = await loadQueueConfig();
   const reviewingStale = new Date(Date.now() - computeStaleReclaimMs(queueConfig.reviewTimeoutSeconds));
   const queuedStale = new Date(Date.now() - computeStaleReclaimMs(queueConfig.largeReviewTimeoutSeconds));
+  // One execution's identity. Compared before this worker publishes anything or
+  // writes a terminal status; see `claimToken` in the schema.
+  const claimToken = crypto.randomUUID();
   const claimed = await prisma.pullRequest.updateMany({
     where: {
       id: pullRequestId,
@@ -724,7 +728,7 @@ async function runReview(
         { status: "queued", updatedAt: { lt: queuedStale } },
       ],
     },
-    data: { status: "reviewing", updatedAt: new Date() },
+    data: { status: "reviewing", updatedAt: new Date(), claimToken },
   });
   if (claimed.count === 0) {
     console.log(`[reviewer] PR ${pullRequestId} already claimed by another server, skipping on '${serverId}'`);
@@ -2440,6 +2444,17 @@ Rules:
         effectiveFindingsCount = visibleFindingsCount;
         const summaryLine = buildReviewSummary(findingsBlock, visibleFindingsCount);
 
+        // The row can be taken from under a worker that pg-boss timed out but did
+        // not stop. Checked HERE because publication is the irreversible half: a
+        // second review comment cannot be withdrawn, and the terminal write that
+        // would have caught it happens afterwards.
+        if (!(await stillOurs(pr.id, claimToken))) {
+          console.log(
+            `[reviewer] PR ${pr.id} was re-claimed while this worker was running; not publishing`,
+          );
+          return;
+        }
+
         try {
           const reviewId = await ghCreatePullRequestReview(
             installationId, owner, repoName, pr.number,
@@ -2619,14 +2634,23 @@ Rules:
       );
     }
 
-    // Step 7: Mark as completed + update check run
-    await prisma.pullRequest.update({
-      where: { id: pr.id },
+    // Step 7: Mark as completed + update check run.
+    //
+    // Conditional on the claim, not a plain update. The check above is advisory --
+    // the row can be taken between it and here -- and only a write that carries
+    // the condition cannot be raced. A worker that lost the row stops rather than
+    // overwriting the status of the review that replaced it.
+    const finalised = await prisma.pullRequest.updateMany({
+      where: { id: pr.id, claimToken },
       data: {
         status: "completed",
         reviewBody: effectiveReviewBody,
       },
     });
+    if (finalised.count === 0) {
+      console.log(`[reviewer] PR ${pr.id} was re-claimed; not writing a terminal status`);
+      return;
+    }
 
     // Merge-gating result, computed once and applied to whichever provider
     // supports a status check (GitHub check-run, GitLab commit status).
