@@ -13,7 +13,19 @@
 # they were.
 set -uo pipefail
 
-INGRESS="http://127.0.0.1:${OCTOPUS_INGRESS_PORT:-43310}"
+# Loopback by default, because that is what exists before a tunnel does. Once one
+# is attached, RUN THIS AGAIN THROUGH THE PUBLIC NAME: a probe against loopback
+# proves the allowlist and says nothing about what the tunnel is pointed at. A
+# tunnel aimed at 43300 by mistake exposes the dashboard and every API while this
+# script, still testing 43310, keeps reporting a clean boundary.
+#
+#   INGRESS_URL=https://octopus.example.invalid ./probe-ingress.sh
+INGRESS="${INGRESS_URL:-http://127.0.0.1:${OCTOPUS_INGRESS_PORT:-43310}}"
+# For the webhook-secret question below, which reads the deployment's own database.
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+[ -f "$DIR/.env" ] && { set -a; . "$DIR/.env"; set +a; }
+cd "$DIR"
 pass=0
 fail=0
 
@@ -56,6 +68,23 @@ deny_head() {
                         || bad "HEAD $path" "expected 404, got $status"
 }
 
+# Whether the 401 below proves anything depends on there being a secret to check
+# against. `verifySignature` returns false when the GitHub App config is absent, so
+# an unconfigured deployment answers 401 to every delivery, including real ones --
+# identical to a correct refusal. Reported rather than counted, so a probe run
+# before the App exists cannot read as "signature verification works".
+echo "== is there a webhook secret to verify against? =="
+app_rows=$(docker compose exec -T postgres psql -U "${POSTGRES_USER:-}" -d "${POSTGRES_DB:-}" -tAc \
+  "select count(*) from github_app_configs" 2>/dev/null | tr -d '[:space:]')
+if [ -n "$app_rows" ] && [ "$app_rows" != "0" ]; then
+  ok "a GitHub App configuration exists, so a 401 below is a real signature refusal"
+else
+  printf '  note  no GitHub App configuration in the database.\n'
+  printf '        The 401s below prove the route is admitted and reaches the app.\n'
+  printf '        They do NOT prove signature verification, because an unconfigured\n'
+  printf '        deployment refuses every delivery with the same 401.\n'
+fi
+
 echo "== the one admitted route reaches the application and is refused there =="
 resp=$(curl -sS -m 10 -o /tmp/probe-wh.$$ -w '%{http_code}' \
   -X POST "$INGRESS/api/github/webhook" \
@@ -75,6 +104,17 @@ resp=$(curl -sS -m 10 -o /dev/null -w '%{http_code}' -X POST "$INGRESS/api/githu
   -H 'content-type: application/json' -d '{"zen":"probe"}' 2>&1)
 [ "$resp" = "401" ] && ok "POST /api/github/webhook unsigned -> 401" \
                     || bad "POST /api/github/webhook unsigned" "expected 401, got $resp"
+
+# The handler must read the whole body before it can check the HMAC, so without a
+# limit an unauthenticated caller decides how much memory the application allocates.
+echo "== an oversized body is refused at the edge, before the application reads it =="
+big=$(mktemp)
+head -c 26000000 /dev/zero | tr '\0' 'a' >"$big"
+resp=$(curl -sS -m 60 -o /dev/null -w '%{http_code}' -X POST "$INGRESS/api/github/webhook" \
+  -H 'content-type: application/json' --data-binary "@$big" 2>&1)
+rm -f "$big"
+[ "$resp" = "413" ] && ok "POST /api/github/webhook with a 26 MB body -> 413" \
+                    || bad "POST /api/github/webhook oversized" "expected 413, got $resp"
 
 echo "== the dashboard and every other route are not reachable =="
 deny GET  /
@@ -97,11 +137,26 @@ deny POST /api/stripe/webhook
 deny POST /api/gitlab/webhook
 
 echo "== no datastore is published on a host port =="
+# A raw TCP connect, not an HTTP request. PostgreSQL and Qdrant's gRPC port do not
+# speak HTTP, so a failed `curl` says nothing about whether the port is open -- and
+# an earlier form treated `nc` being absent as proof the port was closed, which
+# reports a clean boundary on any host without netcat.
+#
+# bash's /dev/tcp needs no package and this script already requires bash.
+tcp_open() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
+
+# Guard: prove the connect can succeed before trusting a row of failures. A helper
+# that returned false unconditionally -- a typo, a shell without /dev/tcp -- would
+# report every datastore port closed and look like a clean pass.
+if tcp_open "${OCTOPUS_INGRESS_PORT:-43310}"; then
+  ok "the TCP probe detects an open port (the ingress itself)"
+else
+  bad "the TCP probe" "cannot see the ingress on ${OCTOPUS_INGRESS_PORT:-43310}, so the results below prove nothing"
+fi
+
 for port in 5432 6333 6334 43332 43333 43334; do
-  if curl -sS -m 2 -o /dev/null "http://127.0.0.1:$port/" 2>/dev/null; then
-    bad "port $port" "something answered on the host loopback"
-  elif command -v nc >/dev/null 2>&1 && nc -z 127.0.0.1 "$port" 2>/dev/null; then
-    bad "port $port" "TCP connect succeeded on the host loopback"
+  if tcp_open "$port"; then
+    bad "port $port" "a TCP connect succeeded on the host loopback"
   else
     ok "port $port is not listening on the host"
   fi
