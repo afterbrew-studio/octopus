@@ -73,6 +73,23 @@ read-only. That is not incidental: the runtime image carries no migrations and t
 publishes no port, so there is nothing on the host to connect to. Nothing is installed on
 the host and nothing is left behind.
 
+## Signing in
+
+The self-host image serves the marketing site and the application from one origin, so `/` is
+the product's own landing page rather than a sign of a misconfigured deployment. Sign-in is
+at **`/login`**.
+
+**Use "Create an account" with a password, not the magic link.** Email/password is enabled
+because the image bakes `NEXT_PUBLIC_OCTOPUS_SELF_HOSTED=true`, and sign-up signs you straight
+in. The magic link needs `EMAIL_HOST` / `EMAIL_USER` / `EMAIL_PASSWORD`, which this deployment
+does not set - so it would accept the request and deliver nothing. Minimum password length is
+10.
+
+The OAuth buttons read *"not configured"* for the same reason: Google, GitHub and Microsoft
+sign-in each need their own client id and secret. Note that these are **sign-in** credentials,
+separate from the GitHub App credentials the reviewer uses - configuring one does not configure
+the other.
+
 ## Model provider slots
 
 Octopus reaches non-first-party models through two OpenAI-compatible gateway slots,

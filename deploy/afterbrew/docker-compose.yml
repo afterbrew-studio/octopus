@@ -37,6 +37,15 @@ services:
       - DATABASE_URL=postgresql://${POSTGRES_USER:?set POSTGRES_USER}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:?set POSTGRES_DB}
       - QDRANT_URL=http://qdrant:6333
       - ENABLE_REVIEW_WORKERS=true
+      # Better Auth's `trustedOrigins` is exactly `[BETTER_AUTH_URL]`. Unset, that
+      # array holds `undefined`, every sign-in request is rejected as "Invalid
+      # origin", and nothing says why. Derived from the published port here so the
+      # two cannot drift; override it when reaching the dashboard by another name.
+      #
+      # Its NEXT_PUBLIC_ sibling is deliberately absent: those are inlined into the
+      # client bundle at image build time, so setting one at runtime would look
+      # like configuration and do nothing.
+      - BETTER_AUTH_URL=${BETTER_AUTH_URL:-http://localhost:${OCTOPUS_PORT:-43300}}
     depends_on:
       postgres:
         condition: service_healthy
