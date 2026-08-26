@@ -140,6 +140,39 @@ read-only. That is not incidental: the runtime image carries no migrations and t
 publishes no port, so there is nothing on the host to connect to. Nothing is installed on
 the host and nothing is left behind.
 
+## Registering the GitHub App
+
+```sh
+./configure-github-app.sh --app-id 4717565 --slug companion-afterbrew \
+  --client-id Iv23... --key ~/companion/secrets/github-app.pem
+```
+
+**The `GITHUB_APP_*` environment variables cannot work on a prebuilt image**, and the way
+they fail is worth knowing because nothing says it out loud. `github-app-config.ts` reads the
+slug from `NEXT_PUBLIC_GITHUB_APP_SLUG`, and Next.js inlines every `NEXT_PUBLIC_*` reference
+**at build time, in server code too**. Setting it at runtime looks exactly like configuration
+and changes nothing.
+
+The symptom is not an error. It is a dashboard whose GitHub card has no *Connect* button -
+the button renders only when a slug is present - while `GITHUB_APP_ID` and
+`GITHUB_APP_PRIVATE_KEY` sit plainly in the container's environment. `/api/github/install`
+redirects to `?error=github_app_not_configured`, which is the fastest way to tell that state
+apart from "not signed in".
+
+So the App is registered in the **database**, which is where the product's own manifest flow
+puts it and which takes precedence over the environment. The script writes the same columns,
+encrypts the private key exactly as `crypto.ts` does, and refuses rather than overwrites when
+an App is already configured.
+
+Afterwards, the App's own **Setup URL** must point back at the deployment:
+
+```
+http://localhost:43300/api/github/callback
+```
+
+with *Redirect on update* enabled. Without it GitHub has nowhere to send the installation, and
+the connect flow ends on GitHub rather than back in the dashboard.
+
 ## Signing in
 
 The self-host image serves the marketing site and the application from one origin, so `/` is
