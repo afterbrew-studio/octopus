@@ -83,6 +83,7 @@ import {
   shouldFailReviewCheck,
   isCleanReview,
   mayApprove,
+  assessChangeShape,
   formatPastReviews,
   formatPrIntent,
   buildRetrievalQuery,
@@ -2421,12 +2422,26 @@ Rules:
       reviewBody.includes(FINDINGS_START_MARKER) && !reviewBody.includes(FINDINGS_END_MARKER);
     const parsedSomething = reviewBody.trim().length > 0 && !truncatedModelOutput;
     const readWholeDiff = !diffWasTruncated && !diffWasFiltered;
+    // Counted from the diff the model actually read, so a truncated diff cannot
+    // make a large change look small enough to wave through.
+    const addedLines = diff.split('\n').filter((l) => l.startsWith('+') && !l.startsWith('+++')).length;
+    const removedLines = diff.split('\n').filter((l) => l.startsWith('-') && !l.startsWith('---')).length;
+    const shape = assessChangeShape({
+      filesChanged,
+      linesAdded: addedLines,
+      linesRemoved: removedLines,
+      statedPurpose: prBody ?? '',
+    });
     const approvable = mayApprove({
       optedIn: org.approveWhenClean,
       found: foundBeforeReReviewFilter,
       parsedOutput: parsedSomething,
       readWholeDiff,
+      shape,
     });
+    if (org.approveWhenClean && !shape.mergeableUnattended) {
+      console.log(`[reviewer] not approving PR ${pr.number}: ${shape.reasons.join('; ')}`);
+    }
     const reviewEvent: "COMMENT" | "REQUEST_CHANGES" | "APPROVE" = shouldRequestChanges
       ? "REQUEST_CHANGES"
       : approvable

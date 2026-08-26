@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { mayApprove, isCleanReview, shouldFailReviewCheck, formatPastReviews, formatPrIntent, buildRetrievalQuery, cappedConfidence, UNCITED_HIGH_SEV_CAP, filterByConfidence, resolveConfidenceThreshold, type PastReviewHit } from "@/lib/review-helpers";
+import { assessChangeShape, UNATTENDED_MAX_FILES, UNATTENDED_MAX_LINES, mayApprove, isCleanReview, shouldFailReviewCheck, formatPastReviews, formatPrIntent, buildRetrievalQuery, cappedConfidence, UNCITED_HIGH_SEV_CAP, filterByConfidence, resolveConfidenceThreshold, type PastReviewHit } from "@/lib/review-helpers";
 
 describe("formatPastReviews", () => {
   const hit = (o: Partial<PastReviewHit> = {}): PastReviewHit => ({
@@ -238,5 +238,50 @@ describe("mayApprove", () => {
     for (const key of ["optedIn", "parsedOutput", "readWholeDiff"] as const) {
       expect(mayApprove({ ...ok, [key]: false })).toBe(false);
     }
+  });
+});
+
+describe("assessChangeShape", () => {
+  const ok = { filesChanged: 3, linesAdded: 40, linesRemoved: 10, statedPurpose: "Restores the regulatory phrase the rename sweep altered." };
+
+  it("passes an ordinary, explained change", () => {
+    expect(assessChangeShape(ok).mergeableUnattended).toBe(true);
+  });
+
+  it("refuses a change too large to have been attended to", () => {
+    const wide = assessChangeShape({ ...ok, filesChanged: UNATTENDED_MAX_FILES + 1 });
+    expect(wide.mergeableUnattended).toBe(false);
+    const long = assessChangeShape({ ...ok, linesAdded: UNATTENDED_MAX_LINES + 1 });
+    expect(long.mergeableUnattended).toBe(false);
+  });
+
+  it("refuses a change with nothing said about why", () => {
+    // A human author gets asked what this is for. An automated one has to be,
+    // and an unexplained change cannot be checked against its own intent.
+    expect(assessChangeShape({ ...ok, statedPurpose: "" }).mergeableUnattended).toBe(false);
+    expect(assessChangeShape({ ...ok, statedPurpose: "fix" }).mergeableUnattended).toBe(false);
+  });
+
+  it("refuses a deletion-only change", () => {
+    // Every "is this code correct" test passes trivially when there is no code
+    // left to be wrong, so a clean review says nothing about what was lost.
+    const gutted = assessChangeShape({ ...ok, linesAdded: 0, linesRemoved: 200 });
+    expect(gutted.mergeableUnattended).toBe(false);
+    expect(gutted.reasons.join(" ")).toContain("deletion only");
+  });
+
+  it("reports every reason, not just the first", () => {
+    const bad = assessChangeShape({ filesChanged: 500, linesAdded: 0, linesRemoved: 9000, statedPurpose: "" });
+    expect(bad.reasons.length).toBeGreaterThan(2);
+  });
+
+  it("blocks approval even when the review itself was clean", () => {
+    // The point of the gate: "no defects found" and "safe to merge unattended"
+    // are different questions, and in a loop where the author is also a model
+    // the second one has no other asker.
+    const clean = { hasCritical: false, hasHigh: false, hasMedium: false };
+    const base = { optedIn: true, found: clean, parsedOutput: true, readWholeDiff: true };
+    expect(mayApprove(base)).toBe(true);
+    expect(mayApprove({ ...base, shape: assessChangeShape({ ...ok, statedPurpose: "" }) })).toBe(false);
   });
 });
