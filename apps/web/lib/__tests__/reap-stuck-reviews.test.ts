@@ -9,8 +9,14 @@ type Orphan = {
 };
 
 let orphans: Orphan[] = [];
+let pending: Orphan[] = [];
 let updateCount = 1;
-const findMany = mock(async () => orphans);
+// The reaper makes two queries: the stuck scan, then the unenqueued scan. They
+// are told apart by the status the caller filters on, so a change to either
+// query shows up here rather than silently returning the other's rows.
+const findMany = mock(async (args: { where?: { status?: string } } = {}) =>
+  args?.where?.status === "pending" ? pending : orphans,
+);
 const updateMany = mock(async () => ({ count: updateCount }));
 const attemptUpdateMany = mock(async () => ({ count: 1 }));
 mock.module("@octopus/db", () => ({
@@ -42,6 +48,7 @@ const daysAgo = (d: number) => new Date(NOW.getTime() - d * 24 * 60 * 60 * 1000)
 describe("reapStuckReviews", () => {
   beforeEach(() => {
     orphans = [];
+    pending = [];
     updateCount = 1;
     findMany.mockClear();
     updateMany.mockClear();
@@ -52,7 +59,7 @@ describe("reapStuckReviews", () => {
   it("marks a recent orphan failed and re-queues exactly one throttled retry", async () => {
     orphans = [{ id: "pr_recent", createdAt: minutesAgo(30), attempts: [] }];
     const res = await reapStuckReviews(NOW);
-    expect(res).toEqual({ requeued: 1, failed: 0 });
+    expect(res).toEqual({ requeued: 1, failed: 0, unpublished: 0 });
     expect(updateMany).toHaveBeenCalledWith({
       where: { id: "pr_recent", status: { in: ["reviewing", "queued"] } },
       data: { status: "failed", errorMessage: REAP_FAILED_MESSAGE },
@@ -69,7 +76,7 @@ describe("reapStuckReviews", () => {
       { id: "pr_attempt", createdAt: minutesAgo(30), attempts: [{ id: "att_1", createdAt: minutesAgo(30) }] },
     ];
     const res = await reapStuckReviews(NOW);
-    expect(res).toEqual({ requeued: 1, failed: 0 });
+    expect(res).toEqual({ requeued: 1, failed: 0, unpublished: 0 });
     expect(enqueue).toHaveBeenCalledWith(
       "process-review",
       { pullRequestId: "pr_attempt", attemptId: "att_1" },
@@ -96,7 +103,7 @@ describe("reapStuckReviews", () => {
   it("fails an old backlog orphan without re-queuing (no comment spam)", async () => {
     orphans = [{ id: "pr_old", createdAt: daysAgo(40), attempts: [] }];
     const res = await reapStuckReviews(NOW);
-    expect(res).toEqual({ requeued: 0, failed: 1 });
+    expect(res).toEqual({ requeued: 0, failed: 1, unpublished: 0 });
     expect(updateMany).toHaveBeenCalledTimes(1);
     expect(enqueue).not.toHaveBeenCalled();
   });
@@ -106,7 +113,7 @@ describe("reapStuckReviews", () => {
       { id: "pr_old", createdAt: daysAgo(40), attempts: [{ id: "att_dead", createdAt: daysAgo(40) }] },
     ];
     const res = await reapStuckReviews(NOW);
-    expect(res).toEqual({ requeued: 0, failed: 1 });
+    expect(res).toEqual({ requeued: 0, failed: 1, unpublished: 0 });
     expect(attemptUpdateMany).toHaveBeenCalledWith({
       where: { id: "att_dead", terminalAt: null },
       data: {
@@ -129,7 +136,7 @@ describe("reapStuckReviews", () => {
       },
     ];
     const res = await reapStuckReviews(NOW);
-    expect(res).toEqual({ requeued: 1, failed: 0 });
+    expect(res).toEqual({ requeued: 1, failed: 0, unpublished: 0 });
     expect(enqueue).toHaveBeenCalledWith(
       "process-review",
       { pullRequestId: "pr_old_attempt_new", attemptId: "att_fresh" },
@@ -137,11 +144,57 @@ describe("reapStuckReviews", () => {
     );
   });
 
+  it("re-enqueues an attempt that was written and never enqueued", async () => {
+    // startReviewFlow commits the attempt and THEN enqueues. A process killed
+    // between the two leaves durable intent and no job; the stuck scan never
+    // looks at `pending`, so nothing recovered it. rayf#123.
+    pending = [
+      {
+        id: "pr_unenqueued",
+        createdAt: minutesAgo(30),
+        attempts: [{ id: "att_orphan", createdAt: minutesAgo(30) }],
+      },
+    ];
+    const res = await reapStuckReviews(NOW);
+    expect(res.unpublished).toBe(1);
+    expect(enqueue).toHaveBeenCalledWith(
+      "process-review",
+      { pullRequestId: "pr_unenqueued", attemptId: "att_orphan" },
+      // A distinct key from the reap path: one pull request can be both reaped
+      // and reconciled, and a shared singleton would let the first suppress the
+      // second for an hour.
+      { singletonKey: "reconcile:pr_unenqueued", singletonSeconds: 3600 },
+    );
+  });
+
+  it("leaves a pending row whose attempt is younger than the grace window", async () => {
+    // Otherwise it races the worker that is about to claim it.
+    pending = [
+      {
+        id: "pr_fresh",
+        createdAt: minutesAgo(1),
+        attempts: [{ id: "att_fresh", createdAt: minutesAgo(1) }],
+      },
+    ];
+    const res = await reapStuckReviews(NOW);
+    expect(res.unpublished).toBe(0);
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+
+  it("leaves a pending row with no attempt alone", async () => {
+    // Predates attempts. Re-enqueuing would address it by pull request id, which
+    // is the thing the attempt exists to stop.
+    pending = [{ id: "pr_legacy", createdAt: minutesAgo(90), attempts: [] }];
+    const res = await reapStuckReviews(NOW);
+    expect(res.unpublished).toBe(0);
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+
   it("skips a row a live worker already finished (update matched nothing)", async () => {
     orphans = [{ id: "pr_raced", createdAt: minutesAgo(30), attempts: [] }];
     updateCount = 0;
     const res = await reapStuckReviews(NOW);
-    expect(res).toEqual({ requeued: 0, failed: 0 });
+    expect(res).toEqual({ requeued: 0, failed: 0, unpublished: 0 });
     expect(enqueue).not.toHaveBeenCalled();
     expect(attemptUpdateMany).not.toHaveBeenCalled();
   });

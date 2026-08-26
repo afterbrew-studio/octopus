@@ -178,10 +178,14 @@ export async function registerWorkers(boss: PgBoss, config: QueueConfig): Promis
   await boss.work("reap-stuck-reviews", async (jobs) => {
     for (const job of jobs) {
       try {
-        const { requeued, failed } = await reapStuckReviews();
-        if (requeued || failed) {
+        const { requeued, failed, unpublished } = await reapStuckReviews();
+        if (requeued || failed || unpublished) {
+          // `unpublished` counts attempts that were written and never enqueued.
+          // A non-zero value is not routine: it means a process died between two
+          // writes, so it is worth being visible rather than folded into the
+          // requeue count.
           console.log(
-            `[queue] reap-stuck-reviews ${job.id}: requeued=${requeued} failed=${failed}`,
+            `[queue] reap-stuck-reviews ${job.id}: requeued=${requeued} failed=${failed} unpublished=${unpublished}`,
           );
         }
       } catch (err) {

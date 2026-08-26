@@ -16,12 +16,18 @@ import { enqueue, loadQueueConfig, computeStaleReclaimMs } from "./queue";
 const REQUEUE_MAX_AGE_MS =
   (Number(process.env.OCTOPUS_REAP_REQUEUE_MAX_AGE_HOURS) || 6) * 60 * 60 * 1000;
 
+// How long a `pending` pull request may sit before its attempt is assumed to
+// have lost its enqueue. Must exceed the time between an attempt being written
+// and a worker claiming the job, which is queue latency rather than review time.
+const PENDING_ENQUEUE_GRACE_MS =
+  (Number(process.env.OCTOPUS_PENDING_ENQUEUE_GRACE_MINUTES) || 10) * 60 * 1000;
+
 export const REAP_FAILED_MESSAGE =
   "Review interrupted by a server restart or timeout. Push a new commit or comment @octopus to retry.";
 
 export async function reapStuckReviews(
   now: Date = new Date(),
-): Promise<{ requeued: number; failed: number }> {
+): Promise<{ requeued: number; failed: number; unpublished: number }> {
   const config = await loadQueueConfig();
   // Same two windows as the claim guard (reviewer.ts): "reviewing" uses the
   // in-process timeout, "queued" the longer internal-cli timeout. Both exceed
@@ -33,6 +39,10 @@ export async function reapStuckReviews(
   const queuedStale = new Date(
     now.getTime() - computeStaleReclaimMs(config.largeReviewTimeoutSeconds),
   );
+  // Shorter than the two above: a pending row is waiting to be PICKED UP, not
+  // waiting for a review to run, so the window only has to exceed normal queue
+  // latency. Long enough that a worker about to claim it is not raced.
+  const pendingStale = new Date(now.getTime() - PENDING_ENQUEUE_GRACE_MS);
 
   const orphans = await prisma.pullRequest.findMany({
     where: {
@@ -106,5 +116,53 @@ export async function reapStuckReviews(
     }
   }
 
-  return { requeued, failed };
+  // --- attempts that were committed and never enqueued ---------------------
+  //
+  // `startReviewFlow` writes the attempt and THEN enqueues. The two are in
+  // different systems with no transaction between them, so a process killed
+  // between the lines leaves a durable record of intent and no job to act on it.
+  // The pull request sits in `pending` forever: the scan above never looks at
+  // `pending`, and the caller's retry hits the same-SHA early return and reports
+  // success.
+  //
+  // The attempt row IS the outbox record here - it is committed first precisely
+  // so the durable half precedes the volatile one - so reconciliation is a matter
+  // of noticing one that never got its job.
+  //
+  // A pending row with NO attempt is left alone. Those predate attempts, and
+  // re-enqueuing one would address it by pull request id, which is the thing the
+  // attempt exists to stop.
+  const unenqueued = await prisma.pullRequest.findMany({
+    where: {
+      status: "pending",
+      updatedAt: { lt: pendingStale },
+      attempts: { some: { terminalAt: null } },
+    },
+    select: {
+      id: true,
+      attempts: {
+        where: { terminalAt: null },
+        orderBy: { createdAt: "desc" },
+        take: 1,
+        select: { id: true, createdAt: true },
+      },
+    },
+  });
+
+  let unpublished = 0;
+  for (const pr of unenqueued) {
+    const attempt = pr.attempts[0];
+    if (!attempt || attempt.createdAt >= pendingStale) continue;
+    await enqueue(
+      "process-review",
+      { pullRequestId: pr.id, attemptId: attempt.id },
+      // Same throttle as the reap path, and a distinct key: a pull request can be
+      // both reaped and reconciled over its life, and one singleton would let the
+      // first suppress the second for an hour.
+      { singletonKey: `reconcile:${pr.id}`, singletonSeconds: 3600 },
+    );
+    unpublished++;
+  }
+
+  return { requeued, failed, unpublished };
 }
