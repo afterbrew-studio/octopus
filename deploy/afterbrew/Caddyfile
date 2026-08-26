@@ -45,12 +45,17 @@
 	}
 	handle @webhook {
 		# The handler reads the whole body before it can verify the HMAC -- it has to,
-		# since the signature covers the body. So an unauthenticated caller decides how
-		# much memory the application allocates, in a process that also runs the
-		# dashboard and the review workers. 25 MB is GitHub's own delivery ceiling;
-		# anything larger is refused here, before Node sees it.
+		# since the signature covers the body. So without a limit an unauthenticated
+		# caller decides how much memory the application allocates, in a process that
+		# also runs the dashboard and the review workers.
+		#
+		# 10MB, not GitHub's 25MB delivery ceiling. Next.js truncates a request body at
+		# 10MB of its own accord, so a larger delivery reaches the handler incomplete,
+		# fails its signature check and returns 401 -- which reads as a signature
+		# problem and which GitHub retries. Refusing it here returns 413 instead: the
+		# same outcome, named correctly and reached before Node buffers anything.
 		request_body {
-			max_size 25MB
+			max_size 10MB
 		}
 		reverse_proxy web:3000 {
 			header_up X-Forwarded-Proto https
