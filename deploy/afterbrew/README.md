@@ -222,6 +222,29 @@ read-only. That is not incidental: the runtime image carries no migrations and t
 publishes no port, so there is nothing on the host to connect to. Nothing is installed on
 the host and nothing is left behind.
 
+## Model provider slots
+
+Octopus reaches non-first-party models through two OpenAI-compatible gateway slots,
+`acp` and `opencode`. Each takes an origin and a bearer token from the environment
+(`ACP_BASE_URL`/`ACP_API_KEY`, `OPENCODE_BASE_URL`/`OPENCODE_API_KEY`), or from
+per-organization settings that override them. Model ids are namespaced: `acp:<model>`.
+
+**The slot forces `/v1`.** `openai-gateway.ts` builds `<origin>/v1/chat/completions`, and
+`validateProviderUrl` normalizes the configured value to an **origin**, discarding any
+path. So a provider is usable through these slots only if its API lives at `/v1` on its own
+host.
+
+| Provider | Fits? | |
+|---|---|---|
+| MiniMax | yes | `https://api.minimax.io` → `/v1/chat/completions`. Wired to `acp`. Models: `MiniMax-M3`, `M2.7`, `M2.5`, `M2` |
+| DeepSeek | yes | `https://api.deepseek.com` → `/v1/chat/completions`. **Deliberately not wired** - it is the only pay-as-you-go route, and nothing here enforces the monthly ceiling yet |
+| Z.AI | **no** | its API is at `/api/paas/v4/chat/completions`. The forced `/v1` and the origin-stripping between them make that unreachable, whatever origin is configured |
+
+All three keys were verified against their `/models` endpoint, and MiniMax additionally with
+a real completion through the exact URL the slot builds.
+
+Selecting which model a repository reviews with is per-organization, in the dashboard.
+
 ## Rotating secrets, and which one encrypts the data
 
 `generate-secrets.sh` refuses to overwrite an existing `.env`. The PostgreSQL password is
