@@ -26,7 +26,62 @@ export type GatewayCallOptions = {
    */
   apiBase: string;
   apiKey: string;
+  /**
+   * Vendor extensions merged into the request body.
+   *
+   * OpenAI-compatible is a shape, not a contract: MiniMax takes
+   * `thinking: {type: "disabled"}`, and without it a review-sized prompt makes it
+   * reason until the token budget is gone and no answer is ever written. Whether
+   * an endpoint wants such a field is a property OF THAT ENDPOINT, so it is
+   * configured beside its URL and key rather than inferred from a model name
+   * here -- a vendor list in this file would need editing every time a provider
+   * ships a new flag.
+   *
+   * Reserved keys are refused by the caller; see `parseExtraBody`.
+   */
+  extraBody?: Record<string, unknown>;
 };
+
+/**
+ * Fields this layer computes. An operator extension may add to the request, never
+ * redefine what is being asked -- a stray `messages` would silently review
+ * something else, and a stray `model` would bill a different one.
+ */
+const RESERVED_BODY_KEYS = new Set([
+  "model",
+  "messages",
+  "max_completion_tokens",
+  "max_tokens",
+  "response_format",
+  "stream",
+]);
+
+/**
+ * Parse an operator-supplied JSON object of vendor extensions. Throws with the
+ * offending key rather than dropping it, because a silently ignored setting is
+ * indistinguishable from one that did not work.
+ */
+export function parseExtraBody(raw: string | undefined, envName: string): Record<string, unknown> | undefined {
+  if (!raw?.trim()) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new Error(`${envName} is not valid JSON: ${(err as Error).message}`);
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error(`${envName} must be a JSON object, got ${Array.isArray(parsed) ? "an array" : typeof parsed}`);
+  }
+  for (const key of Object.keys(parsed)) {
+    if (RESERVED_BODY_KEYS.has(key)) {
+      throw new Error(
+        `${envName} may not set "${key}": this layer computes it, and overriding it would ` +
+          "change what is asked rather than how it is asked.",
+      );
+    }
+  }
+  return parsed as Record<string, unknown>;
+}
 
 export async function callOpenAiGateway(
   params: AiCreateParams,
@@ -46,6 +101,9 @@ export async function callOpenAiGateway(
     : params.model;
 
   const response = await client.chat.completions.create({
+    // Extensions first, so a reserved key could never win even if one slipped
+    // past parseExtraBody.
+    ...(opts.extraBody ?? {}),
     model,
     max_completion_tokens: params.maxTokens,
     messages,
@@ -83,6 +141,15 @@ export async function callOpenAiGateway(
   // Surface an empty completion as an error instead of returning a blank review
   // that downstream code would post as an empty PR comment.
   if (!text) {
+    // Empty AFTER stripping is a different diagnosis from empty to begin with:
+    // the model reasoned until the budget was gone and never started the answer.
+    if (strippedReasoning) {
+      throw new Error(
+        `${opts.name} gateway (${params.model}) used its whole ${params.maxTokens}-token budget ` +
+          `on reasoning and produced no answer (finish_reason: ${finishReason}). ` +
+          "Disable thinking for this endpoint via its EXTRA_BODY, or raise maxTokens.",
+      );
+    }
     throw new Error(
       `${opts.name} gateway returned no text (finish_reason: ${finishReason})`,
     );
