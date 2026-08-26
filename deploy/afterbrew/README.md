@@ -164,14 +164,26 @@ puts it and which takes precedence over the environment. The script writes the s
 encrypts the private key exactly as `crypto.ts` does, and refuses rather than overwrites when
 an App is already configured.
 
-Afterwards, the App's own **Setup URL** must point back at the deployment:
+### What the App itself must be set to
 
-```
-http://localhost:43300/api/github/callback
+Three settings on the App, none of which this deployment can set for you. Without them the
+connect flow ends on GitHub rather than back in the dashboard.
+
+| Setting | Value | Why |
+|---|---|---|
+| **Callback URL** | `http://localhost:43300/api/github/callback` | used as the OAuth `redirect_uri` when the callback verifies you can access the installation |
+| **Setup URL** + *Redirect on update* | the same URL | where GitHub sends you after an install or a configure-and-save. Without *Redirect on update*, an App that is **already installed** opens its configure page and never comes back |
+| **Client secret** | generate one | `/api/github/callback` refuses with `github_verification_not_configured` unless both a client id and a client **secret** are stored |
+
+The client secret is not the App's private key and not its client id - it is a third
+credential, generated on the App settings page. Store it with:
+
+```sh
+./configure-github-app.sh --update --client-secret <secret>
 ```
 
-with *Redirect on update* enabled. Without it GitHub has nowhere to send the installation, and
-the connect flow ends on GitHub rather than back in the dashboard.
+`--update` touches only the secret columns, so it cannot quietly repoint the deployment at a
+different App.
 
 ## Signing in
 
