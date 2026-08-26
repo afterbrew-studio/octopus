@@ -2,7 +2,11 @@
 # Register the GitHub App with the deployment, in the database.
 #
 #   ./configure-github-app.sh --app-id 123 --slug my-app --key /path/to/app.pem \
-#     [--client-id Iv23...] [--webhook-secret whsec_...]
+#     [--client-id Iv23...] [--client-secret ...] [--webhook-secret whsec_...]
+#
+#   ./configure-github-app.sh --update [--client-secret ...] [--webhook-secret ...]
+#     Fill in a secret on an App that is already registered. The identity columns
+#     are left alone, so this cannot quietly repoint the deployment at another App.
 #
 # WHY THE DATABASE AND NOT `.env`. `github-app-config.ts` reads the App from the
 # SystemConfig singleton first and falls back to `GITHUB_APP_*` environment
@@ -27,21 +31,28 @@ umask 077
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NODE_IMAGE="${NODE_IMAGE:-node@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32}"
 
-APP_ID=""; SLUG=""; CLIENT_ID=""; KEY_PATH=""; WEBHOOK_SECRET=""
+APP_ID=""; SLUG=""; CLIENT_ID=""; KEY_PATH=""; WEBHOOK_SECRET=""; CLIENT_SECRET=""; UPDATE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --app-id) APP_ID="$2"; shift 2 ;;
     --slug) SLUG="$2"; shift 2 ;;
     --client-id) CLIENT_ID="$2"; shift 2 ;;
+    --client-secret) CLIENT_SECRET="$2"; shift 2 ;;
     --key) KEY_PATH="$2"; shift 2 ;;
     --webhook-secret) WEBHOOK_SECRET="$2"; shift 2 ;;
+    --update) UPDATE=1; shift ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
 
-[ -n "$APP_ID" ] && [ -n "$SLUG" ] && [ -n "$KEY_PATH" ] \
-  || { echo "usage: --app-id ID --slug SLUG --key PEM [--client-id ID] [--webhook-secret S]" >&2; exit 2; }
-[ -f "$KEY_PATH" ] || { echo "no private key at $KEY_PATH" >&2; exit 1; }
+if [ "$UPDATE" -eq 1 ]; then
+  [ -n "$CLIENT_SECRET" ] || [ -n "$WEBHOOK_SECRET" ] || [ -n "$CLIENT_ID" ] \
+    || { echo "--update needs at least one of --client-id, --client-secret, --webhook-secret" >&2; exit 2; }
+else
+  [ -n "$APP_ID" ] && [ -n "$SLUG" ] && [ -n "$KEY_PATH" ] \
+    || { echo "usage: --app-id ID --slug SLUG --key PEM [--client-id ID] [--client-secret S] [--webhook-secret S]" >&2; exit 2; }
+  [ -f "$KEY_PATH" ] || { echo "no private key at $KEY_PATH" >&2; exit 1; }
+fi
 [ -f "$DIR/.env" ] || { echo "no .env beside the compose file" >&2; exit 1; }
 
 cd "$DIR"
@@ -72,12 +83,33 @@ encrypt() {
     '
 }
 
-KEY_ENC="$(encrypt "$(cat "$KEY_PATH")")"
-[ -n "$KEY_ENC" ] || { echo "encryption produced nothing" >&2; exit 1; }
+psql() { docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "$1"; }
+
 SECRET_ENC=""
 [ -n "$WEBHOOK_SECRET" ] && SECRET_ENC="$(encrypt "$WEBHOOK_SECRET")"
+CLIENT_SECRET_ENC=""
+[ -n "$CLIENT_SECRET" ] && CLIENT_SECRET_ENC="$(encrypt "$CLIENT_SECRET")"
 
-psql() { docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "$1"; }
+# --- update mode ------------------------------------------------------------
+# Only the secret columns, and only for the App already registered. The identity
+# columns are untouched, so this cannot repoint the deployment at another App --
+# and it names what it changed rather than reporting a generic success.
+if [ "$UPDATE" -eq 1 ]; then
+  configured="$(psql 'select coalesce("githubAppSlug", '"''"') from system_config where id = '"'singleton'"'' | tr -d '[:space:]')"
+  [ -n "$configured" ] || { echo "no App is registered yet; run without --update first" >&2; exit 1; }
+  sets=""
+  [ -n "$CLIENT_ID" ] && sets="$sets\"githubAppClientId\" = '$CLIENT_ID',"
+  [ -n "$CLIENT_SECRET_ENC" ] && sets="$sets\"githubAppClientSecretEnc\" = '$CLIENT_SECRET_ENC',"
+  [ -n "$SECRET_ENC" ] && sets="$sets\"githubAppWebhookSecretEnc\" = '$SECRET_ENC',"
+  psql "update system_config set ${sets}\"updatedAt\" = now() where id = 'singleton'" >/dev/null
+  echo "updated $configured:${CLIENT_ID:+ client id}${CLIENT_SECRET_ENC:+ client secret}${SECRET_ENC:+ webhook secret}"
+  docker compose up -d --force-recreate web >/dev/null
+  echo "web recreated; give it ~30s"
+  exit 0
+fi
+
+KEY_ENC="$(encrypt "$(cat "$KEY_PATH")")"
+[ -n "$KEY_ENC" ] || { echo "encryption produced nothing" >&2; exit 1; }
 
 # Guarded exactly as saveGithubAppConfig guards it: write only while no App is
 # configured, so this can never clobber one that is already there. Re-running is a
