@@ -55,6 +55,14 @@ command -v jq >/dev/null || { echo "jq is required" >&2; exit 1; }
 set -a; . "$DIR/.env"; set +a
 
 cd "$DIR"
+
+# One backup at a time. Two runs starting in the same second would otherwise both
+# create a Qdrant snapshot, both copy, and -- before the staging directory below --
+# both publish into a name that has only one-second resolution.
+mkdir -p "$DEST_ROOT"
+exec 9>"$DEST_ROOT/.lock"
+flock -n 9 || { echo "another backup is running (lock: $DEST_ROOT/.lock)" >&2; exit 1; }
+
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 OUT="$DEST_ROOT/octopus-$STAMP"
 # Built in a sibling directory and moved into place at the end. A run that dies
@@ -154,6 +162,26 @@ done
 # --- Pins and configuration -------------------------------------------------
 cp docker-compose.yml "$STAGE/docker-compose.yml"
 
+# What is RUNNING, not what the compose file asks for. Edit a digest without
+# recreating the container and the two disagree -- and a restore under the digest
+# the file wanted would then be reading storage written by a different build.
+running_images() {
+  local out='[]' svc cid ref
+  for svc in web postgres qdrant ingress; do
+    cid="$(docker compose ps -q "$svc" 2>/dev/null)"
+    [ -n "$cid" ] || continue
+    ref="$(docker inspect "$cid" --format '{{index .Config.Image}}')"
+    case "$ref" in
+      *@sha256:*) ;;
+      # A container started from a tag: resolve the tag to the digest it is
+      # actually running, so the manifest records an identity rather than a name.
+      *) ref="$(docker inspect "$cid" --format '{{.Image}}' | xargs -I{} docker image inspect {} --format '{{if .RepoDigests}}{{index .RepoDigests 0}}{{else}}{{.Id}}{{end}}')" ;;
+    esac
+    out=$(jq -n --argjson acc "$out" --arg s "$svc" --arg i "$ref" '$acc + [{service: $s, image: $i}]')
+  done
+  printf '%s' "$out"
+}
+
 fingerprint() { printf '%s' "$1" | sha256sum | cut -c1-16; }
 
 # The key the application would actually use, not the variable that happens to be
@@ -187,7 +215,7 @@ jq -n \
   --arg with_secrets "$WITH_SECRETS" \
   --argjson collections "$collection_info" \
   --argjson row_counts "$row_counts" \
-  --argjson images "$(docker compose config --format json | jq '[.services | to_entries[] | {service: .key, image: .value.image}]')" \
+  --argjson images "$(running_images)" \
   '{
     taken_at: $stamp,
     postgres: { database: $pg_db, user: $pg_user, dump: "postgres.dump", row_counts: $row_counts },

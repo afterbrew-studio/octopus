@@ -201,12 +201,21 @@ done
 [ "$total" -gt 0 ] || echo "  note  every counted table was empty in the source, so this compared zero against zero"
 
 echo "== qdrant =="
+# Every failure here is fatal. This script does not run under `set -e`, and a `qd`
+# that returned nothing -- Qdrant died after its health check, the exec failed --
+# left `restored` empty, which compares equal to an archive that recorded no
+# collections. A dead Qdrant would have printed "collections: [none]" and then
+# "restore verified".
 qd() {
-  dc exec -T qdrant bash -c "
+  local body
+  body=$(dc exec -T qdrant bash -c "
     exec 3<>/dev/tcp/127.0.0.1/6333
     printf 'GET $1 HTTP/1.0\r\nHost: localhost\r\n\r\n' >&3
     cat <&3
-  " | sed -n '/^\r\{0,1\}$/,$p' | tail -n +2
+  " 2>/dev/null | sed -n '/^\r\{0,1\}$/,$p' | tail -n +2)
+  printf '%s' "$body" | jq -e '.status == "ok"' >/dev/null 2>&1 \
+    || fail "Qdrant did not answer $1 with a usable response. It was healthy when the stack came up, so it has died or is refusing queries -- and an empty answer here compares equal to an archive with no collections."
+  printf '%s' "$body"
 }
 restored=$(qd /collections | jq -r '[.result.collections[]?.name] | sort | join(" ")')
 expected=$(jq -r '[.qdrant.collections[]?.name] | sort | join(" ")' "$ARCHIVE/manifest.json")
