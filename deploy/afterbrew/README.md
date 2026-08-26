@@ -93,16 +93,29 @@ A denied route has to be **404 with an empty body**. Status alone would not do: 
 also answers 404, with an HTML page, so a status-only check passes just as happily when the
 request reached the application and the allowlist did not hold.
 
-Measured on the deployment, 2026-08-26: 27 checks, 27 passed.
+Measured on the deployment, 2026-08-26: 28 checks, 28 passed.
+
+Two things it will not let you believe. The datastore-port check is a raw TCP connect via
+bash's `/dev/tcp`, preceded by a guard that the probe can see an open port at all -- an
+HTTP request proves nothing about PostgreSQL, and a helper that always failed would report
+every port closed. And when no GitHub App exists in the database, the run says so: an
+unconfigured deployment answers `401` to *every* delivery including real ones, so the 401s
+prove the route is admitted and nothing about signature verification.
 
 ### What is not here yet
 
 No tunnel. Choosing one and naming it publicly is an operator decision -- it needs an
 account and a domain -- and it is deliberately the last step: the boundary should be
 provable before anything from outside can reach it, not after. Whatever tunnel is chosen
-points at `127.0.0.1:${OCTOPUS_INGRESS_PORT:-43310}` and nothing else, and `probe-ingress.sh`
-should be re-run through the public name once it exists, because a probe against loopback
-proves the allowlist and not the tunnel's own routing.
+points at `127.0.0.1:${OCTOPUS_INGRESS_PORT:-43310}` and nothing else, and the probe **must**
+be re-run through the public name:
+
+```sh
+INGRESS_URL=https://octopus.example.invalid ./probe-ingress.sh
+```
+
+A tunnel aimed at 43300 by mistake exposes the dashboard and every API, while a loopback run
+still tests 43310 and reports a clean boundary.
 
 ## Two upstream problems this works around
 
