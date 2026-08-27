@@ -342,6 +342,54 @@ export type ReviewComment = {
   start_line?: number;
 };
 
+/**
+ * Whether every check on `sha` has finished and none failed.
+ *
+ * `null` means "cannot tell" - the read failed, or nothing has reported yet -
+ * which a caller must not treat as either passing or failing.
+ *
+ * Reads BOTH surfaces because they are different things: check runs come from
+ * GitHub Apps, commit statuses from the older API, and a repository can gate on
+ * either. Consulting one would call a red build green whenever the failure was
+ * reported through the other.
+ */
+export async function checkStateFor(
+  installationId: number,
+  owner: string,
+  repo: string,
+  sha: string,
+  providedToken?: string,
+): Promise<"passing" | "failing" | "pending" | null> {
+  const token = providedToken ?? await getInstallationToken(installationId);
+  const headers = { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" };
+
+  const [runsRes, statusRes] = await Promise.all([
+    fetchWithRetry(`${GITHUB_API}/repos/${owner}/${repo}/commits/${sha}/check-runs?per_page=100`, { headers }),
+    fetchWithRetry(`${GITHUB_API}/repos/${owner}/${repo}/commits/${sha}/status`, { headers }),
+  ]);
+  if (!runsRes.ok || !statusRes.ok) return null;
+
+  const runs = (await runsRes.json()) as {
+    check_runs?: { status?: string; conclusion?: string | null; name?: string }[];
+  };
+  const combined = (await statusRes.json()) as { state?: string; statuses?: unknown[] };
+
+  const FAILED = new Set(["failure", "timed_out", "action_required", "startup_failure"]);
+  let pending = false;
+  for (const run of runs.check_runs ?? []) {
+    if (run.status !== "completed") { pending = true; continue; }
+    if (run.conclusion && FAILED.has(run.conclusion)) return "failing";
+  }
+  if (combined.state === "failure" || combined.state === "error") return "failing";
+  if (combined.state === "pending" && (combined.statuses?.length ?? 0) > 0) pending = true;
+
+  if (pending) return "pending";
+  // Nothing failed and nothing is outstanding - but if neither surface reported
+  // anything at all, there is no evidence of a green build, only an absence.
+  const reported = (runs.check_runs?.length ?? 0) + (combined.statuses?.length ?? 0);
+  return reported > 0 ? "passing" : null;
+}
+
 export async function createPullRequestReview(
   installationId: number,
   owner: string,

@@ -148,6 +148,13 @@ model Organization {
   // merge proceed, so an instance must acquire that authority on purpose rather
   // than by upgrading into it.
   approveWhenClean        Boolean  @default(false)
+  // Hold a review until the head's checks have passed.
+  //
+  // Reviewing a red build spends a model call on a diff that is about to change,
+  // and its findings are then stale the moment the author pushes the fix. Off by
+  // default: on a repository whose checks are slow or flaky this trades review
+  // latency for that saving, and only the operator knows which they want.
+  reviewOnlyWhenCiPasses  Boolean  @default(false)
   reviewsPaused           Boolean  @default(false)
   // Live telemetry (real-time presence + activity). Opt-in, paid-only.
   // liveTelemetryEnabled: org owner surfaces members'/agents' live presence +
