@@ -37,6 +37,7 @@ import {
   createPullRequestComment as ghCreatePullRequestComment,
   updatePullRequestComment as ghUpdatePullRequestComment,
   createPullRequestReview as ghCreatePullRequestReview,
+  checkStateFor,
   createCheckRun as ghCreateCheckRun,
   updateCheckRun as ghUpdateCheckRun,
   getRepositoryTree as ghGetRepositoryTree,
@@ -782,6 +783,29 @@ async function runReview(
   // (which can contain subgroups, so the simple split is only used by github/bitbucket).
   const [owner, repoName] = repo.fullName.split("/");
   const projectPath = repo.fullName;
+
+  // Reviewing a red build spends a model call on a diff that is about to change:
+  // the findings go stale the moment the author pushes the fix, and on a
+  // fix-and-re-review loop that is the common case rather than the exception.
+  //
+  // Only a KNOWN failure holds. `pending` and `null` (nothing reported, or the
+  // read failed) do not: a reviewer that waits for evidence it may never receive
+  // stops reviewing altogether, which is a worse failure than an early read.
+  if (org.reviewOnlyWhenCiPasses && isGitHub && installationId && pr.headSha) {
+    const state = await checkStateFor(installationId, owner, repoName, pr.headSha).catch(() => null);
+    if (state === "failing") {
+      console.log(
+        `[reviewer] PR ${pr.number} has failing checks at ${pr.headSha.slice(0, 8)}; not reviewing yet`,
+      );
+      await prisma.pullRequest.update({
+        where: { id: pullRequestId },
+        // Released, not failed: the change is fine, the build is not finished
+        // with it. The next trigger claims it again.
+        data: { status: "pending", claimToken: null },
+      }).catch(() => {});
+      return;
+    }
+  }
 
   // Provider-aware helper functions
   const providerGetDiff = (prNumber: number) =>
@@ -2474,7 +2498,14 @@ Rules:
       }
       const parts = [header];
       if (findingsBlock) parts.push(findingsBlock);
-      parts.push(`<sub>Reviewed by [Octopus Review](https://octopus-review.ai), an AI-powered PR review tool.</sub>`);
+      // The model is named because a review's weight depends on which model
+      // produced it, and a reader cannot otherwise tell a frontier read from a
+      // cheap one. It matters more, not less, when the author is also a model:
+      // "approved" from a flash tier is a different claim from the same word
+      // from a frontier tier.
+      parts.push(
+        `<sub>Reviewed by [Octopus Review](https://octopus-review.ai) using \`${reviewModel}\`.</sub>`,
+      );
       return parts.join("\n\n");
     };
 

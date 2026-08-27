@@ -35,6 +35,12 @@ export type LargeReviewResultJob = {
    * see `activeAttempt`.
    */
   attemptId?: string;
+  /**
+   * Which model produced this review, when internal-cli reported it. Absent on
+   * an older producer, and the footer then says so rather than naming a model it
+   * did not verify.
+   */
+  model?: string;
 };
 
 /**
@@ -263,7 +269,7 @@ export async function handleLargeReviewResult(
   const summaryBody = [
     summaryHeader,
     findingsBlock,
-    `<sub>Reviewed by [Octopus Review](https://octopus-review.ai) (large-PR pipeline, no inline comments).</sub>`,
+    `<sub>Reviewed by [Octopus Review](https://octopus-review.ai) using \`${data.model ?? "an unreported model"}\` (large-PR pipeline, no inline comments).</sub>`,
   ]
     .filter(Boolean)
     .join("\n\n");

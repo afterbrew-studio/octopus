@@ -912,6 +912,49 @@ export async function updateApproveWhenClean(
   return { success: true };
 }
 
+export async function updateReviewOnlyWhenCiPasses(
+  _prevState: { error?: string; success?: boolean },
+  formData: FormData,
+): Promise<{ error?: string; success?: boolean }> {
+  const user = await getUser();
+  const cookieStore = await cookies();
+  const orgId = cookieStore.get("current_org_id")?.value;
+
+  if (!orgId) return { error: "No organization selected." };
+
+  const member = await prisma.organizationMember.findFirst({
+    where: { organizationId: orgId, userId: user.id, deletedAt: null },
+    select: { role: true, scopes: true },
+  });
+
+  if (!hasOrgPermission(member, "reviews:configure")) {
+    return { error: "Only organization owners and admins can change review settings." };
+  }
+
+  const enabled = formData.get("reviewOnlyWhenCiPasses") === "true";
+
+  await prisma.organization.update({
+    where: { id: orgId },
+    data: { reviewOnlyWhenCiPasses: enabled },
+  });
+
+  await prisma.auditLog.create({
+    data: {
+      action: enabled ? "review.ci_gate_enabled" : "review.ci_gate_disabled",
+      category: "review",
+      actorId: user.id,
+      actorEmail: user.email ?? null,
+      targetType: "organization",
+      targetId: orgId,
+      organizationId: orgId,
+      metadata: { reviewOnlyWhenCiPasses: enabled },
+    },
+  });
+
+  revalidatePath("/settings/reviews");
+  return { success: true };
+}
+
 const VALID_THRESHOLDS = ["critical", "high", "medium", "none"] as const;
 
 export async function updateCheckFailureThreshold(
