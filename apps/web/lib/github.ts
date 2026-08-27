@@ -83,6 +83,54 @@ export async function getInstallationPermissions(
   return (data.permissions ?? {}) as Record<string, string>;
 }
 
+/** The installation's own settings page - where a widened permission is accepted. */
+export async function getInstallationSettingsUrl(
+  installationId: number,
+): Promise<string | null> {
+  const jwt = await createAppJwt();
+  const res = await fetchWithRetry(`${GITHUB_API}/app/installations/${installationId}`, {
+    headers: { Authorization: `Bearer ${jwt}`, Accept: "application/vnd.github+json" },
+  });
+  if (!res.ok) return null;
+  const data = await res.json();
+  return (data.html_url as string | undefined) ?? null;
+}
+
+/**
+ * The App as it describes itself. `permissions` is what the App asks for, which bounds what
+ * any installation can hold: an installation cannot be granted a permission the App does not
+ * declare, so a "grant" prompt for one is a dead end with nothing for an owner to accept.
+ *
+ * `permissionsSettingsUrl` is where that is changed, and it differs by owner type - an
+ * org-owned App is not under /settings/apps - so it is derived from the owner rather than
+ * assumed.
+ */
+export async function getAppMeta(): Promise<{
+  permissions: Record<string, string>;
+  permissionsSettingsUrl: string | null;
+}> {
+  const jwt = await createAppJwt();
+  const res = await fetchWithRetry(`${GITHUB_API}/app`, {
+    headers: { Authorization: `Bearer ${jwt}`, Accept: "application/vnd.github+json" },
+  });
+  if (!res.ok) throw new Error(`Failed to read app: ${res.status}`);
+  const data = await res.json();
+
+  const slug = data.slug as string | undefined;
+  const owner = data.owner as { login?: string; type?: string } | undefined;
+  const permissionsSettingsUrl =
+    slug && owner?.login
+      ? owner.type === "Organization"
+        ? `https://github.com/organizations/${owner.login}/settings/apps/${slug}/permissions`
+        : `https://github.com/settings/apps/${slug}/permissions`
+      : null;
+
+  return {
+    permissions: (data.permissions ?? {}) as Record<string, string>,
+    permissionsSettingsUrl,
+  };
+}
+
 export async function getInstallationToken(
   installationId: number,
 ): Promise<string> {

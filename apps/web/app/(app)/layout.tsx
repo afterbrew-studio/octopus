@@ -6,7 +6,7 @@ import { AppSidebar, MobileHeader } from "@/components/app-sidebar";
 import { ChatWrapper } from "@/components/chat-wrapper";
 import { PermissionBanner } from "@/components/permission-banner";
 import { SpendLimitBanner } from "@/components/spend-limit-banner";
-import { getInstallationPermissions } from "@/lib/github";
+import { getInstallationPermissions, getAppMeta } from "@/lib/github";
 import { getOrgSpendLimitStatus } from "@/lib/cost";
 import { getOrgEntitlements } from "@/lib/entitlements";
 import { canUserCreateOrg } from "@/lib/org-limits";
@@ -181,6 +181,18 @@ export default async function AppLayout({
   const flaggedOrgs = orgs.filter((o) => o.needsPermissionGrant && o.githubInstallationId);
   const orgsNeedingPermission: typeof flaggedOrgs = [];
 
+  // What the App declares bounds what any installation can hold, so a shortfall the App itself
+  // causes is not something an owner can accept. Read once, not per org.
+  let appDeclaresChecksWrite = true;
+  let appSettingsUrl: string | null = null;
+  if (flaggedOrgs.length > 0) {
+    const meta = await getAppMeta().catch(() => null);
+    // An unreadable App is not evidence it declares too little, so assume it does and leave
+    // the banner offering the grant it already offered.
+    appDeclaresChecksWrite = meta ? meta.permissions.checks === "write" : true;
+    appSettingsUrl = meta?.permissionsSettingsUrl ?? null;
+  }
+
   for (const org of flaggedOrgs) {
     try {
       const perms = await getInstallationPermissions(org.githubInstallationId!);
@@ -211,6 +223,8 @@ export default async function AppLayout({
         {orgsNeedingPermission.length > 0 && (
           <PermissionBanner
             orgs={orgsNeedingPermission.map((o) => ({ id: o.id, name: o.name }))}
+            appDeclaresPermission={appDeclaresChecksWrite}
+            appSettingsUrl={appSettingsUrl ?? undefined}
           />
         )}
         <SpendLimitBanner spendStatus={spendStatus} />
