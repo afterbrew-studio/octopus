@@ -10,6 +10,7 @@ import {
   signInstallState,
 } from "@/lib/github-install-state";
 import { getGithubAppConfig } from "@/lib/github-app-config";
+import { getInstallationSettingsUrl } from "@/lib/github";
 import { writeAuditLog } from "@/lib/audit";
 
 const baseUrl = process.env.BETTER_AUTH_URL || "http://localhost:3000";
@@ -34,8 +35,10 @@ export async function GET(request: NextRequest) {
   const requestedOrgId = request.nextUrl.searchParams.get("orgId");
   const orgId = requestedOrgId || cookieStore.get("current_org_id")?.value;
 
+  // Reasoned, not silent. This route is reached from a banner rendered ON /dashboard, so a
+  // bare redirect back to it is indistinguishable from a button that does nothing.
   if (!orgId) {
-    return NextResponse.redirect(new URL("/dashboard", baseUrl));
+    return NextResponse.redirect(new URL("/dashboard?error=no_org_selected", baseUrl));
   }
 
   const membership = await prisma.organizationMember.findFirst({
@@ -44,10 +47,28 @@ export async function GET(request: NextRequest) {
   });
 
   if (!membership) {
-    return NextResponse.redirect(new URL("/dashboard", baseUrl));
+    return NextResponse.redirect(new URL("/dashboard?error=not_a_member", baseUrl));
   }
 
   const returnTo = safeReturnPath(request.nextUrl.searchParams.get("returnTo"));
+
+  // An org that already has an installation cannot use `installations/new`: GitHub treats a
+  // second install of the same App as a no-op and bounces straight back, which reads as a
+  // dead button. A widened permission is accepted on the installation's own settings page.
+  const installed = await prisma.organization.findUnique({
+    where: { id: membership.organizationId },
+    select: { githubInstallationId: true },
+  });
+
+  if (installed?.githubInstallationId) {
+    const settingsUrl = await getInstallationSettingsUrl(installed.githubInstallationId).catch(
+      () => null,
+    );
+    if (settingsUrl) return NextResponse.redirect(settingsUrl);
+    return NextResponse.redirect(
+      new URL("/dashboard?error=installation_unreadable", baseUrl),
+    );
+  }
 
   // Funnel: signup → install started → connected (see /api/github/callback).
   // Fire-and-forget: telemetry must never block or fail the onboarding redirect
