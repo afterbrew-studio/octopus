@@ -505,6 +505,45 @@ export async function checkStateFor(
   return reported > 0 ? "passing" : null;
 }
 
+/**
+ * One inline comment, posted on its own.
+ *
+ * The review endpoint takes comments as a batch and rejects the batch: one line GitHub
+ * cannot resolve loses every comment in the review, which is how a review with real
+ * findings arrives showing none. Posted individually, an unresolvable line costs only
+ * itself.
+ */
+export async function createSingleReviewComment(
+  installationId: number,
+  owner: string,
+  repo: string,
+  prNumber: number,
+  comment: { path: string; line: number; side?: string; body: string },
+  commitId: string,
+): Promise<number> {
+  const token = await getInstallationToken(installationId);
+  const res = await fetchWithRetry(
+    `${GITHUB_API}/repos/${owner}/${repo}/pulls/${prNumber}/comments`,
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" },
+      body: JSON.stringify({
+        body: comment.body,
+        path: comment.path,
+        line: comment.line,
+        ...(comment.side ? { side: comment.side } : {}),
+        commit_id: commitId,
+      }),
+    },
+  );
+  if (!res.ok) {
+    const errBody = await res.text();
+    throw new Error(`Failed to create review comment: ${res.status} ${errBody}`);
+  }
+  const data = await res.json();
+  return data.id as number;
+}
+
 export async function createPullRequestReview(
   installationId: number,
   owner: string,
