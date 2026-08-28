@@ -47,6 +47,8 @@ import {
   listPullRequestIssueComments as ghListPullRequestIssueComments,
   listPullRequestReviews as ghListPullRequestReviews,
   getCommentReactions as ghGetCommentReactions,
+  listOwnUnresolvedThreads,
+  resolveReviewThread,
 } from "@/lib/github";
 import * as bitbucket from "@/lib/bitbucket";
 import * as gitlab from "@/lib/gitlab";
@@ -2065,6 +2067,31 @@ async function runReview(
       mainCommentBody =
         `> ✅ No new issues detected since the last review${commitSuffix}.\n\n` +
         mainCommentBody;
+
+      // Our own objections are answered, so close them. Approving over a thread we
+      // opened and still call unresolved says two contradictory things at once, and a
+      // reader cannot tell which one the reviewer meant.
+      //
+      // Only threads we opened, and only on a re-review that found nothing: a thread
+      // somebody else opened is not ours to close, and a first review has nothing to
+      // have been fixed.
+      try {
+        const slug = (await getGithubAppConfig())?.slug ?? "octopus-review";
+        const mine = installationId
+          ? await listOwnUnresolvedThreads(installationId, owner, repoName, pr.number, `${slug}[bot]`)
+          : [];
+        for (const thread of mine) {
+          await resolveReviewThread(installationId as number, thread.id).catch((err) =>
+            console.warn(`[reviewer] could not resolve thread ${thread.id}:`, err),
+          );
+        }
+        if (mine.length > 0) {
+          console.log(`[reviewer] resolved ${mine.length} of our threads on PR ${pr.number}`);
+        }
+      } catch (err) {
+        // Tidying is not the review. A failure here must not lose the verdict.
+        console.warn(`[reviewer] thread cleanup failed on PR ${pr.number}:`, err);
+      }
     }
 
     if (reviewCommentId) {
