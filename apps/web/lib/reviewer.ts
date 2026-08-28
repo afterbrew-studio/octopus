@@ -37,6 +37,7 @@ import {
   createPullRequestComment as ghCreatePullRequestComment,
   updatePullRequestComment as ghUpdatePullRequestComment,
   createPullRequestReview as ghCreatePullRequestReview,
+  createSingleReviewComment as ghCreateSingleReviewComment,
   checkStateFor,
   createCheckRun as ghCreateCheckRun,
   updateCheckRun as ghUpdateCheckRun,
@@ -2551,6 +2552,8 @@ Rules:
     // the head moves afterwards, the stamp mismatches and a consumer holds.
     // Only the omitted case silently agrees with whatever is current.
     let inlineReviewSucceeded = false;
+    // Anchors that reached the author outside the batch, so the summary does not repeat them.
+    const postedIndividually: string[] = [];
 
     if (isGitHub && installationId) {
       // The row can be taken from under a worker that pg-boss timed out but did
@@ -2634,7 +2637,25 @@ Rules:
             console.error("[reviewer] Failed to match GitHub comment IDs:", matchErr);
           }
         } catch (err) {
-          console.error("[reviewer] Failed to submit inline review, falling back to summary-only:", err);
+          console.error("[reviewer] Failed to submit inline review, retrying comments individually:", err);
+          // The review endpoint rejects the whole batch when one line will not resolve, so a
+          // review with real findings arrives showing none. Posted one at a time, an
+          // unresolvable line costs only itself and the rest still reach the author.
+          if (pr.headSha) {
+            for (const comment of dedupedComments) {
+              try {
+                await ghCreateSingleReviewComment(
+                  installationId, owner, repoName, pr.number,
+                  { path: comment.path, line: comment.line, side: comment.side, body: comment.body },
+                  pr.headSha,
+                );
+                postedIndividually.push(`${comment.path}:${comment.line}`);
+              } catch (single) {
+                console.warn(`[reviewer] inline comment ${comment.path}:${comment.line} could not be posted:`, single);
+              }
+            }
+            console.log(`[reviewer] posted ${postedIndividually.length}/${dedupedComments.length} inline comments individually`);
+          }
         }
       }
 
@@ -2642,7 +2663,14 @@ Rules:
         // All findings go into the summary since none were posted inline
         const allSummaryFindings = [...allParsedFindings, ...unmappableFindings.filter((uf) =>
           !allParsedFindings.some((af) => af.filePath === uf.filePath && af.startLine === uf.startLine && af.title === uf.title),
-        )];
+        )].filter((f) => {
+          // A finding that reached the author inline is not also a summary row; listing it
+          // twice reads as two findings.
+          for (let l = f.startLine; l <= f.endLine; l++) {
+            if (postedIndividually.includes(`${f.filePath}:${l}`)) return false;
+          }
+          return true;
+        });
         const findingsBlock = buildLowSeveritySummary(allSummaryFindings);
         effectiveFindingsCount = allSummaryFindings.length;
         const summaryBody = buildReviewSummary(findingsBlock, allSummaryFindings.length);
