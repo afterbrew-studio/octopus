@@ -316,6 +316,73 @@ export async function getPullRequestDetails(
   };
 }
 
+/**
+ * Our own unresolved review threads on a pull request.
+ *
+ * Only reachable over GraphQL: the REST comments API exposes no thread identity and no
+ * resolved state, so a REST-only reviewer cannot tell an answered objection from a live one.
+ */
+export async function listOwnUnresolvedThreads(
+  installationId: number,
+  owner: string,
+  repo: string,
+  prNumber: number,
+  ownLogin: string,
+): Promise<Array<{ id: string; path: string; body: string }>> {
+  const token = await getInstallationToken(installationId);
+  const query = `query($owner:String!,$name:String!,$number:Int!){
+    repository(owner:$owner,name:$name){
+      pullRequest(number:$number){
+        reviewThreads(first:100){
+          nodes{ id isResolved comments(first:1){ nodes{ author{ login } body path } } }
+        }
+      }
+    }
+  }`;
+  const res = await fetchWithRetry(`${GITHUB_API}/graphql`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: "application/vnd.github+json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ query, variables: { owner, name: repo, number: prNumber } }),
+  });
+  if (!res.ok) throw new Error(`Failed to list review threads: ${res.status}`);
+  const data = await res.json();
+  const nodes = data?.data?.repository?.pullRequest?.reviewThreads?.nodes ?? [];
+  const mine = ownLogin.toLowerCase();
+  const out: Array<{ id: string; path: string; body: string }> = [];
+  for (const t of nodes) {
+    if (!t || t.isResolved) continue;
+    const root = t.comments?.nodes?.[0];
+    if (!root?.author?.login) continue;
+    if (root.author.login.toLowerCase() !== mine) continue;
+    out.push({ id: t.id, path: root.path ?? "", body: root.body ?? "" });
+  }
+  return out;
+}
+
+/** Close one of our threads. Requires the GraphQL node id, not the REST comment id. */
+export async function resolveReviewThread(installationId: number, threadId: string): Promise<void> {
+  const token = await getInstallationToken(installationId);
+  const res = await fetchWithRetry(`${GITHUB_API}/graphql`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: "application/vnd.github+json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      query: "mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{id isResolved}}}",
+      variables: { id: threadId },
+    }),
+  });
+  if (!res.ok) throw new Error(`Failed to resolve review thread: ${res.status}`);
+  const data = await res.json();
+  if (data?.errors?.length) throw new Error(`resolveReviewThread: ${data.errors[0]?.message ?? "unknown"}`);
+}
+
 export async function createCheckRun(
   installationId: number,
   owner: string,
