@@ -278,6 +278,13 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: true });
     }
 
+    // Same reconciliation the sibling handlers do (app reinstall / migration moves the
+    // installation). Without it the cached column drifts stale on a repository whose
+    // activity is label-only, until some other event happens to correct it.
+    if (repo.installationId !== installationId) {
+      await prisma.repository.update({ where: { id: repo.id }, data: { installationId } });
+    }
+
     console.log(`[webhook] review label "${label}" added — ${repoFullName}#${prNumber}`);
 
     await startReviewFlow({

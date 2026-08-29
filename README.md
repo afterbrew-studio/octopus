@@ -31,7 +31,7 @@ Octopus analyzes pull and merge requests via GitHub, GitLab, and Bitbucket webho
 - **GitHub, GitLab & Bitbucket** — Native webhook integrations across all three platforms, including self-managed GitLab
 - **Knowledge Center** — Org-level knowledge plus pinned documents that are always included in every review
 - **Repo Config Files** — Honor `.octopus.md`, `AGENTS.md`, or `CLAUDE.md` as repo-scoped review rules, extracted in a sandboxed pass
-- **Label-Triggered Review** — Commit an `octopus.json` naming the labels that ask for a review; adding one to a PR starts one, independently of the auto-review setting
+- **Label-Triggered Review** — Commit an `octopus.json` naming the labels that ask for a review; adding one to a PR starts one, independently of the auto-review setting (GitHub only; GitLab and Bitbucket have no equivalent)
 - **Slack Integration** — Ask questions about your codebase directly from Slack
 - **Linear & Jira Integration** — Create issues from review findings with one click
 - **CLI** — `@octp/cli` for local review runs, plus a Claude Code skill for terminal workflows
