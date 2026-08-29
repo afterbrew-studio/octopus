@@ -55,6 +55,9 @@ mock.module("@/lib/github", () => ({
   getPullRequestDetails: () => Promise.resolve(null),
   createCheckRun: () => Promise.resolve(1),
   updateCheckRun: () => Promise.resolve(),
+  // The label trigger reads the repository's `octopus.json` through this. Null is "no
+  // config file", which is the state every repository in this harness is in.
+  getFileContent: () => Promise.resolve(null),
 }));
 mock.module("@/lib/webhook-shared", () => ({
   startReviewFlow: (input: Record<string, unknown>) => {

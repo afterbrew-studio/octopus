@@ -28,6 +28,19 @@ tools/{tsconfig,eslint-config}/  Shared dev config
 
 ## Conventions that matter for AI-suggested changes
 
+### Review triggers
+
+- Three ways a review starts: the automatic `pull_request` path (gated on `autoReview`), an
+  `@octopus` comment, and a label named in the repository's `octopus.json`.
+- **The two manual triggers are not gated on `autoReview`.** A repository that turns automatic
+  review off and then finds its explicit request silently dropped has no way to ask for a
+  review at all, and nothing tells it so.
+- `octopus.json` is read from the **default branch**, never the pull request's head. The head
+  is author-controlled, so reading the trigger from it would let a pull request add its own
+  review label.
+- `.github/octopus.yml` is a different mechanism: its presence is OSS bot-account consent and
+  its contents are never read. Do not fold review configuration into it.
+
 ### Database access
 - Always import the Prisma client as `import { prisma } from "@octopus/db"`. Never instantiate `new PrismaClient()` directly.
 - Files that touch `prisma` must start with `import "server-only";` so they never leak into client bundles.
