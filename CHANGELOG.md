@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.122] - 2026-08-30
+
+### Fixed
+- Review scores now stay consistent with the findings a review reports: when a review surfaces no blocking issues, it no longer posts a below-passing score with nothing to act on. This previously could keep a pull request under a 4+/5 quality gate even after every finding had been addressed on a re-review.
+
 ## [1.0.121] - 2026-08-21
 
 ## [1.0.120] - 2026-08-21
