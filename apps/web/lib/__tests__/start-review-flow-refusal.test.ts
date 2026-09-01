@@ -76,6 +76,16 @@ describe("startReviewFlow refuses a webhook", () => {
     expect(calls).toEqual([]);
   });
 
+  it("does the work for a label, which is a person asking rather than a schedule", async () => {
+    await startReviewFlow({ ...params, source: "label" }).catch(() => {});
+    expect(calls.length).toBeGreaterThan(0);
+  });
+
+  it("does the work for a mention too", async () => {
+    await startReviewFlow({ ...params, source: "mention" }).catch(() => {});
+    expect(calls.length).toBeGreaterThan(0);
+  });
+
   it("would have done all of that for the adapter", async () => {
     // The guard test. Without it, a `startReviewFlow` that returned early for every
     // source -- or one whose mocked dependencies were simply never reached because

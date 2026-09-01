@@ -288,7 +288,8 @@ export async function POST(request: NextRequest) {
     console.log(`[webhook] review label "${label}" added — ${repoFullName}#${prNumber}`);
 
     await startReviewFlow({
-      source: "webhook",
+      // Not `webhook`: a person added this label. See review-start-policy.ts.
+      source: "label",
       provider: "github",
       installationId,
       repoFullName,
@@ -607,7 +608,8 @@ export async function POST(request: NextRequest) {
         .catch((err) => console.error("[webhook] Failed to add reaction:", err));
 
       await startReviewFlow({
-        source: "webhook",
+        // Not `webhook`: a person wrote `@octopus`. See review-start-policy.ts.
+        source: "mention",
         provider: "github",
         installationId,
         repoFullName,

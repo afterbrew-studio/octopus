@@ -1,17 +1,25 @@
 /**
- * Only an authenticated adapter request may start a review on this deployment.
+ * Which callers may start a review on this deployment.
  *
  * afterbrew runs Octopus as the routed reviewer for one autonomous lane, and rayf's
- * ADR-0056 makes Companion "the only review-dispatch authority". A webhook that can
- * start a review is a second authority: it spends a model budget on GitHub's
- * schedule rather than on the lane's, outside the immutable attempt record that
- * makes every paid review attributable.
+ * ADR-0056 makes Companion "the only review-dispatch authority". The thing that
+ * decision guards against is a review starting on GITHUB's schedule rather than on
+ * a deliberate one: every pull request opened, reopened or pushed to would spend
+ * model budget nobody asked to spend, outside the attempt record that makes a paid
+ * review attributable.
  *
- * So `startReviewFlow` refuses when the caller is a webhook. That is the whole
- * control, and it lives at the one function every path goes through -- six webhook
- * call sites across GitHub, Bitbucket and GitLab, plus the authenticated CLI route.
- * Refusing at each webhook instead would be six checks, and the seventh caller
- * somebody adds would have none.
+ * That argument is about automation, not about the transport. A person adding a
+ * review label, or writing `@octopus` on a pull request, is not GitHub's schedule;
+ * it is a human asking for exactly one review, at a moment they chose. So `label`
+ * and `mention` are permitted and the automatic `webhook` path stays refused. Each
+ * is its own `ReviewSource` value, so the attempt record still says which one paid
+ * for what -- which is the part of ADR-0056 that actually matters.
+ *
+ * `startReviewFlow` refuses the rest. That is the whole control, and it lives at
+ * the one function every path goes through -- webhook call sites across GitHub,
+ * Bitbucket and GitLab, plus the authenticated CLI route. Refusing at each caller
+ * instead would be a check per site, and the next caller somebody adds would have
+ * none.
  *
  * The refusal is a BOOLEAN, and the caller returns. It was an exception first, and
  * that was wrong: no webhook route catches, so the throw became a 500, the provider
@@ -31,14 +39,27 @@
  */
 
 export type ReviewSource =
-  /** An inbound provider webhook. Never permitted to start a review here. */
+  /** A provider webhook firing on the provider's own schedule. Never starts a review. */
   | "webhook"
-  /** An authenticated request from the dispatching adapter. The only positive case. */
-  | "adapter";
+  /** An authenticated request from the dispatching adapter. */
+  | "adapter"
+  /** A person adding a configured review label. Deliberate, and one review per request. */
+  | "label"
+  /** A person writing `@octopus` on a pull request. Same deliberate act, different gesture. */
+  | "mention";
+
+/**
+ * The permitted sources, as an ALLOW-LIST.
+ *
+ * Deny-listing `webhook` would read the same today and fail differently later: a
+ * source added next year would inherit permission because nobody remembered to
+ * deny it. Membership means somebody decided.
+ */
+const MAY_START: ReadonlySet<ReviewSource> = new Set<ReviewSource>(["adapter", "label", "mention"]);
 
 /** True when this deployment permits `source` to start a review. */
 export function mayStartReview(source: ReviewSource): boolean {
-  return source === "adapter";
+  return MAY_START.has(source);
 }
 
 /**
