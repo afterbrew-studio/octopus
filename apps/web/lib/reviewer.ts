@@ -84,6 +84,7 @@ import {
   generateVerificationQueries,
   resolveIndexClaimWait,
   normalizeScoreDenominators,
+  reconcileScoreTable,
   shouldFailReviewCheck,
   isCleanReview,
   mayApprove,
@@ -2378,19 +2379,21 @@ Rules:
       if (filtered > 0) {
         console.log(`[reviewer] Re-review filter: removed ${filtered} non-critical findings, kept ${allParsedFindings.length}`);
 
-        // Update the main comment to reflect filtered findings.
-        // Score table is NOT touched — the LLM is instructed via prompt to score
-        // based on the current state of the PR, so its scores should already
-        // reflect resolved findings.
+        // Update the main comment to reflect filtered findings. The Score table
+        // is reconciled separately below (reconcileScoreTable), once the final
+        // findings are known — the prompt alone does not reliably re-score, so a
+        // re-review can otherwise strip every finding here yet leave a stale
+        // below-gate score table behind.
         if (reviewCommentId) {
           try {
-            let reReviewBody = mainCommentBody;
-            // Replace the Findings Summary section: from "### Findings Summary" to next heading or end
-            reReviewBody = reReviewBody.replace(
+            // Patch mainCommentBody in place (not a copy) so the score
+            // reconciliation below posts on top of the patched summary instead of
+            // reverting it.
+            mainCommentBody = mainCommentBody.replace(
               /### Findings Summary[\s\S]*?(?=\n### |\n## |$)/,
               "### Findings Summary\n\nAll previously raised findings have been addressed. No critical issues found.\n",
             );
-            await providerUpdateComment(reviewCommentId, reReviewBody);
+            await providerUpdateComment(reviewCommentId, mainCommentBody);
             console.log(`[reviewer] Updated main comment for re-review (${allParsedFindings.length} findings remain)`);
           } catch (err) {
             console.warn("[reviewer] Failed to update main comment for re-review:", err);
@@ -2450,6 +2453,26 @@ Rules:
     const hasCritical = findings.some((f) => f.severity === "🔴");
     const hasHigh = findings.some((f) => f.severity === "🟠");
     const hasMedium = findings.some((f) => f.severity === "🟡");
+
+    // Reconcile the Score table with the findings the review actually surfaced.
+    // Scores are holistic LLM prose that nothing else checks against the findings,
+    // so a review can post a below-gate score (e.g. Code Quality 3/5 -> Overall 3/5,
+    // since Overall is the lowest category) with zero findings the author can fix —
+    // an unactionable score that deadlocks a 4+/5 gate, and one the re-review filter
+    // above actively manufactures. When no blocking (critical/high/medium) finding
+    // survived, floor the sub-gate categories. See review-helpers.reconcileScoreTable.
+    if (reviewCommentId) {
+      const reconciledBody = reconcileScoreTable(mainCommentBody, { hasCritical, hasHigh, hasMedium });
+      if (reconciledBody !== mainCommentBody) {
+        mainCommentBody = reconciledBody;
+        try {
+          await providerUpdateComment(reviewCommentId, mainCommentBody);
+          console.log("[reviewer] Score table reconciled: no blocking findings — floored sub-gate categories");
+        } catch (err) {
+          console.warn("[reviewer] Failed to update comment after score reconciliation:", err);
+        }
+      }
+    }
 
     const threshold = org.checkFailureThreshold || "critical";
     const shouldRequestChanges = shouldFailReviewCheck(

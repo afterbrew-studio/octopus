@@ -128,6 +128,48 @@ export function normalizeScoreDenominators(reviewBody: string): string {
   );
 }
 
+/**
+ * Minimum category score a review may post when it surfaced NO blocking finding.
+ * Floors to a passing score, never to 5/5.
+ */
+export const MIN_SCORE_WITHOUT_BLOCKING_FINDINGS = 4;
+
+/**
+ * Reconcile the "### Score" table with the findings the review actually surfaced.
+ *
+ * Scores are holistic LLM prose and nothing else in the pipeline checks them
+ * against the findings, so a review can post e.g. Code Quality 3/5 (and therefore
+ * Overall 3/5, since Overall is the lowest category) with ZERO findings the author
+ * can act on. That is an unactionable score — it deadlocks any 4+/5 quality gate,
+ * and it is actively manufactured on re-reviews, where a hard filter strips
+ * non-critical findings from the count but leaves the score table untouched.
+ *
+ * Rule: when the review surfaced no blocking finding (no critical / high / medium),
+ * raise any category below MIN_SCORE_WITHOUT_BLOCKING_FINDINGS — and the Overall,
+ * which is their minimum — up to that floor. A critical/high/medium finding leaves
+ * the score untouched: a real, actionable concern justifies a low score.
+ *
+ * Only the Score section is edited; `N/A` and already-passing cells, bold markers,
+ * and fractions elsewhere in the body are preserved. Assumes denominators are
+ * already `/5` (normalizeScoreDenominators runs first).
+ */
+export function reconcileScoreTable(
+  reviewBody: string,
+  findings: { hasCritical: boolean; hasHigh: boolean; hasMedium: boolean },
+): string {
+  if (findings.hasCritical || findings.hasHigh || findings.hasMedium) return reviewBody;
+  const floor = MIN_SCORE_WITHOUT_BLOCKING_FINDINGS;
+  return reviewBody.replace(
+    /### Score\s*\n[\s\S]*?(?=\n### |\n## |$)/,
+    (section) =>
+      section.replace(
+        /(\*{0,2})([1-5])\/5(\*{0,2})/g,
+        (match, open: string, score: string, close: string) =>
+          parseInt(score, 10) < floor ? `${open}${floor}/5${close}` : match,
+      ),
+  );
+}
+
 // ─── Diff Parsing ───────────────────────────────────────────────────────────
 
 /**

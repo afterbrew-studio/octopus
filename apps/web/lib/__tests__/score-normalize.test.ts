@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { normalizeScoreDenominators } from "@/lib/review-helpers";
+import { normalizeScoreDenominators, reconcileScoreTable } from "@/lib/review-helpers";
 
 const scoreSection = (rows: string) => `## 🐙 Octopus Review — PR #42
 
@@ -68,5 +68,66 @@ describe("normalizeScoreDenominators", () => {
 | Security | 4/4 | Minor nits |`;
     const result = normalizeScoreDenominators(body);
     expect(result).toContain("| Security | 4/5 |");
+  });
+});
+
+describe("reconcileScoreTable", () => {
+  const noFindings = { hasCritical: false, hasHigh: false, hasMedium: false };
+
+  it("floors sub-4 categories and Overall when there are no blocking findings (the qwen-telegram #5 case)", () => {
+    const body = scoreSection(
+      `| Security | 5/5 | Gate order preserved |
+| Code Quality | 3/5 | Trial env defaults violate org env-var policy |
+| Performance | N/A | One extra usage() fetch is trivial |
+| Error Handling | 3/5 | verify RETURNING includes column |
+| Consistency | 4/5 | Follows established patterns |
+| **Overall** | **3/5** | Lowest individual score |`,
+    );
+    const result = reconcileScoreTable(body, noFindings);
+    expect(result).toContain("| Code Quality | 4/5 |");
+    expect(result).toContain("| Error Handling | 4/5 |");
+    expect(result).toContain("| **Overall** | **4/5** |");
+    // preserved
+    expect(result).toContain("| Security | 5/5 |");
+    expect(result).toContain("| Consistency | 4/5 |");
+    expect(result).toContain("| Performance | N/A |");
+    expect(result).toContain("verify RETURNING includes column"); // notes kept
+    expect(result).not.toContain("3/5"); // no below-gate score survives
+  });
+
+  it("leaves the score untouched when a critical finding exists", () => {
+    const body = scoreSection(`| **Overall** | **2/5** | Critical issue found |`);
+    expect(reconcileScoreTable(body, { hasCritical: true, hasHigh: false, hasMedium: false })).toBe(body);
+  });
+
+  it("leaves the score untouched when only a medium finding exists (a real concern justifies a low score)", () => {
+    const body = scoreSection(
+      `| Code Quality | 3/5 | Medium concern |
+| **Overall** | **3/5** | Lowest individual score |`,
+    );
+    expect(reconcileScoreTable(body, { hasCritical: false, hasHigh: false, hasMedium: true })).toBe(body);
+  });
+
+  it("is a no-op when every category already clears the floor", () => {
+    const body = scoreSection(
+      `| Security | 5/5 | Fine |
+| **Overall** | **4/5** | Lowest individual score |`,
+    );
+    expect(reconcileScoreTable(body, noFindings)).toBe(body);
+  });
+
+  it("does not touch fractions outside the Score section", () => {
+    const body = `${scoreSection(`| **Overall** | **3/5** | Lowest individual score |`)}
+### Checklist
+- [ ] 2/5 edge cases covered
+`;
+    const result = reconcileScoreTable(body, noFindings);
+    expect(result).toContain("2/5 edge cases covered");
+    expect(result).toContain("| **Overall** | **4/5** |");
+  });
+
+  it("no-ops when there is no Score table", () => {
+    const body = "### Summary\nAll good, nothing to score.\n";
+    expect(reconcileScoreTable(body, noFindings)).toBe(body);
   });
 });
