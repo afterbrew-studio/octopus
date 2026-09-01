@@ -13,6 +13,7 @@ import {
   updateCheckRun,
 } from "@/lib/github";
 import { startReviewFlow } from "@/lib/webhook-shared";
+import { fetchReviewConfig, labelAsksForReview } from "@/lib/review-config";
 import { getGithubAppConfig } from "@/lib/github-app-config";
 import {
   observeGithubWebhookDeliveryBestEffort,
@@ -233,6 +234,77 @@ export async function POST(request: NextRequest) {
         data: { githubInstallationId: null },
       });
     }
+  }
+
+  // ── PR labelled with a configured review label → review on demand ──
+  //
+  // The same shape the other hosted reviewers use: a `labels` array in a config file the
+  // repository commits, and adding one of those labels asks for a review. It is what makes
+  // a metered reviewer usable at all, because it lets a repository choose review per pull
+  // request instead of buying one on every push.
+  //
+  // **Deliberately not gated on `autoReview`.** A repository that turns automatic review off
+  // and then finds its explicit request silently dropped has no way to ask for a review at
+  // all, and nothing tells it so -- the label goes on, nothing happens, and the config still
+  // reads as if on-demand review works. `autoReview` governs the automatic path above; this
+  // is the manual one, and it belongs with the `@octopus` mention rather than with it.
+  //
+  // Drafts are reviewed here for the same reason a mention reviews a draft: someone asked.
+  if (event === "pull_request" && payload.action === "labeled") {
+    const installationId = payload.installation?.id as number | undefined;
+    const label: string = payload.label?.name ?? "";
+    if (!installationId || !label || !resolvedRepositoryTenant) {
+      return NextResponse.json({ ok: true });
+    }
+
+    const repoFullName: string = payload.repository?.full_name ?? "";
+    const [owner, repoName] = repoFullName.split("/");
+    const defaultBranch: string = payload.repository?.default_branch ?? "main";
+    const prNumber: number = payload.pull_request?.number;
+
+    const config = await fetchReviewConfig({ installationId, owner, repo: repoName, defaultBranch });
+    if (!labelAsksForReview(config, label)) {
+      // Not an error, and not logged as one: most labels are not review requests, and a
+      // repository with no config file lands here on every label it ever applies.
+      return NextResponse.json({ ok: true });
+    }
+
+    const repo = await prisma.repository.findUnique({
+      where: { id: resolvedRepositoryTenant.repositoryId },
+      select: { id: true, organizationId: true, installationId: true },
+    });
+    if (!repo || repo.organizationId !== resolvedRepositoryTenant.organizationId) {
+      console.warn(`[webhook] Repo not found in DB — fullName: ${repoFullName}`);
+      return NextResponse.json({ ok: true });
+    }
+
+    // Same reconciliation the sibling handlers do (app reinstall / migration moves the
+    // installation). Without it the cached column drifts stale on a repository whose
+    // activity is label-only, until some other event happens to correct it.
+    if (repo.installationId !== installationId) {
+      await prisma.repository.update({ where: { id: repo.id }, data: { installationId } });
+    }
+
+    console.log(`[webhook] review label "${label}" added — ${repoFullName}#${prNumber}`);
+
+    await startReviewFlow({
+      source: "webhook",
+      provider: "github",
+      installationId,
+      repoFullName,
+      repoId: repo.id,
+      orgId: repo.organizationId,
+      prNumber,
+      prTitle: payload.pull_request?.title ?? `PR #${prNumber}`,
+      prUrl: payload.pull_request?.html_url ?? "",
+      prAuthor: payload.pull_request?.user?.login ?? "unknown",
+      headSha: payload.pull_request?.head?.sha ?? "",
+      triggerCommentId: 0,
+      triggerCommentBody: "",
+    });
+
+    console.log(`[webhook] ✅ Label-triggered review started for ${repoFullName}#${prNumber}`);
+    return NextResponse.json({ ok: true });
   }
 
   // ── PR opened / reopened / synchronize / ready_for_review → auto-review if repo has autoReview enabled ──

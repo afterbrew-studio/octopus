@@ -31,6 +31,7 @@ Octopus analyzes pull and merge requests via GitHub, GitLab, and Bitbucket webho
 - **GitHub, GitLab & Bitbucket** — Native webhook integrations across all three platforms, including self-managed GitLab
 - **Knowledge Center** — Org-level knowledge plus pinned documents that are always included in every review
 - **Repo Config Files** — Honor `.octopus.md`, `AGENTS.md`, or `CLAUDE.md` as repo-scoped review rules, extracted in a sandboxed pass
+- **Label-Triggered Review** — Commit an `octopus.json` naming the labels that ask for a review; adding one to a PR starts one, independently of the auto-review setting (GitHub only; GitLab and Bitbucket have no equivalent)
 - **Slack Integration** — Ask questions about your codebase directly from Slack
 - **Linear & Jira Integration** — Create issues from review findings with one click
 - **CLI** — `@octp/cli` for local review runs, plus a Claude Code skill for terminal workflows
@@ -145,7 +146,9 @@ See [docker-compose.selfhost.yml](docker-compose.selfhost.yml) (pull) and
 
 ## How It Works
 
-1. **Webhook** — GitHub, GitLab, or Bitbucket sends a PR/MR event to Octopus
+1. **Webhook** — GitHub, GitLab, or Bitbucket sends a PR/MR event to Octopus. A review starts
+   automatically (when auto-review is on), when someone comments `@octopus`, or when a label
+   listed in the repo's `octopus.json` is added to the PR
 2. **Index** — Octopus clones the repo, chunks the code, and creates vector embeddings in Qdrant
 3. **Analyze** — The codebase is analyzed using AI with relevant code chunks, pinned docs, and org knowledge
 4. **Review** — The diff is reviewed by the LLM, generating findings with severity levels and category-based thresholds

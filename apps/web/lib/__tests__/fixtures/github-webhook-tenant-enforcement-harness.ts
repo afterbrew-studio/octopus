@@ -48,6 +48,9 @@ mock.module("@/lib/github-app-config", () => ({
   getGithubAppConfig: () =>
     Promise.resolve({ webhookSecret: WEBHOOK_SECRET, appId: "123", slug: "octopus" }),
 }));
+// `null` is "no octopus.json", which every case except the labeled one wants.
+let configuredReviewLabels: string | null = null;
+
 mock.module("@/lib/github", () => ({
   listInstallationRepos: () => Promise.resolve([]),
   getRepositoryDetails: () => Promise.resolve(null),
@@ -55,6 +58,9 @@ mock.module("@/lib/github", () => ({
   getPullRequestDetails: () => Promise.resolve(null),
   createCheckRun: () => Promise.resolve(1),
   updateCheckRun: () => Promise.resolve(),
+  // The label trigger reads the repository's `octopus.json` through this. Null is "no
+  // config file", which is the state every repository in this harness is in.
+  getFileContent: () => Promise.resolve(configuredReviewLabels),
 }));
 mock.module("@/lib/webhook-shared", () => ({
   startReviewFlow: (input: Record<string, unknown>) => {
@@ -194,6 +200,23 @@ function issueCommentBody() {
   });
 }
 
+function labeledPullRequestBody() {
+  return JSON.stringify({
+    action: "labeled",
+    installation: { id: 222 },
+    repository: { id: 9001, full_name: "shared/repository", default_branch: "main" },
+    label: { name: "review:octopus" },
+    pull_request: {
+      number: 20,
+      title: "Label-triggered review",
+      html_url: "https://github.test/shared/repository/pull/20",
+      user: { login: "contributor" },
+      head: { sha: "def456" },
+      draft: false,
+    },
+  });
+}
+
 function webhookRequest(
   body: string,
   options: {
@@ -311,6 +334,44 @@ try {
   );
   assert(legacyRepositoryLookups === 0, "legacy repository-only lookup was used");
 
+  // The label trigger is a third path into startReviewFlow, and it resolves the tenant the
+  // same way the two above it do. Asserted here rather than assumed: this harness exists to
+  // prove cross-tenant routing, and a path it does not exercise is a path it says nothing
+  // about.
+  configuredReviewLabels = JSON.stringify({ labels: ["review:octopus"] });
+  const reviewsBeforeLabel = reviewCalls.length;
+  const labelResponse = await POST(
+    webhookRequest(labeledPullRequestBody(), {
+      deliveryId: "delivery-labeled",
+      eventType: "pull_request",
+    }),
+  );
+  await runAfterCallbacks();
+  assert(labelResponse.status === 200, "labeled response failed");
+  assert(
+    reviewCalls.length === reviewsBeforeLabel + 1 &&
+      reviewCalls.at(-1)?.orgId === "org_b" &&
+      reviewCalls.at(-1)?.repoId === "repo_b",
+    "labeled PR did not route through the installation-owned repository",
+  );
+
+  // A label the config does not name must start nothing.
+  configuredReviewLabels = JSON.stringify({ labels: ["some-other-label"] });
+  const reviewsBeforeUnmatched = reviewCalls.length;
+  const unmatchedResponse = await POST(
+    webhookRequest(labeledPullRequestBody(), {
+      deliveryId: "delivery-labeled-unmatched",
+      eventType: "pull_request",
+    }),
+  );
+  await runAfterCallbacks();
+  assert(unmatchedResponse.status === 200, "unmatched label response failed");
+  assert(
+    reviewCalls.length === reviewsBeforeUnmatched,
+    "a label the config does not name started a review",
+  );
+  configuredReviewLabels = null;
+
   failNextLedgerWrite = true;
   const failureResponse = await POST(
     webhookRequest(pullRequestBody(), { deliveryId: "delivery-db-failure" }),
@@ -343,6 +404,7 @@ try {
     trustedRoutingEnforced: true,
     unmappedInstallationDropped: true,
     mergedAndMentionScoped: true,
+    labelTriggerScoped: true,
     ledgerFailureNonFatal: true,
     uninstallTenantCaptured: true,
   }));

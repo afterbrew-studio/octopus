@@ -29,6 +29,7 @@ describe("GitHub webhook tenant enforcement", () => {
       trustedRoutingEnforced: true,
       unmappedInstallationDropped: true,
       mergedAndMentionScoped: true,
+      labelTriggerScoped: true,
       ledgerFailureNonFatal: true,
       uninstallTenantCaptured: true,
     });
