@@ -475,12 +475,10 @@ describe("mergeReviewConfigs", () => {
       enableConflictDetection: true,
       disabledCategories: ["style"],
       confidenceThreshold: "HIGH",
-      enableTwoPassReview: true,
     });
     expect(result.maxFindings).toBe(15);
     expect(result.enableConflictDetection).toBe(true);
     expect(result.disabledCategories).toEqual(["style"]);
-    expect(result.enableTwoPassReview).toBe(true);
   });
 });
 

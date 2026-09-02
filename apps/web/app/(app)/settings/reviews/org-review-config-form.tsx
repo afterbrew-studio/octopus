@@ -21,7 +21,6 @@ type ReviewConfig = {
   enableConflictDetection?: boolean;
   disabledCategories?: string[];
   confidenceThreshold?: string;
-  enableTwoPassReview?: boolean;
 };
 
 export function OrgReviewConfigForm({
@@ -41,7 +40,6 @@ export function OrgReviewConfigForm({
   const [enableConflict, setEnableConflict] = useState<string>(
     initialConfig.enableConflictDetection === undefined ? "auto" : initialConfig.enableConflictDetection ? "always" : "never",
   );
-  const [twoPass, setTwoPass] = useState(initialConfig.enableTwoPassReview ?? false);
   const [disabledCategories, setDisabledCategories] = useState<string[]>(
     initialConfig.disabledCategories ?? [],
   );
@@ -60,7 +58,6 @@ export function OrgReviewConfigForm({
         maxFindings,
         inlineThreshold,
         confidenceThreshold,
-        enableTwoPassReview: twoPass,
       };
       if (enableConflict !== "auto") {
         config.enableConflictDetection = enableConflict === "always";
@@ -136,16 +133,6 @@ export function OrgReviewConfigForm({
                 <option value="never">Never</option>
               </select>
             </div>
-          </div>
-
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <Label className="text-xs">Two-pass review</Label>
-              <p className="text-[10px] text-muted-foreground">
-                Validates findings with a second LLM call. More accurate but costs more.
-              </p>
-            </div>
-            <Switch checked={twoPass} onCheckedChange={setTwoPass} />
           </div>
 
           <div className="space-y-1.5">
