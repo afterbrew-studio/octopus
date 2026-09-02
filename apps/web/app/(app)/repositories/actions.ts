@@ -805,7 +805,6 @@ export async function updateReviewConfig(
     enableConflictDetection?: boolean;
     disabledCategories?: string[];
     confidenceThreshold?: string;
-    enableTwoPassReview?: boolean;
   },
 ): Promise<{ error?: string; success?: boolean }> {
   const session = await auth.api.getSession({

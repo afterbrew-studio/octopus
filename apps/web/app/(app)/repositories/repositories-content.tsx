@@ -940,7 +940,6 @@ function RepoDetail({
   const [rcEnableConflict, setRcEnableConflict] = useState<string>(
     repo.reviewConfig?.enableConflictDetection === undefined ? "auto" : repo.reviewConfig?.enableConflictDetection ? "always" : "never"
   );
-  const [rcTwoPass, setRcTwoPass] = useState<boolean>((repo.reviewConfig?.enableTwoPassReview as boolean) ?? false);
   const [rcDisabledCategories, setRcDisabledCategories] = useState<string[]>(
     (repo.reviewConfig?.disabledCategories as string[]) ?? []
   );
@@ -1335,19 +1334,6 @@ function RepoDetail({
               </select>
             </div>
 
-            <div className="flex items-center justify-between gap-4">
-              <div>
-                <Label className="text-sm">Two-pass review</Label>
-                <p className="text-xs text-muted-foreground">
-                  Validates findings with a second LLM call. More accurate but costs more.
-                </p>
-              </div>
-              <Switch
-                checked={rcTwoPass}
-                onCheckedChange={setRcTwoPass}
-              />
-            </div>
-
             <div className="space-y-2">
               <Label className="text-sm">Disabled categories</Label>
               <div className="flex flex-wrap gap-1.5">
@@ -1397,7 +1383,6 @@ function RepoDetail({
                     maxFindings: rcMaxFindings,
                     inlineThreshold: rcInlineThreshold,
                     confidenceThreshold: rcConfidenceThreshold,
-                    enableTwoPassReview: rcTwoPass,
                   };
                   if (rcEnableConflict !== "auto") {
                     config.enableConflictDetection = rcEnableConflict === "always";
