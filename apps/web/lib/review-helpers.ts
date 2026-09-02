@@ -536,6 +536,8 @@ export type ReviewConfig = {
   disabledCategories?: string[];
   confidenceThreshold?: number | string; // numeric 0-100 or legacy "HIGH" | "MEDIUM"
   enableTwoPassReview?: boolean;
+  /** A model chosen for this one review, ahead of the repository and org pins. */
+  modelOverride?: string;
   enableToolPrePass?: boolean; // opt-in deterministic (semgrep) pre-pass (#643), default off
 };
 
@@ -554,6 +556,7 @@ export function mergeReviewConfigs(...configs: ReviewConfig[]): ReviewConfig {
     if (cfg.disabledCategories !== undefined) merged.disabledCategories = cfg.disabledCategories;
     if (cfg.confidenceThreshold !== undefined) merged.confidenceThreshold = cfg.confidenceThreshold;
     if (cfg.enableTwoPassReview !== undefined) merged.enableTwoPassReview = cfg.enableTwoPassReview;
+    if (cfg.modelOverride !== undefined) merged.modelOverride = cfg.modelOverride;
     if (cfg.enableToolPrePass !== undefined) merged.enableToolPrePass = cfg.enableToolPrePass;
   }
   return merged;

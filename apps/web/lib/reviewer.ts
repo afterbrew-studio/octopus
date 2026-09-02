@@ -1479,7 +1479,14 @@ async function runReview(
     // pins still win; otherwise mechanical diffs (lockfiles, generated, docs,
     // tests, tiny edits) downshift to a cheaper model. Never emits an unpriced
     // model. Substantive diffs keep the default.
-    const reviewModel = await resolveReviewModel({ orgId: org.id, repoId: repo.id, diff });
+    // `modelOverride` comes from the attempt's own config snapshot, so a review asked
+    // for with a label is billed to the model that label named.
+    const reviewModel = await resolveReviewModel({
+      orgId: org.id,
+      repoId: repo.id,
+      modelOverride: reviewConfig.modelOverride,
+      diff,
+    });
     console.log(`[reviewer] Using model: ${reviewModel}`);
 
     // Merge PR diff files into the repo tree so new files added by the PR

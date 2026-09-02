@@ -117,6 +117,8 @@ type ReviewConfig = {
   disabledCategories?: string[];
   confidenceThreshold?: number | string;
   enableTwoPassReview?: boolean;
+  /** A model chosen for this one review, ahead of the repository and org pins. */
+  modelOverride?: string;
 };
 
 function parseReviewConfig(raw: unknown): ReviewConfig {
@@ -133,6 +135,7 @@ function mergeReviewConfigs(...configs: ReviewConfig[]): ReviewConfig {
     if (cfg.disabledCategories !== undefined) merged.disabledCategories = cfg.disabledCategories;
     if (cfg.confidenceThreshold !== undefined) merged.confidenceThreshold = cfg.confidenceThreshold;
     if (cfg.enableTwoPassReview !== undefined) merged.enableTwoPassReview = cfg.enableTwoPassReview;
+    if (cfg.modelOverride !== undefined) merged.modelOverride = cfg.modelOverride;
   }
   return merged;
 }
