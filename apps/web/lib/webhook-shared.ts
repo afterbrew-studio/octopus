@@ -44,6 +44,12 @@ export async function startReviewFlow(params: {
   source: ReviewSource;
   /** The dispatcher's id for this request, so a paid review is attributable to one ask. */
   correlationId?: string;
+  /**
+   * A model the caller has chosen for this review, overriding the repository's usual one.
+   * Recorded in `configSnapshot` rather than passed separately, so the ledger says which
+   * model a paid review was asked to use and not merely which one it ended up on.
+   */
+  modelOverride?: string;
   provider: "github" | "bitbucket" | "gitlab";
   // GitHub-specific
   installationId?: number;
@@ -267,6 +273,7 @@ export async function startReviewFlow(params: {
     sysRow ? parseReviewConfig(sysRow.defaultReviewConfig) : {},
     parseReviewConfig(orgRow?.defaultReviewConfig),
     parseReviewConfig(repoRow?.reviewConfig),
+    params.modelOverride ? { modelOverride: params.modelOverride } : {},
   );
 
   const attempt = await prisma.reviewAttempt.create({

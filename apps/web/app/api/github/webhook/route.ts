@@ -13,6 +13,7 @@ import {
   updateCheckRun,
 } from "@/lib/github";
 import { startReviewFlow } from "@/lib/webhook-shared";
+import { modelForLabels } from "@/lib/review-config-shared";
 import { fetchReviewConfig, labelAsksForReview } from "@/lib/review-config";
 import { getGithubAppConfig } from "@/lib/github-app-config";
 import {
@@ -285,11 +286,23 @@ export async function POST(request: NextRequest) {
       await prisma.repository.update({ where: { id: repo.id }, data: { installationId } });
     }
 
-    console.log(`[webhook] review label "${label}" added — ${repoFullName}#${prNumber}`);
+    // Every label the pull request carries, not just the one just added: the model is a
+    // property of the change, and a repository asks for it with a label like
+    // `complexity:strong` that is applied when the issue is filed rather than at review time.
+    const prLabels: string[] = Array.isArray(payload.pull_request?.labels)
+      ? (payload.pull_request.labels as { name?: string }[]).map((l) => l?.name ?? "")
+      : [];
+    const modelOverride = modelForLabels(config, prLabels) ?? undefined;
+
+    console.log(
+      `[webhook] review label "${label}" added — ${repoFullName}#${prNumber}` +
+        (modelOverride ? ` (model ${modelOverride} from its labels)` : ""),
+    );
 
     await startReviewFlow({
       // Not `webhook`: a person added this label. See review-start-policy.ts.
       source: "label",
+      modelOverride,
       provider: "github",
       installationId,
       repoFullName,
