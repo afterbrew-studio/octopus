@@ -6,9 +6,10 @@ import {
 } from "@/lib/review-start-policy";
 
 /**
- * ADR-0056 makes Companion the only review-dispatch authority. A webhook that can
- * start a review is a second one, spending model budget on GitHub's schedule and
- * outside the attempt record that makes a paid review attributable.
+ * ADR-0056 makes Companion the only review-dispatch authority. What that guards
+ * against is a review starting on GitHub's schedule: budget spent because a push
+ * happened, not because anybody asked. A person adding a review label is the other
+ * thing, so `label` is permitted and the automatic path is not.
  *
  * The refusal itself is one function. What these assert is that it refuses the
  * right thing, permits the right thing, and says so in a way nobody mistakes for a
@@ -20,15 +21,25 @@ describe("review start policy", () => {
     expect(mayStartReview("adapter")).toBe(true);
   });
 
-  it("refuses a webhook", () => {
+  it("refuses the automatic webhook path", () => {
     expect(mayStartReview("webhook")).toBe(false);
   });
 
-  it("refuses anything that is not the adapter, including a future source", () => {
+  it("permits a label, because a person asked for that one review", () => {
+    expect(mayStartReview("label")).toBe(true);
+  });
+
+  it("permits a mention, which is the same act with a different gesture", () => {
+    expect(mayStartReview("mention")).toBe(true);
+  });
+
+  it("refuses anything not on the allow-list, including a future source", () => {
     // The check is an allow-list, not a deny-list. A source added later must be
     // refused until somebody decides otherwise, rather than inheriting permission
-    // because nobody remembered to add it to a list of things to block.
-    for (const source of ["webhook", "cron", "", "ADAPTER", "adapter "] as unknown as ReviewSource[]) {
+    // because nobody remembered to add it to a list of things to block. Deny-listing
+    // `webhook` would read identically today and fail exactly here.
+    const refused = ["webhook", "cron", "", "ADAPTER", "adapter ", "LABEL", "label ", "Mention"];
+    for (const source of refused as unknown as ReviewSource[]) {
       expect(mayStartReview(source)).toBe(false);
     }
   });
