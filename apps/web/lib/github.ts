@@ -621,6 +621,40 @@ export class LargePrError extends Error {
   }
 }
 
+/**
+ * Paths changed between two commits, or null when the comparison cannot be read.
+ *
+ * Null is not "nothing changed": the caller must treat an unreadable comparison
+ * as "cannot tell", because the question it answers is whether a finding was
+ * plausibly addressed and a wrong "yes" there approves unreviewed work.
+ */
+export async function filesChangedBetween(
+  installationId: number,
+  owner: string,
+  repo: string,
+  base: string,
+  head: string,
+  providedToken?: string,
+): Promise<string[] | null> {
+  if (!base || !head || base === head) return [];
+  try {
+    const token = providedToken ?? (await getInstallationToken(installationId));
+    const res = await fetchWithRetry(
+      `${GITHUB_API}/repos/${owner}/${repo}/compare/${base}...${head}`,
+      { headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" } },
+    );
+    if (!res.ok) {
+      console.warn(`[github] compare ${base.slice(0, 8)}...${head.slice(0, 8)} failed: ${res.status}`);
+      return null;
+    }
+    const body = (await res.json()) as { files?: { filename?: string }[] };
+    return (body.files ?? []).map((f) => f.filename ?? "").filter(Boolean);
+  } catch (err) {
+    console.warn("[github] compare threw:", err);
+    return null;
+  }
+}
+
 export async function getPullRequestDiff(
   installationId: number,
   owner: string,
