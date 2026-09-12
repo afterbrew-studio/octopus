@@ -846,14 +846,51 @@ export function mayApprove(input: {
   readWholeDiff: boolean;
   /** Absent means the shape was not assessed, which does not block approval. */
   shape?: SlopVerdict;
+  /**
+   * Findings an earlier review raised that this one neither reproduced nor can
+   * show were addressed. Absent means the question was not asked, which does not
+   * block approval.
+   */
+  unaddressedPrior?: number;
 }): boolean {
   return (
     input.optedIn &&
     isCleanReview(input.found) &&
     input.parsedOutput &&
     input.readWholeDiff &&
-    (input.shape?.mergeableUnattended ?? true)
+    (input.shape?.mergeableUnattended ?? true) &&
+    (input.unaddressedPrior ?? 0) === 0
   );
+}
+
+/**
+ * Which of a previous review's findings this one leaves unaddressed.
+ *
+ * A review is one non-deterministic run, so a finding it does not repeat has not
+ * been answered - it has only gone unmentioned. Without this the two are the same
+ * value, and pushing anything at all flips CHANGES_REQUESTED to APPROVED: rayf
+ * #646 went from 7 findings to 0 across a commit adding three comment lines to
+ * one file, and approved with six findings standing.
+ *
+ * A finding counts as addressed when this run repeats it (the reviewer looked
+ * again and had its say) or when a commit since touched the file it names (the
+ * author acted, and a fresh reading of that file is the reviewer's answer).
+ *
+ * `changedSince` of null means the comparison could not be read. Every prior
+ * finding is then unaddressed, because "cannot tell" must not approve.
+ */
+export function unaddressedPriorFindings(input: {
+  prior: readonly { signature?: string | null; filePath?: string | null }[];
+  currentSignatures: ReadonlySet<string>;
+  changedSince: readonly string[] | null;
+}): { signature?: string | null; filePath?: string | null }[] {
+  const touched = input.changedSince === null ? null : new Set(input.changedSince);
+  return input.prior.filter((finding) => {
+    if (finding.signature && input.currentSignatures.has(finding.signature)) return false;
+    if (touched === null) return true;
+    // A finding with no path cannot be shown addressed by a file comparison.
+    return !finding.filePath || !touched.has(finding.filePath);
+  });
 }
 
 export function shouldFailReviewCheck(
