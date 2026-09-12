@@ -73,6 +73,17 @@ describe("the client a gateway call is made with", () => {
     expect(constructedWith[0]!.maxRetries).toBe(0);
   });
 
+  it("raises undici's own 300s header ceiling, which is the real limit", async () => {
+    // A non-streaming review sends no response header until the model has
+    // finished. undici defaults headersTimeout AND bodyTimeout to 300s, so five
+    // minutes bounded every call regardless of what the SDK timeout said - and
+    // undici reports it with the same "Request timed out." text.
+    const { Agent } = await import("undici");
+    await call();
+    const opts = constructedWith[0]!.fetchOptions as { dispatcher?: unknown } | undefined;
+    expect(opts?.dispatcher).toBeInstanceOf(Agent);
+  });
+
   it("keeps the socket alive through the silent wait a review is", async () => {
     // A long non-streaming call sends nothing either way while the vendor
     // thinks. Without keep-alive the path reaps the socket mid-wait, which is

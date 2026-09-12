@@ -114,6 +114,16 @@ const GATEWAY_DISPATCHER = new Agent({
   keepAliveTimeout: 30_000,
   keepAliveMaxTimeout: 120_000,
   connect: { keepAlive: true, keepAliveInitialDelay: 15_000 },
+  // undici defaults BOTH of these to 300s, and a non-streaming review sends no
+  // response header until the model has finished thinking. So five minutes was
+  // the real ceiling on every call here, under whatever the SDK's own timeout
+  // said - and undici reports it with the same "Request timed out." text, which
+  // is why it reads as the SDK giving up.
+  //
+  // Tied to the gateway timeout so there is one ceiling rather than three
+  // disagreeing ones.
+  headersTimeout: GATEWAY_TIMEOUT_MS,
+  bodyTimeout: GATEWAY_TIMEOUT_MS,
 });
 
 export async function callOpenAiGateway(
