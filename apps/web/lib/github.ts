@@ -492,6 +492,11 @@ export async function checkStateFor(
   const FAILED = new Set(["failure", "timed_out", "action_required", "startup_failure"]);
   let pending = false;
   for (const run of runs.check_runs ?? []) {
+    // Never read our OWN verdict as a reason not to review. A failed review
+    // writes `failure` on this SHA, so counting it means one failure blocks
+    // every retry on that commit forever - the gate that exists to avoid
+    // reviewing broken code ends up preventing the review from being retried.
+    if (isOwnCheckRun(run.name)) continue;
     if (run.status !== "completed") { pending = true; continue; }
     if (run.conclusion && FAILED.has(run.conclusion)) return "failing";
   }
@@ -1252,4 +1257,9 @@ export async function getFileContent(
 
   if (!res.ok) return null;
   return res.text();
+}
+
+/** Check runs this app writes itself, which are not evidence about the code. */
+function isOwnCheckRun(name: string | undefined): boolean {
+  return typeof name === "string" && name.trim().toLowerCase().startsWith("octopus review");
 }
