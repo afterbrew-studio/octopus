@@ -50,6 +50,7 @@ import {
   getCommentReactions as ghGetCommentReactions,
   listOwnUnresolvedThreads,
   resolveReviewThread,
+  filesChangedBetween,
 } from "@/lib/github";
 import * as bitbucket from "@/lib/bitbucket";
 import * as gitlab from "@/lib/gitlab";
@@ -94,6 +95,7 @@ import {
   buildRetrievalQuery,
   filterByConfidence,
   resolveConfidenceThreshold,
+  unaddressedPriorFindings,
 } from "@/lib/review-helpers";
 import { selectRulePacks } from "@/lib/rulepacks";
 import { toolPrePassEnabled, runSemgrepPrePass, formatToolFindings, filterToChangedLines } from "@/lib/deterministic-tools";
@@ -2514,12 +2516,31 @@ Rules:
       linesRemoved: removedLines,
       statedPurpose: prBody ?? '',
     });
+    // A previous review's findings are not answered by a run that simply does not
+    // repeat them. Loaded here rather than at the persistence step below because
+    // the approve decision is the thing that must know.
+    const priorIssues = await prisma.reviewIssue.findMany({ where: { pullRequestId: pr.id } });
+    const unaddressed = await unaddressedSincePriorReview({
+      prior: priorIssues,
+      current: allParsedFindings,
+      pullRequestId: pr.id,
+      headSha: pr.headSha,
+      installationId: isGitHub ? (installationId ?? undefined) : undefined,
+      owner,
+      repo: repoName,
+    });
+    if (unaddressed.length > 0) {
+      console.log(
+        `[reviewer] PR ${pr.number}: ${unaddressed.length} finding(s) from an earlier review are neither repeated nor shown addressed; not approving`,
+      );
+    }
     const approvable = mayApprove({
       optedIn: org.approveWhenClean,
       found: foundBeforeReReviewFilter,
       parsedOutput: parsedSomething,
       readWholeDiff,
       shape,
+      unaddressedPrior: unaddressed.length,
     });
     if (org.approveWhenClean && !shape.mergeableUnattended) {
       console.log(`[reviewer] not approving PR ${pr.number}: ${shape.reasons.join('; ')}`);
@@ -2778,9 +2799,6 @@ Rules:
     // feedback, tracker links, original createdAt) instead of resurfacing as brand-new.
     // This exact-signature inheritance complements the earlier fuzzy (keyword +
     // line-proximity) dedup rather than replacing it — see lib/finding-merge.ts.
-    const priorIssues = await prisma.reviewIssue.findMany({
-      where: { pullRequestId: pr.id },
-    });
 
     // Persist all parsed findings (pre-filter) for dashboard/scoring. The
     // delete+create replacement happens in ONE transaction below so a failure
@@ -2819,6 +2837,23 @@ Rules:
       });
       mergedIssues = merged;
       inheritedCount = inherited;
+    }
+
+    // A finding this run did not repeat, on a file nothing has touched since, is
+    // still open. Replacing the table with only what this run said would delete
+    // it - and the review that deletes it is the one that approves.
+    const unaddressedSignatures = new Set(
+      unaddressed.map((f) => f.signature).filter((sig): sig is string => Boolean(sig)),
+    );
+    const writtenSignatures = new Set(
+      mergedIssues.map((row) => row.signature).filter((sig): sig is string => Boolean(sig)),
+    );
+    const carriedForward = priorIssues
+      .filter((row) => row.signature && unaddressedSignatures.has(row.signature) && !writtenSignatures.has(row.signature))
+      .map(({ id: _id, ...row }) => row as Prisma.ReviewIssueCreateManyInput);
+    if (carriedForward.length > 0) {
+      mergedIssues = [...mergedIssues, ...carriedForward];
+      console.log(`[reviewer] Carried forward ${carriedForward.length} unaddressed finding(s) from an earlier review`);
     }
 
     // Atomic replace: clear + insert together (re-review idempotency without
@@ -3058,4 +3093,56 @@ Rules:
       error: errorMessage,
     });
   }
+}
+
+
+/**
+ * Prior findings this review neither repeated nor can show were addressed.
+ *
+ * The file comparison runs from the head the previous attempt reviewed to the
+ * current one: a commit touching a finding's file is the author acting on it,
+ * and this run's fresh reading of that file is the reviewer's answer. Anything
+ * else is a finding that has only gone unmentioned.
+ */
+async function unaddressedSincePriorReview(input: {
+  prior: { signature: string | null; filePath: string | null }[];
+  current: { filePath?: string; category?: string; title: string }[];
+  pullRequestId: string;
+  headSha: string | null;
+  installationId?: number;
+  owner: string;
+  repo: string;
+}): Promise<{ signature: string | null; filePath: string | null }[]> {
+  if (input.prior.length === 0) return [];
+  const currentSignatures = new Set(
+    input.current.map((f) =>
+      findingSignature({
+        filePath: f.filePath || "",
+        category: f.category ?? "",
+        title: f.title.replace(/^(CRITICAL|HIGH|MEDIUM|LOW|INFO)\s*-\s*/i, "").trim(),
+      }),
+    ),
+  );
+  let changedSince: string[] | null = null;
+  const previousAttempt = await prisma.reviewAttempt
+    .findFirst({
+      where: { pullRequestId: input.pullRequestId, headSha: { not: null } },
+      orderBy: { createdAt: "desc" },
+      select: { headSha: true },
+    })
+    .catch(() => null);
+  if (input.installationId && previousAttempt?.headSha && input.headSha) {
+    changedSince = await filesChangedBetween(
+      input.installationId,
+      input.owner,
+      input.repo,
+      previousAttempt.headSha,
+      input.headSha,
+    );
+  }
+  return unaddressedPriorFindings({
+    prior: input.prior,
+    currentSignatures,
+    changedSince,
+  }) as { signature: string | null; filePath: string | null }[];
 }
