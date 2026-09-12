@@ -128,8 +128,7 @@ export async function startReviewFlow(params: {
   });
 
   if (existingPr && (existingPr.status === "reviewing" || existingPr.status === "pending")) {
-    const stuckThresholdMs = 3 * 60 * 1000; // 3 minutes
-    const isStuck = Date.now() - existingPr.updatedAt.getTime() > stuckThresholdMs;
+    const isStuck = Date.now() - existingPr.updatedAt.getTime() > stuckReviewMs();
 
     if (isStuck) {
       console.log(`[webhook] Review for PR #${prNumber} stuck for >3min, marking as failed and restarting`);
@@ -336,4 +335,25 @@ async function lastResolvedModel(pullRequestId: string): Promise<string | undefi
   if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) return undefined;
   const model = (snapshot as { modelOverride?: unknown }).modelOverride;
   return typeof model === "string" && model.trim() !== "" ? model : undefined;
+}
+
+/**
+ * When a review in flight is presumed dead.
+ *
+ * Must exceed the model call's own ceiling. At three minutes it did not: a
+ * legitimate strong-tier review runs longer than that, so the watchdog declared
+ * it stuck and started another while the first was still going - which is how
+ * one review became four attempts on rayf #646. A watchdog shorter than the
+ * work it supervises does not detect stalls, it manufactures them.
+ *
+ * Derived from `GATEWAY_TIMEOUT_MS` so the two cannot drift apart: once the call
+ * has exceeded its own timeout it has already failed, and only then is there
+ * nothing left to wait for.
+ */
+export function stuckReviewMs(): number {
+  const explicit = Number(process.env.STUCK_REVIEW_MS ?? NaN);
+  if (Number.isFinite(explicit) && explicit > 0) return explicit;
+  const gateway = Number(process.env.GATEWAY_TIMEOUT_MS ?? 150_000);
+  const base = Number.isFinite(gateway) && gateway > 0 ? gateway : 150_000;
+  return base + 120_000;
 }
