@@ -72,4 +72,15 @@ describe("the client a gateway call is made with", () => {
     await call();
     expect(constructedWith[0]!.maxRetries).toBe(0);
   });
+
+  it("keeps the socket alive through the silent wait a review is", async () => {
+    // A long non-streaming call sends nothing either way while the vendor
+    // thinks. Without keep-alive the path reaps the socket mid-wait, which is
+    // `Connection error` when it fails fast and `Request timed out` when the
+    // drop is silent - both seen on GLM reviews, neither on the vendor reached
+    // through a proxy that already sets this.
+    await call();
+    const opts = constructedWith[0]!.fetchOptions as { dispatcher?: unknown } | undefined;
+    expect(opts?.dispatcher).toBeDefined();
+  });
 });
