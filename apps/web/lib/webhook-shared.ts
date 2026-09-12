@@ -269,12 +269,27 @@ export async function startReviewFlow(params: {
     prisma.organization.findUnique({ where: { id: orgId }, select: { defaultReviewConfig: true } }),
     prisma.repository.findUnique({ where: { id: repoId }, select: { reviewConfig: true } }),
   ]);
+  // Only the `label` caller resolves a model: it is the only event carrying the
+  // label that was just added. A push, an `@octopus` mention and the stuck-review
+  // restart above all pass none, so the review drops to the deployment default
+  // and a `complexity:strong` change gets its strong reviewer once and the mid
+  // tier for the rest of its life - the declaration buying nothing.
+  //
+  // Carried forward from the last attempt rather than re-read here, because
+  // `octopus.json` is read from the DEFAULT branch so a pull request cannot pick
+  // its own reviewer. Re-deriving at this point would have to trust the event.
+  const inheritedModel = params.modelOverride ?? (await lastResolvedModel(pr.id));
   const configSnapshot = mergeReviewConfigs(
     sysRow ? parseReviewConfig(sysRow.defaultReviewConfig) : {},
     parseReviewConfig(orgRow?.defaultReviewConfig),
     parseReviewConfig(repoRow?.reviewConfig),
-    params.modelOverride ? { modelOverride: params.modelOverride } : {},
+    inheritedModel ? { modelOverride: inheritedModel } : {},
   );
+  if (!params.modelOverride && inheritedModel) {
+    console.log(
+      `[webhook] PR #${prNumber} inherits model ${inheritedModel} from its last attempt (source: ${params.source})`,
+    );
+  }
 
   const attempt = await prisma.reviewAttempt.create({
     data: {
@@ -293,4 +308,32 @@ export async function startReviewFlow(params: {
   // The attempt id travels with it so the worker reads the frozen decision rather
   // than re-resolving live configuration.
   await enqueue("process-review", { pullRequestId: pr.id, attemptId: attempt.id });
+}
+
+/**
+ * The model the most recent attempt on this pull request was asked to use.
+ *
+ * Undefined when no attempt ever recorded one, which is the ordinary case for a
+ * repository that does not key models on labels: the caller falls through to the
+ * deployment default exactly as before.
+ */
+async function lastResolvedModel(pullRequestId: string): Promise<string | undefined> {
+  // Soft: inheriting a model is a routing improvement, not a correctness gate.
+  // A read that fails here must not stop the review from starting - the cost of
+  // losing it is the deployment default, the cost of throwing is no review.
+  let previous: { configSnapshot: unknown } | null = null;
+  try {
+    previous = await prisma.reviewAttempt.findFirst({
+      where: { pullRequestId },
+      orderBy: { createdAt: "desc" },
+      select: { configSnapshot: true },
+    });
+  } catch (err) {
+    console.warn("[webhook] could not read the last attempt's model:", err);
+    return undefined;
+  }
+  const snapshot = previous?.configSnapshot;
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) return undefined;
+  const model = (snapshot as { modelOverride?: unknown }).modelOverride;
+  return typeof model === "string" && model.trim() !== "" ? model : undefined;
 }

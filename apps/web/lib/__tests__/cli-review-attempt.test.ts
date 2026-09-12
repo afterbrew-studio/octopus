@@ -40,6 +40,7 @@ mock.module("@octopus/db", () => ({
       update: async () => ({}),
     },
     reviewAttempt: {
+      findFirst: async () => null,
       create: async ({ data }: { data: Record<string, unknown> }) => {
         created.push(data);
         return { id: "att_1" };
