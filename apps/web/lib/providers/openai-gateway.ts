@@ -83,6 +83,14 @@ export function parseExtraBody(raw: string | undefined, envName: string): Record
   return parsed as Record<string, unknown>;
 }
 
+/**
+ * One call's ceiling. Below the SDK's ten-minute default so a stalled gateway is
+ * reported rather than sat on. `maxRetries: 0` for the same reason: the SDK
+ * retrying underneath turns one review into three calls with nothing recording
+ * it, and the caller's own retry policy is the one that should decide.
+ */
+const GATEWAY_TIMEOUT_MS = Number(process.env.GATEWAY_TIMEOUT_MS ?? 150_000);
+
 export async function callOpenAiGateway(
   params: AiCreateParams,
   opts: GatewayCallOptions,
@@ -90,7 +98,15 @@ export async function callOpenAiGateway(
   // Not cached across calls: with per-org config the base URL + token vary by
   // org, so a per-provider client singleton would leak one org's gateway/token
   // to another.
-  const client = new OpenAI({ apiKey: opts.apiKey, baseURL: opts.apiBase });
+  // Explicit, because the SDK's own default is ten minutes - longer than the
+  // stuck-review watchdog, so a slow call was restarted by the watchdog while the
+  // first was still in flight and the same review ran several times over.
+  const client = new OpenAI({
+    apiKey: opts.apiKey,
+    baseURL: opts.apiBase,
+    timeout: GATEWAY_TIMEOUT_MS,
+    maxRetries: 0,
+  });
 
   const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [];
   if (params.system) messages.push({ role: "system", content: params.system });
@@ -105,7 +121,17 @@ export async function callOpenAiGateway(
     // past parseExtraBody.
     ...(opts.extraBody ?? {}),
     model,
+    // BOTH spellings, because OpenAI-compatible is a shape and not a contract.
+    // Z.AI ACCEPTS `max_completion_tokens` and ignores it: the reply comes back
+    // `finish_reason: stop` having spent whatever it liked, indistinguishable
+    // from sending no budget at all. Every review on that endpoint therefore ran
+    // unbudgeted, and an unbudgeted reasoning model has no ceiling but the
+    // client's own timeout.
+    //
+    // Measured against both endpoints in use: Z.AI honours `max_tokens` and
+    // accepts the pair; MiniMax honours either and accepts the pair.
     max_completion_tokens: params.maxTokens,
+    max_tokens: params.maxTokens,
     messages,
     ...(params.responseSchema
       ? {
