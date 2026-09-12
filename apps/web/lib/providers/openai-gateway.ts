@@ -1,5 +1,6 @@
 import "server-only";
 import OpenAI from "openai";
+import { Agent } from "undici";
 import type { AiCreateParams, AiResponse, AiProvider } from "./index";
 import { splitReasoning } from "./reasoning";
 
@@ -91,6 +92,30 @@ export function parseExtraBody(raw: string | undefined, envName: string): Record
  */
 const GATEWAY_TIMEOUT_MS = Number(process.env.GATEWAY_TIMEOUT_MS ?? 150_000);
 
+/**
+ * Keep-alive on the socket, because a review is a long SILENT wait.
+ *
+ * The request ships a large prompt and then nothing travels either way until the
+ * vendor answers - 58-79s for a reasoning model on a review-sized diff. A path
+ * that drops idle connections cannot tell that apart from a dead peer, so it
+ * reaps the socket and the call surfaces as `Connection error` or, when the drop
+ * is silent, hangs until the client's own timeout as `Request timed out`.
+ *
+ * Both were seen on GLM reviews here, and neither on MiniMax - which reaches its
+ * vendor through a proxy that already sets exactly this, for exactly this
+ * reason: short requests always succeeded while long ones died mid-wait. Thinking
+ * is disabled for MiniMax, so its waits are short and it stays out of the window
+ * this kills.
+ *
+ * Keep-alive gives the path something to see, so an idle-but-live connection is
+ * not mistaken for a dead one.
+ */
+const GATEWAY_DISPATCHER = new Agent({
+  keepAliveTimeout: 30_000,
+  keepAliveMaxTimeout: 120_000,
+  connect: { keepAlive: true, keepAliveInitialDelay: 15_000 },
+});
+
 export async function callOpenAiGateway(
   params: AiCreateParams,
   opts: GatewayCallOptions,
@@ -106,6 +131,9 @@ export async function callOpenAiGateway(
     baseURL: opts.apiBase,
     timeout: GATEWAY_TIMEOUT_MS,
     maxRetries: 0,
+    // `dispatcher` is undici's transport hook; the SDK's RequestInit type has
+    // no field for it, so it rides through as an extra property.
+    fetchOptions: { dispatcher: GATEWAY_DISPATCHER } as unknown as Record<string, never>,
   });
 
   const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [];
