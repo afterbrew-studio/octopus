@@ -1977,7 +1977,7 @@ async function runReview(
     const response = await createAiMessage(
       {
         model: reviewModel,
-        maxTokens: 8192,
+        maxTokens: reviewMaxTokens(),
         system: systemPrompt,
         cacheSystem: true,
         messages: [
@@ -3058,4 +3058,21 @@ Rules:
       error: errorMessage,
     });
   }
+}
+
+/**
+ * The output budget one review may spend.
+ *
+ * It covers reasoning AND the answer on a gateway that bills them together, and
+ * a reasoning model spends the reasoning FIRST. At 8192 a strong-tier review
+ * exhausted the budget before writing anything and came back
+ * `finish_reason: length` with empty content - the reviewer thought hard about
+ * the diff and never said a word.
+ *
+ * Overridable because the right number is a property of the model and the size
+ * of review a repository asks for, neither of which this file knows.
+ */
+function reviewMaxTokens(): number {
+  const configured = Number(process.env.REVIEW_MAX_TOKENS ?? NaN);
+  return Number.isFinite(configured) && configured > 0 ? configured : 8192;
 }
