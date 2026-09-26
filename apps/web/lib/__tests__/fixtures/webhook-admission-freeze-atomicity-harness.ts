@@ -3,21 +3,18 @@ import assert from "node:assert/strict";
 
 /**
  * Non-Forgejo admission commits its pull-request write immediately, with no
- * ambient transaction -- unlike Forgejo, which always runs inside one. If
- * `freezeReviewRun` then throws (a config read failing, say), the admission
- * had already committed: the pull request is stranded `pending` with no run
- * and no job, a retry is refused as already-in-progress, and nothing
- * non-terminal exists for the pending-row reaper to recover.
+ * ambient transaction -- unlike Forgejo, which always runs inside one.
+ * Wrapping every provider's admission in its own transaction (a prior pass)
+ * broke two things admission itself relies on: its provider API call held
+ * that transaction open for as long as the provider took to respond, and its
+ * concurrent-create P2002 recovery re-queried on the SAME transaction, which
+ * PostgreSQL had already aborted after that error.
  *
- * `startReviewFlowInternal` now wraps admission and freeze in the SAME
- * transaction for every provider, so a freeze failure rolls the admission
- * back too and a retry starts clean, exactly as if the first request never
- * happened.
- *
- * The mock `$transaction` below stages writes separately and only merges them
- * into the "committed" store when its callback resolves -- a real rollback,
- * not a simplified stand-in, so a bug in the transaction boundary itself
- * would show up here.
+ * So admission commits on its own again, and a `freezeReviewRun` failure
+ * instead reverts it: a compensating write, guarded on the exact identity
+ * admission just produced, returns the pull request to a retryable "failed"
+ * status (not the "pending" that would refuse a retry as already-in-progress)
+ * and rethrows so the provider retries into a clean state.
  */
 
 mock.module("server-only", () => ({}));
@@ -26,31 +23,44 @@ const A = "a".repeat(40);
 type Row = Record<string, unknown> & { id: string; status: string; headSha: string | null; reviewRequestVersion: number };
 type Run = { id: string; headSha: string | null; reviewRequestVersion: number | null };
 
-let committedPr: Row | null = null;
-const committedRuns: Run[] = [];
+let current: Row | null = null;
+const runsCreated: Run[] = [];
 let freezeShouldFail = false;
 let nextRunId = 0;
 
-function matches(row: Row, where: Record<string, unknown>): boolean {
-  return Object.entries(where).every(([k, v]) => row[k] === v);
+function matches(where: Record<string, unknown>): boolean {
+  if (!current) return false;
+  return Object.entries(where).every(([key, value]) => current![key] === value);
+}
+function apply(data: Record<string, unknown>) {
+  assert.ok(current);
+  const increment = data.reviewRequestVersion as { increment: number } | undefined;
+  const version = increment ? current.reviewRequestVersion + increment.increment : current.reviewRequestVersion;
+  current = { ...current, ...structuredClone(data), reviewRequestVersion: version };
 }
 
-function makeClient(prHolder: { current: Row | null }, runs: Run[]) {
-  return {
+mock.module("@octopus/db", () => ({
+  Prisma: { DbNull: null },
+  prisma: {
     organization: { findUnique: async () => ({ reviewsPaused: false, blockedAuthors: [], defaultReviewConfig: null }) },
     systemConfig: { findUnique: async () => ({ blockedAuthors: [], defaultReviewConfig: null }) },
     repository: { findUnique: async () => ({ reviewConfig: null }) },
     reviewAttempt: { findFirst: async () => null },
     pullRequest: {
-      findUnique: async () => (prHolder.current ? { ...prHolder.current } : null),
+      findUnique: async () => (current ? { ...current, attempts: [] } : null),
       create: async ({ data }: { data: Record<string, unknown> }) => {
-        prHolder.current = { ...data, id: "pr-1", reviewRequestVersion: 1, createdAt: new Date() } as Row;
-        return { ...prHolder.current };
+        current = { ...data, id: "pr-1", reviewRequestVersion: 1, createdAt: new Date(), updatedAt: new Date() } as Row;
+        return { ...current };
       },
       updateManyAndReturn: async ({ where, data }: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
-        if (!prHolder.current || !matches(prHolder.current, where)) return [];
-        prHolder.current = { ...prHolder.current, ...data } as Row;
-        return [{ ...prHolder.current }];
+        if (!matches(where)) return [];
+        apply(data);
+        return [{ ...current }];
+      },
+      updateMany: async ({ where, data }: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
+        if (!matches(where)) return { count: 0 };
+        apply(data);
+        return { count: 1 };
       },
     },
     reviewRun: {
@@ -58,27 +68,9 @@ function makeClient(prHolder: { current: Row | null }, runs: Run[]) {
       create: async ({ data }: { data: { headSha: string | null; reviewRequestVersion: number | null } }) => {
         if (freezeShouldFail) throw new Error("Config read unavailable");
         const run: Run = { id: `run-${nextRunId++}`, headSha: data.headSha, reviewRequestVersion: data.reviewRequestVersion };
-        runs.push(run);
+        runsCreated.push(run);
         return { id: run.id };
       },
-    },
-  };
-}
-
-mock.module("@octopus/db", () => ({
-  Prisma: { DbNull: null },
-  prisma: {
-    ...makeClient({ get current() { return committedPr; }, set current(v: Row | null) { committedPr = v; } }, committedRuns),
-    $transaction: async (callback: (tx: ReturnType<typeof makeClient>) => Promise<unknown>) => {
-      const staged = { current: committedPr ? { ...committedPr } : null };
-      const stagedRuns = [...committedRuns];
-      const result = await callback(makeClient(staged, stagedRuns));
-      // Commit only on a resolved callback -- a throw leaves `committedPr`/
-      // `committedRuns` exactly as they were, proving the rollback.
-      committedPr = staged.current;
-      committedRuns.length = 0;
-      committedRuns.push(...stagedRuns);
-      return result;
     },
   },
 }));
@@ -119,19 +111,24 @@ const params = {
   triggerCommentBody: "Review",
 };
 
-// 1. Freeze throws: nothing is committed -- no pull request row, no run.
+// 1. Freeze throws: admission already committed (there is no transaction to
+// roll it back), so the failure must revert it itself -- to "failed", the
+// one status admission's own already-in-progress check does not block on --
+// not leave the row stranded "pending" with no run and no job.
 freezeShouldFail = true;
 await assert.rejects(() => startReviewFlow(params), /Config read unavailable/);
-assert.equal(committedPr, null, "a rolled-back admission must leave no pull request row behind");
-assert.equal(committedRuns.length, 0, "a rolled-back freeze must leave no run behind");
+assert.ok(current, "admission's own commit is real and is not expected to vanish");
+assert.equal(current!.status, "failed", "a freeze failure must revert admission to a retryable status, not leave it stranded pending");
+assert.equal(runsCreated.length, 0, "a failed freeze must leave no run behind");
 assert.equal(enqueued, 0);
 
-// 2. Retry admits cleanly, as if the first request never happened.
+// 2. Retry admits cleanly: "failed" is not in admission's already-in-progress
+// set, so the SAME pull request is reclaimed rather than refused.
 freezeShouldFail = false;
 const result = await startReviewFlow(params);
 assert.equal(result.started, true);
-assert.ok(committedPr, "the retry must actually create the pull request");
-assert.equal(committedRuns.length, 1, "the retry must freeze exactly one run");
+assert.equal(current!.status, "pending", "the retry must actually be admitted and enqueued, not refused as already in progress");
+assert.equal(runsCreated.length, 1, "the retry must freeze exactly one run");
 assert.equal(enqueued, 1);
 
-console.log("PASS a freeze failure rolls back its admission; the retry admits cleanly");
+console.log("PASS a freeze failure reverts its admission to a retryable status; the retry admits cleanly");

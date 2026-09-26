@@ -154,26 +154,51 @@ async function startReviewFlowInternal(params: StartReviewParams, forgejoTransac
     }
   }
 
-  // Admission and freeze happen in the SAME transaction, on every provider
-  // path -- not just where an ambient one already exists (Forgejo). A run's
-  // config-freeze failing after admission already committed would otherwise
-  // strand the pull request `pending` with no run and no job: a retry is
-  // refused as already-in-progress, and nothing non-terminal exists for the
-  // pending-row reaper to recover. Rolling back the admission with the
-  // failed freeze means the provider's retry starts clean instead.
-  const admitAndFreeze = async (client: Prisma.TransactionClient) => {
-    const admission = await admitReviewRequest(params, client);
-    if (!admission.started) return admission;
-    const pr = admission.pullRequest;
-    console.log(`[webhook] PullRequest admitted — id: ${pr.id}, number: ${pr.number}`);
-    const reviewRun = await freezeReviewRun(pr.id, headSha, { ...params, reviewRequestVersion: pr.reviewRequestVersion, client });
-    return { started: true as const, pullRequest: pr, reviewRun };
-  };
-  const admitted = forgejoTransaction
-    ? await admitAndFreeze(forgejoTransaction)
-    : await prisma.$transaction((tx) => admitAndFreeze(tx));
-  if (!admitted.started) return admitted;
-  const { pullRequest: pr, reviewRun } = admitted;
+  const admission = await admitReviewRequest(params, forgejoTransaction);
+  if (!admission.started) return admission;
+  const pr = admission.pullRequest;
+  console.log(`[webhook] PullRequest admitted — id: ${pr.id}, number: ${pr.number}`);
+
+  // Freeze the run BEFORE enqueueing, on every provider path -- Forgejo's
+  // transactional early return below used to enqueue with no run at all, so
+  // every Forgejo review ran on live configuration. See the fuller rationale
+  // further down, where the non-Forgejo path used to do this alone.
+  //
+  // Freezes `pr.headSha`/`pr.reviewRequestVersion` -- admission's OWN
+  // returned pull request -- not the caller's input params. Admission
+  // accepts an empty/null input head and resolves the authoritative one
+  // itself (`currentProviderHead`); freezing the input would bind the run to
+  // a head nobody actually reviewed at, and the worker would immediately
+  // find that frozen (null) head not matching the real one and finalize the
+  // run superseded before ever claiming it.
+  let reviewRun: { id: string };
+  if (forgejoTransaction) {
+    // Forgejo's admission already runs inside this ambient transaction, and
+    // freeze joins it -- unchanged from the prior pass.
+    reviewRun = await freezeReviewRun(pr.id, pr.headSha, { ...params, reviewRequestVersion: pr.reviewRequestVersion, client: forgejoTransaction });
+  } else {
+    try {
+      reviewRun = await freezeReviewRun(pr.id, pr.headSha, { ...params, reviewRequestVersion: pr.reviewRequestVersion });
+    } catch (err) {
+      // Wrapping every provider's admission in its own transaction (as a
+      // prior pass did) broke two things admission itself relies on: its
+      // provider API call would hold that transaction open for as long as
+      // the provider takes to respond, risking Prisma's own transaction
+      // timeout; and its concurrent-create P2002 recovery re-queries on the
+      // SAME transaction, which PostgreSQL has already aborted after that
+      // error, turning two concurrent first admissions into a transaction
+      // failure instead of `already_in_progress`. Admission commits on its
+      // own here, same as before that pass, and a freeze failure instead
+      // reverts it -- guarded on the exact identity admission just
+      // produced -- so this row is retryable rather than stranded `pending`
+      // with no run and no job.
+      await prisma.pullRequest.updateMany({
+        where: { id: pr.id, headSha: pr.headSha, reviewRequestVersion: pr.reviewRequestVersion, status: "pending" },
+        data: { status: "failed", errorMessage: "Review could not be frozen. Retry the request." },
+      }).catch((e) => console.error("[webhook] Failed to revert admission after freeze failure:", e));
+      throw err;
+    }
+  }
 
   if (forgejoTransaction) {
     const jobId = await enqueue("process-review", { pullRequestId: pr.id, reviewRunId: reviewRun.id }, {

@@ -34,6 +34,20 @@ import assert from "node:assert/strict";
  *      between processReviewInternal's read and the defer attempt) must
  *      finalize the run superseded, not report "deferred" for a retry that
  *      was never actually enqueued.
+ *   E/F. a run frozen before the binding columns existed (or before some
+ *      caller threaded a head through) records NULL for a field it never
+ *      recorded -- that field is unbound, not bound to null, so it must
+ *      execute rather than be superseded on a value that merely differs
+ *      from NULL. E leaves only the version unbound; F (a stand-in for a
+ *      legacy `attemptId` job whose row predates the migration entirely)
+ *      leaves both unbound.
+ *   G. the run-binding check and the claim are separate operations; a newer
+ *      request landing in between must not let the claim take that newer
+ *      request's head under this run's stale configuration. The run's own
+ *      bound head/version go into the claim's `where`, so the claim, using
+ *      the real `where` clause built above, itself cannot match -- and a
+ *      run-bound claim miss is confirmed superseded by a fresh read rather
+ *      than assumed to be an ordinary in-flight collision.
  */
 
 mock.module("server-only", () => ({}));
@@ -51,6 +65,9 @@ const repos: Record<string, { id: string; fullName: string; reviewConfig: object
   "repo-b": { id: "repo-b", fullName: "fixture/repo-b", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
   "repo-c": { id: "repo-c", fullName: "fixture/repo-c", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
   "repo-d": { id: "repo-d", fullName: "fixture/repo-d", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
+  "repo-e": { id: "repo-e", fullName: "fixture/repo-e", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
+  "repo-f": { id: "repo-f", fullName: "fixture/repo-f", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
+  "repo-g": { id: "repo-g", fullName: "fixture/repo-g", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
 };
 
 type Row = Record<string, unknown> & { id: string; repositoryId: string; status: string; headSha: string | null; reviewRequestVersion: number; updatedAt: Date };
@@ -71,6 +88,20 @@ const prs: Record<string, Row> = {
     id: "pr-d", repositoryId: "repo-d", number: 4, title: "Title", author: "author", url: "https://example.test/pr/4",
     headSha: A, reviewRequestVersion: 1, status: "pending", reviewBody: null, claimToken: null, updatedAt: new Date(),
   },
+  "pr-e": {
+    // A deliberately non-1 version: run-e's version is unbound (NULL), so a
+    // real check against it must never be reached.
+    id: "pr-e", repositoryId: "repo-e", number: 5, title: "Title", author: "author", url: "https://example.test/pr/5",
+    headSha: A, reviewRequestVersion: 5, status: "pending", reviewBody: null, claimToken: null, updatedAt: new Date(),
+  },
+  "pr-f": {
+    id: "pr-f", repositoryId: "repo-f", number: 6, title: "Title", author: "author", url: "https://example.test/pr/6",
+    headSha: A, reviewRequestVersion: 1, status: "pending", reviewBody: null, claimToken: null, updatedAt: new Date(),
+  },
+  "pr-g": {
+    id: "pr-g", repositoryId: "repo-g", number: 7, title: "Title", author: "author", url: "https://example.test/pr/7",
+    headSha: A, reviewRequestVersion: 1, status: "pending", reviewBody: null, claimToken: null, updatedAt: new Date(),
+  },
 };
 // `headSha`/`reviewRequestVersion` are what the run was frozen for -- the
 // binding `processReviewInternal` checks its execution against, independent
@@ -82,6 +113,10 @@ const runs: Record<string, Run> = {
   "run-c": { id: "run-c", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: 1 },
   "run-c2": { id: "run-c2", state: "pending", terminalAt: null, terminalDetail: null, headSha: B, reviewRequestVersion: 2 },
   "run-d": { id: "run-d", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: 1 },
+  // Legacy runs: fields a run frozen before they existed never recorded.
+  "run-e": { id: "run-e", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: null },
+  "run-f": { id: "run-f", state: "pending", terminalAt: null, terminalDetail: null, headSha: null, reviewRequestVersion: null },
+  "run-g": { id: "run-g", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: 1 },
 };
 
 // Real staleness semantics, not a simplified stand-in: this is exactly what
@@ -120,6 +155,15 @@ mock.module("@octopus/db", () => ({
     reviewRun: {
       findUnique: async ({ where }: { where: { id: string } }) => {
         const run = runs[where.id];
+        // Scenario G: simulates a newer request being admitted in the exact
+        // window between processReviewInternal's own top-of-function pull
+        // request read and this (the run-binding) read -- both of which
+        // still see the OLD identity, since the row moves only now, right
+        // as the binding check finishes and control is about to reach the
+        // claim.
+        if (where.id === "run-g" && interleaveNewAdmissionAfterBindingRead) {
+          prs["pr-g"] = { ...prs["pr-g"], headSha: B, reviewRequestVersion: 2, updatedAt: new Date() };
+        }
         return run ? { id: run.id, configSnapshot: {}, state: run.state, headSha: run.headSha, reviewRequestVersion: run.reviewRequestVersion, terminalAt: run.terminalAt } : null;
       },
       updateMany: async ({ where, data }: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
@@ -165,7 +209,12 @@ mock.module("@/lib/events", () => ({ eventBus: { emit: () => {} } }));
 const { deferReviewForRepository } = await import("@/lib/review-repository-preparation");
 // Keyed by repository, matching the real function's own signature -- each
 // scenario's repository starts "waiting" independently of the other's.
-const analysisReady: Record<string, boolean> = { "repo-a": false, "repo-b": false, "repo-c": false, "repo-d": false };
+const analysisReady: Record<string, boolean> = {
+  "repo-a": false, "repo-b": false, "repo-c": false, "repo-d": false,
+  // E/F/G need no deferral; their repository is ready from the start.
+  "repo-e": true, "repo-f": true, "repo-g": true,
+};
+let interleaveNewAdmissionAfterBindingRead = false;
 // Scenario D: simulates the pull request moving WHILE this (slow, real AI)
 // check is in flight, by mutating it as a side effect of the check itself --
 // so `deferReviewForRepository`'s guarded update, using the caller's
@@ -344,4 +393,31 @@ assert.equal(runs["run-d"].state, "superseded", "a defer whose guarded update mi
 assert.ok(runs["run-d"].terminalAt, "the run must not be left non-terminal forever with nothing left to retry it");
 assert.equal(enqueuedAfter.filter((e) => e.pullRequestId === "pr-d").length, 0, "nothing was actually deferred, so nothing should have been enqueued");
 
-console.log("PASS repository-preparation deferral stays claimable, preserves the run across defer-then-succeed and defer-then-fail, and finalizes superseded runs on a cross-request race or a missed guarded update");
+// E. A run with only its version unbound (NULL) must execute even though the
+// pull request's real version (5) differs from anything the run could ever
+// have recorded -- there is nothing to compare it against.
+await processReview("pr-e", undefined, "run-e");
+assert.equal(prs["pr-e"].status, "completed", "a run unbound on version must still execute, not be superseded on a value it never recorded");
+assert.equal(runs["run-e"].state, "succeeded");
+
+// F. A fully legacy run (both fields NULL -- a stand-in for a pre-migration
+// row, including one addressed by an old `attemptId`-shaped job) must
+// execute exactly as if it carried no binding at all.
+await processReview("pr-f", undefined, "run-f");
+assert.equal(prs["pr-f"].status, "completed", "a run unbound on both fields must still execute");
+assert.equal(runs["run-f"].state, "succeeded");
+
+// G. A newer request is admitted in the exact window between the run-binding
+// read and the claim. The claim's own `where` -- built from the run's bound
+// head/version, not the earlier pull-request snapshot -- can only match the
+// request run-g was frozen for, so it misses; a fresh read then confirms
+// that miss as a genuine supersede rather than an ordinary in-flight
+// collision, using the SAME real `where` evaluation as every other scenario.
+interleaveNewAdmissionAfterBindingRead = true;
+await processReview("pr-g", undefined, "run-g");
+assert.equal(runs["run-g"].state, "superseded", "a request admitted between the binding read and the claim must supersede this run, not let it claim the newer head");
+assert.ok(runs["run-g"].terminalAt);
+assert.equal(prs["pr-g"].status, "pending", "the claim must never have taken effect -- the newer request's own job must still be able to claim this row");
+assert.equal(prs["pr-g"].claimToken, null, "the row must be untouched by a superseded claim attempt");
+
+console.log("PASS repository-preparation deferral stays claimable, preserves the run across defer-then-succeed and defer-then-fail, finalizes superseded runs on a cross-request race or a missed guarded update, leaves a legacy run's unbound fields unchecked, and closes the binding-check-to-claim race");

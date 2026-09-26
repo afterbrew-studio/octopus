@@ -721,6 +721,22 @@ async function finalizeAttempt(
 }
 
 /**
+ * A run frozen before this column existed (or before `webhook-shared.ts`
+ * threaded a head through some caller) records `null` for a binding field it
+ * never actually recorded -- that field is unbound, not "bound to null", so a
+ * live value that differs from it is not a mismatch. Only a field the run
+ * actually recorded can supersede it.
+ */
+function runBindingMismatch(
+  run: { headSha: string | null; reviewRequestVersion: number | null },
+  headSha: string | null,
+  reviewRequestVersion: number,
+): boolean {
+  return (run.headSha !== null && run.headSha !== headSha)
+    || (run.reviewRequestVersion !== null && run.reviewRequestVersion !== reviewRequestVersion);
+}
+
+/**
  * `"deferred"` marks the two exits that re-enqueue the same run to retry once
  * a prerequisite (indexing, analysis) is ready. `"superseded"` marks an
  * execution that found its run already finalized that way itself (the
@@ -765,7 +781,7 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
       })
     : null;
   if (reviewRun?.terminalAt) return;
-  if (reviewRun && (reviewRun.headSha !== pr.headSha || reviewRun.reviewRequestVersion !== pr.reviewRequestVersion)) {
+  if (reviewRun && runBindingMismatch(reviewRun, pr.headSha, pr.reviewRequestVersion)) {
     await finalizeAttempt(
       reviewRunId!,
       "superseded",
@@ -808,11 +824,19 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
   // One execution's identity. Compared before this worker publishes anything or
   // writes a terminal status; see `claimToken` in the schema.
   const claimToken = crypto.randomUUID();
+  // A bound run's claim can only take the exact request it was frozen for --
+  // not merely whatever the pull request looked like when this function
+  // started. Between the binding check above and this claim, a newer request
+  // can land (e.g. the moment this worker picks up a replayed job); without
+  // this, the claim below would go through using the earlier, now-stale
+  // snapshot and this run would review someone else's request.
+  const claimHeadSha = reviewRun ? (reviewRun.headSha ?? pr.headSha) : pr.headSha;
+  const claimReviewRequestVersion = reviewRun ? (reviewRun.reviewRequestVersion ?? pr.reviewRequestVersion) : pr.reviewRequestVersion;
   const claimed = await prisma.pullRequest.updateMany({
     where: {
       id: pullRequestId,
-      headSha: pr.headSha,
-      reviewRequestVersion: pr.reviewRequestVersion,
+      headSha: claimHeadSha,
+      reviewRequestVersion: claimReviewRequestVersion,
       OR: [
         // Fresh-claim: never seen / explicitly retryable
         { status: "pending" },
@@ -827,6 +851,24 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
     data: { status: "reviewing", updatedAt: new Date(), claimToken },
   });
   if (claimed.count === 0) {
+    // A bound run's claim just missed. That is either a genuinely in-flight
+    // review of the SAME request (the ordinary case below), or the request
+    // moved in the narrow window between the binding check and this claim --
+    // only the latter is superseded, so a fresh read decides which.
+    if (reviewRunId && reviewRun) {
+      const current = await prisma.pullRequest.findUnique({
+        where: { id: pullRequestId },
+        select: { headSha: true, reviewRequestVersion: true },
+      });
+      if (current && runBindingMismatch(reviewRun, current.headSha, current.reviewRequestVersion)) {
+        await finalizeAttempt(
+          reviewRunId,
+          "superseded",
+          `pull request moved to headSha=${current.headSha ?? "null"} version=${current.reviewRequestVersion} between this run's binding check and its claim (frozen for headSha=${reviewRun.headSha ?? "null"} version=${reviewRun.reviewRequestVersion})`,
+        );
+        return "superseded";
+      }
+    }
     console.log(`[reviewer] PR ${pullRequestId} already claimed by another server, skipping on '${serverId}'`);
     return;
   }
