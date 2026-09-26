@@ -35,6 +35,13 @@ export interface ProcessReviewJob {
    * was enqueued under. New enqueues always set it. See rayf P-0007 C3.
    */
   reviewRunId?: string;
+  /**
+   * The pre-rename field name for `reviewRunId`. pg-boss's queue is durable
+   * across deploys, so a job enqueued before this rename shipped can still be
+   * sitting in the queue when the new code starts reading it; read this as a
+   * fallback rather than silently dropping that job's frozen run.
+   */
+  attemptId?: string;
 }
 
 export async function registerWorkers(boss: PgBoss, config: QueueConfig): Promise<void> {
@@ -81,7 +88,7 @@ export async function registerWorkers(boss: PgBoss, config: QueueConfig): Promis
       for (const job of jobs) {
         console.log(`[queue] Processing review for PR ${job.data.pullRequestId}`);
         try {
-          await processReview(job.data.pullRequestId, createReviewExecutionWindow(job), job.data.reviewRunId);
+          await processReview(job.data.pullRequestId, createReviewExecutionWindow(job), job.data.reviewRunId ?? job.data.attemptId);
         } catch (err) {
           console.error(`[queue] Review failed for PR ${job.data.pullRequestId} (job ${job.id}):`, err);
           throw err;

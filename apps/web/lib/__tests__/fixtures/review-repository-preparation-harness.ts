@@ -139,4 +139,12 @@ await deferReviewForRepository("pr-1", "stale");
 assert.equal(queued.length, 1);
 queueFailure = true;
 await assert.rejects(() => deferReviewForRepository("pr-1"), /Could not enqueue/);
+queueFailure = false;
+
+// A deferred retry must carry the frozen run forward -- dropping it here
+// would let a label-selected model silently change on the retry. rayf P-0007 C3.
+prStatus = "reviewing";
+queued.length = 0;
+await deferReviewForRepository("pr-1", "current", undefined, "run-1");
+assert.deepEqual(queued, [["process-review", { pullRequestId: "pr-1", reviewRunId: "run-1" }, 30]]);
 console.log("Analysis sequencing, empty bases, concurrency, retries and ownership checks passed");

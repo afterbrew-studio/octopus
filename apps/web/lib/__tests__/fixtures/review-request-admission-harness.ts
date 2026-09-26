@@ -17,6 +17,7 @@ const completed = (headSha = B, version = 2): Row => ({
 let current: Row | null = completed();
 let providerHead: string | null = B;
 let headReads = 0, writes = 0, comments = 0, events = 0, enqueued = 0;
+let lastEnqueued: Record<string, unknown> | undefined;
 mock.module("@/lib/review-summary-comment", () => ({ publishReviewSummary: async () => ++comments }));
 let duringHeadRead: (() => Promise<void>) | undefined;
 let beforeWrite: (() => Promise<void>) | undefined;
@@ -89,7 +90,11 @@ for (const name of ["github", "bitbucket", "gitlab", "forgejo"]) {
 }
 mock.module("@/lib/pubby", () => ({ pubby: { trigger: async () => { events++; } } }));
 mock.module("@/lib/events", () => ({ eventBus: { emit: () => undefined } }));
-mock.module("@/lib/queue", () => ({ enqueue: async () => { if (queueFailure) throw new Error("Queue unavailable"); enqueued++; } }));
+mock.module("@/lib/queue", () => ({
+  enqueue: async (_name: string, data: Record<string, unknown>) => { if (queueFailure) throw new Error("Queue unavailable"); enqueued++; lastEnqueued = data; },
+  loadQueueConfig: async () => ({ reviewTimeoutSeconds: 900, reviewConcurrency: 2, largeReviewTimeoutSeconds: 1800 }),
+  computeStaleReclaimMs: (s: number) => (s + 300) * 1000,
+}));
 mock.module("@/lib/api-auth", () => ({ authenticateApiToken: async () => ({ org }) }));
 const { startReviewFlow } = await import("../../webhook-shared");
 const params = {
@@ -189,6 +194,17 @@ if (scenario === "enqueue_retry") {
   assert.equal(current.reviewRequestVersion, 3);
   assert.equal(current.status, "pending");
   assert.equal(writes, 1);
+} else if (scenario === "large_review_not_stuck") {
+  // "queued" is a large-review handoff to internal-cli (clone + claude-cli),
+  // which legitimately runs far longer than an ordinary review. Ten minutes
+  // would exceed the generic gateway-derived stuck window (~4.5 minutes) but
+  // is well within a large review's own (30-minute) timeout, so a manual
+  // trigger must NOT reset it out from under the worker still running it.
+  current = { ...completed(), status: "queued", updatedAt: new Date(Date.now() - 10 * 60 * 1000) };
+  const result = await startReviewFlow({ ...params, headSha: B });
+  assert.equal(result.started, false);
+  if (!result.started) assert.equal(result.reason, "already_in_progress");
+  assert.equal(writes, 0);
 } else if (scenario === "initial") {
   current = null;
   assert.equal((await startReviewFlow({ ...params, headSha: B })).started, true);
@@ -237,6 +253,9 @@ if (scenario === "enqueue_retry") {
   assert.equal(headReads, 1);
   assert.equal(current!.reviewRequestVersion, 3);
   assert.equal(enqueued, 1);
+  // An admin-triggered retry must run on a frozen decision too, not on
+  // whatever is configured now. rayf P-0007 C3.
+  assert.equal(lastEnqueued?.reviewRunId, "run", "the admin retry must carry a frozen run into the queue");
 } else if (scenario === "retry" || scenario === "retry_race") {
   const { POST } = await import("../../../app/api/admin/reviews/[id]/retry/route");
   const { NextRequest } = await import("next/server");

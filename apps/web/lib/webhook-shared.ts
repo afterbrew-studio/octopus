@@ -159,8 +159,14 @@ async function startReviewFlowInternal(params: StartReviewParams, forgejoTransac
   const pr = admission.pullRequest;
   console.log(`[webhook] PullRequest admitted — id: ${pr.id}, number: ${pr.number}`);
 
+  // Freeze the run BEFORE enqueueing, on every provider path -- Forgejo's
+  // transactional early return below used to enqueue with no run at all, so
+  // every Forgejo review ran on live configuration. See the fuller rationale
+  // further down, where the non-Forgejo path used to do this alone.
+  const reviewRun = await freezeReviewRun(pr.id, headSha, params);
+
   if (forgejoTransaction) {
-    const jobId = await enqueue("process-review", { pullRequestId: pr.id }, {
+    const jobId = await enqueue("process-review", reviewRun ? { pullRequestId: pr.id, reviewRunId: reviewRun.id } : { pullRequestId: pr.id }, {
       db: { executeSql: async (sql, values) => ({ rows: await forgejoTransaction.$queryRawUnsafe<unknown[]>(sql, ...(values ?? [])) }) },
     });
     if (!jobId) throw new Error("Forgejo review could not be queued");
@@ -216,62 +222,11 @@ async function startReviewFlowInternal(params: StartReviewParams, forgejoTransac
     prUrl,
   });
 
-  // Freeze the run BEFORE enqueueing.
-  //
-  // `processReview` merges its configuration from three mutable sources at
-  // execution time -- system, organization and repository -- so a change to any of
-  // them between enqueue and execution silently changes the review that runs. What
-  // executed would not be what was approved, and the record of it would be
-  // unreliable in exactly the case anyone would want to audit.
-  //
-  // Snapshotting here and addressing the run id downstream is rayf P-0007 C3.
-  // The merge order must match the one in reviewer.ts; `mergeReviewConfigs` is
-  // shared so the two cannot drift apart silently.
-  const [sysRow, orgRow, repoRow] = await Promise.all([
-    prisma.systemConfig.findUnique({ where: { id: "singleton" }, select: { defaultReviewConfig: true } }),
-    prisma.organization.findUnique({ where: { id: orgId }, select: { defaultReviewConfig: true } }),
-    prisma.repository.findUnique({ where: { id: repoId }, select: { reviewConfig: true } }),
-  ]);
-  // Only the `label` caller resolves a model: it is the only event carrying the
-  // label that was just added. A push, an `@octopus` mention and the stuck-review
-  // restart above all pass none, so the review drops to the deployment default
-  // and a `complexity:strong` change gets its strong reviewer once and the mid
-  // tier for the rest of its life - the declaration buying nothing.
-  //
-  // Carried forward from the last run rather than re-read here, because
-  // `octopus.json` is read from the DEFAULT branch so a pull request cannot pick
-  // its own reviewer. Re-deriving at this point would have to trust the event.
-  const inheritedModel = params.modelOverride ?? (await lastResolvedModel(pr.id));
-  const configSnapshot = mergeReviewConfigs(
-    sysRow ? parseReviewConfig(sysRow.defaultReviewConfig) : {},
-    parseReviewConfig(orgRow?.defaultReviewConfig),
-    parseReviewConfig(repoRow?.reviewConfig),
-    inheritedModel ? { modelOverride: inheritedModel } : {},
-  );
-  if (!params.modelOverride && inheritedModel) {
-    console.log(
-      `[webhook] PR #${prNumber} inherits model ${inheritedModel} from its last run (source: ${params.source})`,
-    );
-  }
-
-  const reviewRun = await prisma.reviewRun.create({
-    data: {
-      pullRequestId: pr.id,
-      source: params.source,
-      correlationId: params.correlationId ?? null,
-      headSha: headSha || null,
-      provider,
-      configSnapshot: configSnapshot as object,
-      state: "pending",
-    },
-    select: { id: true },
-  });
-
   // Enqueue review job — pg-boss persists it in DB, survives container restarts.
   // The run id travels with it so the worker reads the frozen decision rather
   // than re-resolving live configuration.
   try {
-    await enqueue("process-review", { pullRequestId: pr.id, reviewRunId: reviewRun.id });
+    await enqueue("process-review", reviewRun ? { pullRequestId: pr.id, reviewRunId: reviewRun.id } : { pullRequestId: pr.id });
   } catch (error) {
     // Release only this admission. A provider retry must not be suppressed as
     // already in progress when the durable queue never accepted the job.
@@ -282,6 +237,81 @@ async function startReviewFlowInternal(params: StartReviewParams, forgejoTransac
     throw error;
   }
   return { started: true, pullRequestId: pr.id };
+}
+
+/**
+ * Freeze the run BEFORE enqueueing, for every provider path -- including the
+ * Forgejo transactional one, whose early return in `startReviewFlowInternal`
+ * used to enqueue with no run at all, so every Forgejo review ran on live
+ * configuration instead of what was approved.
+ *
+ * `processReview` merges its configuration from three mutable sources at
+ * execution time -- system, organization and repository -- so a change to any of
+ * them between enqueue and execution silently changes the review that runs. What
+ * executed would not be what was approved, and the record of it would be
+ * unreliable in exactly the case anyone would want to audit.
+ *
+ * Snapshotting here and addressing the run id downstream is rayf P-0007 C3.
+ * The merge order must match the one in reviewer.ts; `mergeReviewConfigs` is
+ * shared so the two cannot drift apart silently.
+ *
+ * Best-effort: a failure here falls back to the pre-freeze behaviour (the
+ * worker resolves live configuration) rather than failing the whole request --
+ * the admission it follows already committed the pull request.
+ */
+export async function freezeReviewRun(pullRequestId: string, headSha: string | null, params: {
+  source: StartReviewParams["source"];
+  correlationId?: string;
+  modelOverride?: string;
+  provider: string;
+  orgId: string;
+  repoId: string;
+  prNumber: number;
+}): Promise<{ id: string } | undefined> {
+  try {
+    const [sysRow, orgRow, repoRow] = await Promise.all([
+      prisma.systemConfig.findUnique({ where: { id: "singleton" }, select: { defaultReviewConfig: true } }),
+      prisma.organization.findUnique({ where: { id: params.orgId }, select: { defaultReviewConfig: true } }),
+      prisma.repository.findUnique({ where: { id: params.repoId }, select: { reviewConfig: true } }),
+    ]);
+    // Only the `label` caller resolves a model: it is the only event carrying the
+    // label that was just added. A push, an `@octopus` mention and the stuck-review
+    // restart above all pass none, so the review drops to the deployment default
+    // and a `complexity:strong` change gets its strong reviewer once and the mid
+    // tier for the rest of its life - the declaration buying nothing.
+    //
+    // Carried forward from the last run rather than re-read here, because
+    // `octopus.json` is read from the DEFAULT branch so a pull request cannot pick
+    // its own reviewer. Re-deriving at this point would have to trust the event.
+    const inheritedModel = params.modelOverride ?? (await lastResolvedModel(pullRequestId));
+    const configSnapshot = mergeReviewConfigs(
+      sysRow ? parseReviewConfig(sysRow.defaultReviewConfig) : {},
+      parseReviewConfig(orgRow?.defaultReviewConfig),
+      parseReviewConfig(repoRow?.reviewConfig),
+      inheritedModel ? { modelOverride: inheritedModel } : {},
+    );
+    if (!params.modelOverride && inheritedModel) {
+      console.log(
+        `[webhook] PR #${params.prNumber} inherits model ${inheritedModel} from its last run (source: ${params.source})`,
+      );
+    }
+
+    return await prisma.reviewRun.create({
+      data: {
+        pullRequestId,
+        source: params.source,
+        correlationId: params.correlationId ?? null,
+        headSha: headSha || null,
+        provider: params.provider,
+        configSnapshot: configSnapshot as object,
+        state: "pending",
+      },
+      select: { id: true },
+    });
+  } catch (err) {
+    console.error(`[webhook] Could not freeze a run for PR #${params.prNumber}; falling back to live configuration:`, err);
+    return undefined;
+  }
 }
 
 /**

@@ -13,6 +13,7 @@ const scenarios = {
   contended: "bounds repeated contention without clearing the current report",
   initial: "admits the first provider-confirmed request with version one",
   stuck_retry: "restarts a stuck current-head review with one guarded mutation",
+  large_review_not_stuck: "does not reset a live large review under its own longer timeout",
   retry_race: "preserves B when it wins during an administrative retry head fetch",
   cli_race: "rejects a CLI head superseded between its initial lookup and admission",
   same_head: "allows completed same-head re-requests and suppresses active duplicates",

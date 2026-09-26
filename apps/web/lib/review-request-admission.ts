@@ -4,6 +4,7 @@ import * as github from "@/lib/github";
 import * as bitbucket from "@/lib/bitbucket";
 import * as gitlab from "@/lib/gitlab";
 import * as forgejo from "@/lib/forgejo";
+import { loadQueueConfig, computeStaleReclaimMs } from "@/lib/queue";
 
 export type ReviewRequestParams = {
   provider: "github" | "bitbucket" | "gitlab" | "forgejo";
@@ -77,6 +78,14 @@ export async function admitReviewRequest(params: ReviewRequestParams, client: Pr
 async function admitReviewRequestInternal(params: ReviewRequestParams, client: Prisma.TransactionClient): Promise<AdmissionResult> {
   const automatic = params.provider === "forgejo" && params.automatic === true;
   const where = { repositoryId_number: { repositoryId: params.repoId, number: params.prNumber } };
+  // A "queued" row is a large-review handoff to internal-cli (clone + claude-cli),
+  // which legitimately runs far longer than an in-process review -- the generic,
+  // gateway-derived `stuckReviewMs()` window (~4.5 minutes by default) is sized
+  // for THAT case, not for a large review's `largeReviewTimeoutSeconds` (30
+  // minutes by default). Applying it to "queued" too would let a manual retry
+  // "reset" a large review that is still legitimately running and let a second
+  // worker claim it out from under the first.
+  const queuedStuckMs = computeStaleReclaimMs((await loadQueueConfig()).largeReviewTimeoutSeconds);
   for (let attempt = 0; attempt < 3; attempt++) {
     // Capture the DB state before the remote read. A competing request that
     // wins while that read is in flight must force a fresh provider read.
@@ -97,7 +106,7 @@ async function admitReviewRequestInternal(params: ReviewRequestParams, client: P
     }
     if (existing && existing.headSha === headSha
       && ["reviewing", "pending", "queued"].includes(existing.status)
-      && (automatic || Date.now() - existing.updatedAt.getTime() <= stuckReviewMs())) {
+      && (automatic || Date.now() - existing.updatedAt.getTime() <= (existing.status === "queued" ? queuedStuckMs : stuckReviewMs()))) {
       return { started: false, reason: "already_in_progress", message: `Review already in progress for PR #${params.prNumber}` };
     }
 

@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@octopus/db";
 import { enqueue } from "@/lib/queue";
 import { admitReviewRequest } from "@/lib/review-request-admission";
+import { freezeReviewRun } from "@/lib/webhook-shared";
 
 const STALE_REVIEW_MS = 3 * 60 * 1000;
 
@@ -92,7 +93,18 @@ export async function POST(
     pullRequest: { id: requested.id, number: requested.number, title: requested.title, url: requested.url, author: requested.author, status: requested.status, headSha: requested.headSha, reviewRequestVersion: requested.reviewRequestVersion, createdAt: requested.createdAt.toISOString() },
   }).catch(error => console.error("[review-retry] Status publication failed:", error));
 
-  await enqueue("process-review", { pullRequestId: pr.id });
+  // Frozen before enqueueing, same as every other admission path -- otherwise
+  // an admin-triggered retry runs on whatever is configured now rather than
+  // what was approved. rayf P-0007 C3.
+  const reviewRun = await freezeReviewRun(pr.id, requested.headSha, {
+    source: "adapter",
+    provider: pr.repository.provider,
+    orgId: pr.repository.organizationId,
+    repoId: pr.repositoryId,
+    prNumber: pr.number,
+  });
+
+  await enqueue("process-review", reviewRun ? { pullRequestId: pr.id, reviewRunId: reviewRun.id } : { pullRequestId: pr.id });
 
   return NextResponse.json({ message: "Review retry enqueued", pullRequestId: pr.id });
 }

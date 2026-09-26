@@ -46,7 +46,11 @@ mock.module("@octopus/db", () => ({
     organization: { findUnique: async () => ({ defaultReviewConfig: null }) },
   },
 }));
-mock.module("@/lib/queue", () => ({ enqueue: async () => "job" }));
+mock.module("@/lib/queue", () => ({
+  enqueue: async () => "job",
+  loadQueueConfig: async () => ({ reviewTimeoutSeconds: 900, reviewConcurrency: 2, largeReviewTimeoutSeconds: 1800 }),
+  computeStaleReclaimMs: (s: number) => (s + 300) * 1000,
+}));
 mock.module("@/lib/pubby", () => ({ pubby: { trigger: async () => {} } }));
 mock.module("@/lib/events", () => ({ eventBus: { emit: () => {} } }));
 mock.module("@/lib/github", () => ({

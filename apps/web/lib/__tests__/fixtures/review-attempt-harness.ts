@@ -278,7 +278,11 @@ console.log("PASS publication races preserve current comments, findings and stat
 duringConfig = undefined;
 mock.module("@/lib/bitbucket", () => ({}));
 mock.module("@/lib/gitlab", () => ({}));
-mock.module("@/lib/queue", () => ({ enqueue: async () => "queued" }));
+mock.module("@/lib/queue", () => ({
+  enqueue: async () => "queued",
+  loadQueueConfig: async () => ({ reviewTimeoutSeconds: 900, reviewConcurrency: 2, largeReviewTimeoutSeconds: 1800 }),
+  computeStaleReclaimMs: (s: number) => (s + 300) * 1000,
+}));
 const statusEvents: { event: string; data: Record<string, unknown> }[] = [];
 mock.module("@/lib/pubby", () => ({ pubby: { trigger: async (_channel: string, event: string, data: Record<string, unknown>) => { statusEvents.push({ event, data }); } } }));
 mock.module("@/lib/events", () => ({ eventBus: { emit: () => {} } }));

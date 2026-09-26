@@ -81,6 +81,8 @@ mock.module("@/lib/queue", () => ({
     enqueued.push(data);
     return "job";
   },
+  loadQueueConfig: async () => ({ reviewTimeoutSeconds: 900, reviewConcurrency: 2, largeReviewTimeoutSeconds: 1800 }),
+  computeStaleReclaimMs: (s: number) => (s + 300) * 1000,
 }));
 mock.module("@/lib/pubby", () => ({ pubby: { trigger: async () => {} } }));
 mock.module("@/lib/events", () => ({ eventBus: { emit: () => {} } }));

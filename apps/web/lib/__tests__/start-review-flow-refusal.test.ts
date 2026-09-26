@@ -34,7 +34,11 @@ mock.module("@octopus/db", () => ({
     repository: { findUnique: track("prisma.repository.findUnique") },
   },
 }));
-mock.module("@/lib/queue", () => ({ enqueue: track("enqueue") }));
+mock.module("@/lib/queue", () => ({
+  enqueue: track("enqueue"),
+  loadQueueConfig: async () => ({ reviewTimeoutSeconds: 900, reviewConcurrency: 2, largeReviewTimeoutSeconds: 1800 }),
+  computeStaleReclaimMs: (s: number) => (s + 300) * 1000,
+}));
 mock.module("@/lib/pubby", () => ({ pubby: { publish: track("pubby.publish") } }));
 mock.module("@/lib/events", () => ({ eventBus: { emit: track("eventBus.emit") } }));
 mock.module("@/lib/github", () => ({

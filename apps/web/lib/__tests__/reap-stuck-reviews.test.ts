@@ -79,7 +79,7 @@ describe("reapStuckReviews", () => {
     expect(res).toEqual({ requeued: 1, failed: 0, unpublished: 0 });
     expect(enqueue).toHaveBeenCalledWith(
       "process-review",
-      { pullRequestId: "pr_attempt", attemptId: "att_1" },
+      { pullRequestId: "pr_attempt", reviewRunId: "att_1" },
       { singletonKey: "reap:pr_attempt", singletonSeconds: 3600 },
     );
     // Still trying, so the attempt has not reached a terminal state.
@@ -139,7 +139,7 @@ describe("reapStuckReviews", () => {
     expect(res).toEqual({ requeued: 1, failed: 0, unpublished: 0 });
     expect(enqueue).toHaveBeenCalledWith(
       "process-review",
-      { pullRequestId: "pr_old_attempt_new", attemptId: "att_fresh" },
+      { pullRequestId: "pr_old_attempt_new", reviewRunId: "att_fresh" },
       { singletonKey: "reap:pr_old_attempt_new", singletonSeconds: 3600 },
     );
   });
@@ -159,7 +159,7 @@ describe("reapStuckReviews", () => {
     expect(res.unpublished).toBe(1);
     expect(enqueue).toHaveBeenCalledWith(
       "process-review",
-      { pullRequestId: "pr_unenqueued", attemptId: "att_orphan" },
+      { pullRequestId: "pr_unenqueued", reviewRunId: "att_orphan" },
       // A distinct key from the reap path: one pull request can be both reaped
       // and reconciled, and a shared singleton would let the first suppress the
       // second for an hour.

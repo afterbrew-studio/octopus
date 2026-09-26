@@ -66,11 +66,14 @@ export async function ensureRepositoryAnalysis(
   }
 }
 
-export async function deferReviewForRepository(pullRequestId: string, headSha?: string | null, reviewRequestVersion?: number): Promise<void> {
+export async function deferReviewForRepository(pullRequestId: string, headSha?: string | null, reviewRequestVersion?: number, reviewRunId?: string): Promise<void> {
   // "queued" is reserved for an active large-review job and cannot be claimed
   // again until its stale timeout. A prerequisite retry must be claimable now.
   const changed = await prisma.pullRequest.updateMany({ where: { id: pullRequestId, ...(headSha !== undefined ? { headSha } : {}), ...(reviewRequestVersion !== undefined ? { reviewRequestVersion } : {}) }, data: { status: "pending" } });
   if (!changed.count) return;
-  const jobId = await enqueueAfter("process-review", { pullRequestId }, 30);
+  // The retry re-executes under the SAME frozen run, not live configuration --
+  // dropping this here would let a label-selected model silently change on
+  // the retry. rayf P-0007 C3.
+  const jobId = await enqueueAfter("process-review", reviewRunId ? { pullRequestId, reviewRunId } : { pullRequestId }, 30);
   if (!jobId) throw new Error("Could not enqueue review after repository preparation");
 }

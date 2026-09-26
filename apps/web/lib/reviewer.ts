@@ -1076,7 +1076,7 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
               "> 🐙 **Octopus Review** — Repository indexing is in progress.\n>\n> This review has been re-queued and will start automatically once indexing completes.",
             );
           }
-          await deferReviewForRepository(pullRequestId, pr.headSha, pr.reviewRequestVersion);
+          await deferReviewForRepository(pullRequestId, pr.headSha, pr.reviewRequestVersion, reviewRunId);
           return;
         } else {
           // Peer failed -- attempt conditional reclaim
@@ -1305,7 +1305,7 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
           "> 🐙 **Octopus Review** — Repository indexing or analysis is in progress.\n>\n> This review will retry automatically once repository preparation completes.",
         );
       }
-      await deferReviewForRepository(pullRequestId, pr.headSha, pr.reviewRequestVersion);
+      await deferReviewForRepository(pullRequestId, pr.headSha, pr.reviewRequestVersion, reviewRunId);
       return;
     }
     if (isForgejoConnector) {
