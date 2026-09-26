@@ -1,7 +1,7 @@
 import "server-only";
 import { pubby } from "@/lib/pubby";
 import { NextRequest, NextResponse } from "next/server";
-import { prisma } from "@octopus/db";
+import { prisma, type Prisma } from "@octopus/db";
 import { enqueue } from "@/lib/queue";
 import { admitReviewRequest } from "@/lib/review-request-admission";
 import { freezeReviewRun } from "@/lib/webhook-shared";
@@ -69,40 +69,51 @@ export async function POST(
   if (provider !== "github" && provider !== "bitbucket" && provider !== "gitlab" && provider !== "forgejo") {
     return NextResponse.json({ error: "Unsupported review provider" }, { status: 422 });
   }
-  const admission = await admitReviewRequest({
-    provider,
-    installationId: pr.repository.installationId ?? pr.repository.organization.githubInstallationId ?? undefined,
-    organizationId: pr.repository.organizationId,
-    repoFullName: pr.repository.fullName,
-    repoId: pr.repositoryId,
-    prNumber: pr.number,
-    prTitle: pr.title,
-    prUrl: pr.url,
-    prAuthor: pr.author,
-    headSha: pr.headSha,
-    triggerCommentId: pr.triggerCommentId,
-    triggerCommentBody: pr.triggerCommentBody,
+  // Admission and freeze happen in the SAME transaction: a freeze failure
+  // after admission already committed would strand the pull request
+  // `pending` with no run and no job, refused as already-in-progress on
+  // retry with nothing non-terminal for the reaper to recover. See
+  // `startReviewFlow`'s identical admission+freeze in webhook-shared.ts.
+  const admitted = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+    const admission = await admitReviewRequest({
+      provider,
+      installationId: pr.repository.installationId ?? pr.repository.organization.githubInstallationId ?? undefined,
+      organizationId: pr.repository.organizationId,
+      repoFullName: pr.repository.fullName,
+      repoId: pr.repositoryId,
+      prNumber: pr.number,
+      prTitle: pr.title,
+      prUrl: pr.url,
+      prAuthor: pr.author,
+      headSha: pr.headSha,
+      triggerCommentId: pr.triggerCommentId,
+      triggerCommentBody: pr.triggerCommentBody,
+    }, tx);
+    if (!admission.started) return admission;
+    const requested = admission.pullRequest;
+    // Frozen before enqueueing, same as every other admission path -- otherwise
+    // an admin-triggered retry runs on whatever is configured now rather than
+    // what was approved. rayf P-0007 C3.
+    const reviewRun = await freezeReviewRun(pr.id, requested.headSha, {
+      source: "adapter",
+      provider: pr.repository.provider,
+      orgId: pr.repository.organizationId,
+      repoId: pr.repositoryId,
+      prNumber: pr.number,
+      reviewRequestVersion: requested.reviewRequestVersion,
+      client: tx,
+    });
+    return { started: true as const, pullRequest: requested, reviewRun };
   });
-  if (!admission.started) {
-    return NextResponse.json({ error: admission.message, reason: admission.reason }, { status: 409 });
+  if (!admitted.started) {
+    return NextResponse.json({ error: admitted.message, reason: admitted.reason }, { status: 409 });
   }
-  const requested = admission.pullRequest;
+  const { pullRequest: requested, reviewRun } = admitted;
 
   await pubby.trigger(`presence-org-${pr.repository.organizationId}`, "review-requested", {
     repoId: pr.repositoryId,
     pullRequest: { id: requested.id, number: requested.number, title: requested.title, url: requested.url, author: requested.author, status: requested.status, headSha: requested.headSha, reviewRequestVersion: requested.reviewRequestVersion, createdAt: requested.createdAt.toISOString() },
   }).catch(error => console.error("[review-retry] Status publication failed:", error));
-
-  // Frozen before enqueueing, same as every other admission path -- otherwise
-  // an admin-triggered retry runs on whatever is configured now rather than
-  // what was approved. rayf P-0007 C3.
-  const reviewRun = await freezeReviewRun(pr.id, requested.headSha, {
-    source: "adapter",
-    provider: pr.repository.provider,
-    orgId: pr.repository.organizationId,
-    repoId: pr.repositoryId,
-    prNumber: pr.number,
-  });
 
   await enqueue("process-review", { pullRequestId: pr.id, reviewRunId: reviewRun.id });
 

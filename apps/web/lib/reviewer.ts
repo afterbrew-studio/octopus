@@ -695,8 +695,10 @@ export async function processReview(
     throw err;
   }
   // A deferral re-enqueues the same run to retry once its prerequisite is
-  // ready -- it never stopped, so it is not finalized here.
-  if (dispatchOutcome === "deferred") return;
+  // ready -- it never stopped, so it is not finalized here. A superseded run
+  // already finalized itself inside `processReviewInternal`, before this
+  // execution's pull-request read below would find someone else's request.
+  if (dispatchOutcome === "deferred" || dispatchOutcome === "superseded") return;
 
   const finished = await prisma.pullRequest.findUnique({
     where: { id: pullRequestId },
@@ -709,7 +711,7 @@ export async function processReview(
 /** Written once. The `terminalAt` guard is what makes that true under a race. */
 async function finalizeAttempt(
   reviewRunId: string,
-  state: "succeeded" | "failed" | "cancelled",
+  state: "succeeded" | "failed" | "cancelled" | "superseded",
   detail: string,
 ): Promise<void> {
   await prisma.reviewRun.updateMany({
@@ -720,15 +722,16 @@ async function finalizeAttempt(
 
 /**
  * `"deferred"` marks the two exits that re-enqueue the same run to retry once
- * a prerequisite (indexing, analysis) is ready -- as opposed to every other
- * `return`, which really is the run finishing without executing (paused,
- * blocked, superseded). `processReview` reads this instead of inferring it
- * from the pull request's status, because a deferral parks the pull request
- * back at "pending" (the claim query's only fresh-claim status) rather than
- * "queued", and "pending" is exactly the status `attemptOutcomeForStatus`
- * reads as a finished-without-running exit.
+ * a prerequisite (indexing, analysis) is ready. `"superseded"` marks an
+ * execution that found its run already finalized that way itself (the
+ * run-binding check, or a deferral whose guarded update missed because the
+ * pull request moved) -- `processReview` must not try to finalize it again
+ * from the pull request's status, which by then belongs to a different
+ * request. Every other `return` really is the run finishing without
+ * executing (paused, blocked, already completed by this same run on a
+ * replayed job), which the pull request's status already answers correctly.
  */
-type ReviewInternalOutcome = "deferred" | undefined;
+type ReviewInternalOutcome = "deferred" | "superseded" | undefined;
 
 async function processReviewInternal(pullRequestId: string, reviewRunId?: string, executionWindow?: ReviewExecutionWindow, expected?: { headSha: string | null; reviewRequestVersion: number }): Promise<ReviewInternalOutcome> {
   // Load PR with repo and org info
@@ -747,6 +750,42 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
   }
 
   if (expected && (pr.headSha !== expected.headSha || pr.reviewRequestVersion !== expected.reviewRequestVersion)) return;
+
+  // A frozen run is bound to the exact request it was frozen for -- its head
+  // SHA and request version, recorded at freeze time. An execution that finds
+  // the pull request has since moved to a different request (a newer one was
+  // admitted, e.g. while this one was deferred) must not claim, review or
+  // publish anything under the OLD request's configuration: this run
+  // finalizes as superseded here, before touching the pull request at all, so
+  // the newer request's own job can claim it untouched.
+  const reviewRun = reviewRunId
+    ? await prisma.reviewRun.findUnique({
+        where: { id: reviewRunId },
+        select: { id: true, configSnapshot: true, state: true, headSha: true, reviewRequestVersion: true, terminalAt: true },
+      })
+    : null;
+  if (reviewRun?.terminalAt) return;
+  if (reviewRun && (reviewRun.headSha !== pr.headSha || reviewRun.reviewRequestVersion !== pr.reviewRequestVersion)) {
+    await finalizeAttempt(
+      reviewRunId!,
+      "superseded",
+      `pull request moved to headSha=${pr.headSha ?? "null"} version=${pr.reviewRequestVersion} before this run (frozen for headSha=${reviewRun.headSha ?? "null"} version=${reviewRun.reviewRequestVersion}) executed`,
+    );
+    return "superseded";
+  }
+
+  // `deferReviewForRepository`'s own guarded update can miss for the same
+  // reason: the pull request moved between this function's own top-of-function
+  // read and the defer attempt (its prerequisite check can be slow -- a real
+  // AI summarization/analysis call). A miss means this run never actually
+  // deferred, so it must not be reported "deferred" (which would leave it
+  // non-terminal forever with nothing left to retry it); it is superseded.
+  const finalizeSupersededDefer = async (): Promise<ReviewInternalOutcome> => {
+    if (reviewRunId) {
+      await finalizeAttempt(reviewRunId, "superseded", "pull request moved before repository preparation could defer this run");
+    }
+    return "superseded";
+  };
 
   // Guard against duplicate processing (e.g. pg-boss jobs replicated to standby DB,
   // or webhook retries). Use atomic UPDATE with WHERE to claim the review — only one
@@ -801,16 +840,10 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
   let attemptSaved = false;
 
   // 3-tier config: system defaults -> org defaults -> repo overrides
-  // The frozen decision, if this job carries one. Distinct from `attemptId`
-  // above: that addresses the immutable `ReviewAttempt` evidence record this
-  // execution will produce, not the frozen `ReviewRun` it was dispatched with.
-  const reviewRun = reviewRunId
-    ? await prisma.reviewRun.findUnique({
-        where: { id: reviewRunId },
-        select: { id: true, configSnapshot: true, state: true },
-      })
-    : null;
-
+  // The frozen decision, if this job carries one -- already loaded above,
+  // alongside the run-binding check. Distinct from `attemptId` above: that
+  // addresses the immutable `ReviewAttempt` evidence record this execution
+  // will produce, not the frozen `ReviewRun` it was dispatched with.
   let systemConfig: ReviewConfig = {};
   try {
     const sysRow = await prisma.systemConfig.findUnique({ where: { id: "singleton" } });
@@ -1092,8 +1125,8 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
               "> 🐙 **Octopus Review** — Repository indexing is in progress.\n>\n> This review has been re-queued and will start automatically once indexing completes.",
             );
           }
-          await deferReviewForRepository(pullRequestId, pr.headSha, pr.reviewRequestVersion, reviewRunId);
-          return "deferred";
+          if (await deferReviewForRepository(pullRequestId, pr.headSha, pr.reviewRequestVersion, reviewRunId)) return "deferred";
+          return finalizeSupersededDefer();
         } else {
           // Peer failed -- attempt conditional reclaim
           const reclaimed = await prisma.repository.updateMany({
@@ -1321,8 +1354,8 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
           "> 🐙 **Octopus Review** — Repository indexing or analysis is in progress.\n>\n> This review will retry automatically once repository preparation completes.",
         );
       }
-      await deferReviewForRepository(pullRequestId, pr.headSha, pr.reviewRequestVersion, reviewRunId);
-      return "deferred";
+      if (await deferReviewForRepository(pullRequestId, pr.headSha, pr.reviewRequestVersion, reviewRunId)) return "deferred";
+      return finalizeSupersededDefer();
     }
     if (isForgejoConnector) {
       if (pr.headSha) await forgejo.setCommitStatus(org.id, projectPath, pr.headSha, "running", COMMIT_STATUS_NAME, "Octopus review in progress");

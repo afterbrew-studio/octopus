@@ -139,9 +139,12 @@ repo.updatedAt = new Date(Date.now() - 36 * 60_000);
 assert.equal(await prepare(), "ready", "an abandoned analysis should recover");
 await assert.rejects(() => ensureRepositoryAnalysis(repo.id, "other-org"), /not found/);
 
-await deferReviewForRepository("pr-1");
+assert.equal(await deferReviewForRepository("pr-1"), true);
 assert.deepEqual(queued, [["process-review", { pullRequestId: "pr-1" }, 30]]);
-await deferReviewForRepository("pr-1", "stale");
+// A guarded-update miss (the head moved) must report `false`, not silently
+// succeed -- the caller relies on this to tell a real deferral apart from a
+// stale request that must be finalized superseded instead.
+assert.equal(await deferReviewForRepository("pr-1", "stale"), false);
 assert.equal(queued.length, 1);
 queueFailure = true;
 await assert.rejects(() => deferReviewForRepository("pr-1"), /Could not enqueue/);
@@ -151,6 +154,6 @@ queueFailure = false;
 // would let a label-selected model silently change on the retry. rayf P-0007 C3.
 prStatus = "reviewing";
 queued.length = 0;
-await deferReviewForRepository("pr-1", "current", undefined, "run-1");
+assert.equal(await deferReviewForRepository("pr-1", "current", undefined, "run-1"), true);
 assert.deepEqual(queued, [["process-review", { pullRequestId: "pr-1", reviewRunId: "run-1" }, 30]]);
 console.log("Analysis sequencing, empty bases, concurrency, retries and ownership checks passed");

@@ -19,33 +19,34 @@ mock.module("server-only", () => ({}));
 const created: Array<Record<string, unknown>> = [];
 let attempts: Array<{ configSnapshot: unknown }> = [];
 
-mock.module("@octopus/db", () => ({
-  Prisma: { DbNull: null },
-  prisma: {
-    repository: {
-      findUnique: async () => ({ reviewConfig: null }),
-      update: async () => ({}),
-    },
-    pullRequest: {
-      // Always "not yet admitted": admitReviewRequest takes the create branch.
-      findUnique: async () => null,
-      create: async ({ data }: { data: Record<string, unknown> }) => ({
-        id: "pr_1", number: 646, reviewCommentId: 7, createdAt: new Date(), ...data,
-      }),
-      update: async () => ({}),
-    },
-    reviewRun: {
-      // Newest first, matching the orderBy the lookup asks for.
-      findFirst: async () => attempts[0] ?? null,
-      create: async ({ data }: { data: Record<string, unknown> }) => {
-        created.push(data);
-        return { id: "att_1" };
-      },
-    },
-    systemConfig: { findUnique: async () => null },
-    organization: { findUnique: async () => ({ defaultReviewConfig: null }) },
+const db = {
+  repository: {
+    findUnique: async () => ({ reviewConfig: null }),
+    update: async () => ({}),
   },
-}));
+  pullRequest: {
+    // Always "not yet admitted": admitReviewRequest takes the create branch.
+    findUnique: async () => null,
+    create: async ({ data }: { data: Record<string, unknown> }) => ({
+      id: "pr_1", number: 646, reviewCommentId: 7, createdAt: new Date(), ...data,
+    }),
+    update: async () => ({}),
+  },
+  reviewRun: {
+    // Newest first, matching the orderBy the lookup asks for.
+    findFirst: async () => attempts[0] ?? null,
+    create: async ({ data }: { data: Record<string, unknown> }) => {
+      created.push(data);
+      return { id: "att_1" };
+    },
+  },
+  systemConfig: { findUnique: async () => null },
+  organization: { findUnique: async () => ({ defaultReviewConfig: null }) },
+  // Admission and freeze now share one transaction; this fixture is not
+  // about atomicity, so it passes the same mock client straight through.
+  $transaction: async (callback: (tx: typeof db) => Promise<unknown>) => callback(db),
+};
+mock.module("@octopus/db", () => ({ Prisma: { DbNull: null }, prisma: db }));
 mock.module("@/lib/queue", () => ({
   enqueue: async () => "job",
   loadQueueConfig: async () => ({ reviewTimeoutSeconds: 900, reviewConcurrency: 2, largeReviewTimeoutSeconds: 1800 }),

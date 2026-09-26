@@ -42,9 +42,7 @@ function apply(data: Record<string, unknown>) {
   current = { ...current, ...structuredClone(data), reviewRequestVersion: version, updatedAt: new Date() };
 }
 mock.module("server-only", () => ({}));
-mock.module("@octopus/db", () => ({
-  Prisma: { DbNull: null },
-  prisma: {
+const db = {
     organization: { findUnique: async () => ({ reviewsPaused: false, blockedAuthors: [] }) },
     systemConfig: { findUnique: async () => ({ blockedAuthors: [] }) },
     repository: { findFirst: async () => repository, findUnique: async () => repository },
@@ -82,6 +80,15 @@ mock.module("@octopus/db", () => ({
       },
       findFirst: async () => null,
     },
+};
+mock.module("@octopus/db", () => ({
+  Prisma: { DbNull: null },
+  prisma: {
+    ...db,
+    // Admission and freeze now share one transaction; none of these
+    // scenarios are about atomicity, so this passes the same mock client
+    // straight through rather than modeling a real rollback.
+    $transaction: async (callback: (tx: typeof db) => Promise<unknown>) => callback(db),
   },
 }));
 for (const name of ["github", "bitbucket", "gitlab", "forgejo"]) {

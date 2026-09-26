@@ -480,16 +480,23 @@ model ReviewRun {
   /// What started it. Only `adapter` may, but the value is recorded rather than
   /// assumed so a refusal that somehow got through is visible afterwards.
   source        String
-  /// The exact commit reviewed. A run against a head that has moved is a
-  /// different run, not a continuation of this one.
+  /// The exact commit and request version reviewed, together. A run whose
+  /// pull request has since moved to either a different head or a different
+  /// version is a different request now -- see `webhook-shared.ts`'s freeze
+  /// and `reviewer.ts`'s own binding check at execution time.
   headSha       String?
+  reviewRequestVersion Int?
   provider      String
   /// The merged review configuration AS IT WAS at enqueue. The whole point.
   configSnapshot Json
-  /// pending | running | queued | succeeded | failed | cancelled
+  /// pending | running | queued | succeeded | failed | cancelled | superseded
   /// "queued" is set only for a genuine large-review handoff to internal-cli,
   /// so its long stuck-review window is never applied to a run that is merely
   /// waiting a few seconds on capacity or a repository-preparation retry.
+  /// "superseded" is an execution finding its pull request has moved to a
+  /// different head or request version than the one this run was frozen
+  /// for -- a different request has since been admitted, so this run must
+  /// not claim, review or publish anything under someone else's config.
   state         String   @default("pending")
   /// Set once, when the run reaches a terminal state. A second write is a bug.
   terminalAt    DateTime?

@@ -22,9 +22,18 @@ import assert from "node:assert/strict";
  * Drives the real `processReview`, `deferReviewForRepository`,
  * `processReviewInternal`'s own claim query (evaluated against its real
  * `where` clause, staleness included) and `attemptOutcomeForStatus` through
- * two sequences:
+ * four sequences:
  *   A. defer -> retry actually claims the row -> succeeds -> run "succeeded".
  *   B. defer -> retry throws -> run "failed", not stuck non-terminal forever.
+ *   C. run A defers; a newer request (run B) is admitted and reviewed at a
+ *      new head/version before A's retry executes. A's retry must find its
+ *      run bound to a request that no longer exists, finalize superseded,
+ *      and touch nothing B already wrote -- not claim B's head under A's
+ *      stale configuration and steal B's own completion.
+ *   D. a deferral whose OWN guarded update misses (the pull request moved
+ *      between processReviewInternal's read and the defer attempt) must
+ *      finalize the run superseded, not report "deferred" for a retry that
+ *      was never actually enqueued.
  */
 
 mock.module("server-only", () => ({}));
@@ -34,11 +43,14 @@ const org = {
   id: "org", defaultReviewConfig: {}, reviewLanguage: "en", reviewsPaused: false,
   reviewOnlyWhenCiPasses: false, githubInstallationId: 1, needsPermissionGrant: false,
 };
-// Two repositories so each scenario's `ensureRepositoryAnalysis` state (which
+const B = "b".repeat(40);
+// Four repositories so each scenario's `ensureRepositoryAnalysis` state (which
 // is keyed by repository, not by pull request) starts independently "waiting".
 const repos: Record<string, { id: string; fullName: string; reviewConfig: object; provider: string; installationId: number; indexStatus: string; defaultBranch: string }> = {
   "repo-a": { id: "repo-a", fullName: "fixture/repo-a", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
   "repo-b": { id: "repo-b", fullName: "fixture/repo-b", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
+  "repo-c": { id: "repo-c", fullName: "fixture/repo-c", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
+  "repo-d": { id: "repo-d", fullName: "fixture/repo-d", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
 };
 
 type Row = Record<string, unknown> & { id: string; repositoryId: string; status: string; headSha: string | null; reviewRequestVersion: number; updatedAt: Date };
@@ -51,11 +63,25 @@ const prs: Record<string, Row> = {
     id: "pr-b", repositoryId: "repo-b", number: 2, title: "Title", author: "author", url: "https://example.test/pr/2",
     headSha: A, reviewRequestVersion: 1, status: "pending", reviewBody: null, claimToken: null, updatedAt: new Date(),
   },
+  "pr-c": {
+    id: "pr-c", repositoryId: "repo-c", number: 3, title: "Title", author: "author", url: "https://example.test/pr/3",
+    headSha: A, reviewRequestVersion: 1, status: "pending", reviewBody: null, claimToken: null, updatedAt: new Date(),
+  },
+  "pr-d": {
+    id: "pr-d", repositoryId: "repo-d", number: 4, title: "Title", author: "author", url: "https://example.test/pr/4",
+    headSha: A, reviewRequestVersion: 1, status: "pending", reviewBody: null, claimToken: null, updatedAt: new Date(),
+  },
 };
-type Run = { id: string; state: string; terminalAt: Date | null; terminalDetail: string | null };
+// `headSha`/`reviewRequestVersion` are what the run was frozen for -- the
+// binding `processReviewInternal` checks its execution against, independent
+// of whatever the pull request's row says NOW.
+type Run = { id: string; state: string; terminalAt: Date | null; terminalDetail: string | null; headSha: string | null; reviewRequestVersion: number | null };
 const runs: Record<string, Run> = {
-  "run-a": { id: "run-a", state: "pending", terminalAt: null, terminalDetail: null },
-  "run-b": { id: "run-b", state: "pending", terminalAt: null, terminalDetail: null },
+  "run-a": { id: "run-a", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: 1 },
+  "run-b": { id: "run-b", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: 1 },
+  "run-c": { id: "run-c", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: 1 },
+  "run-c2": { id: "run-c2", state: "pending", terminalAt: null, terminalDetail: null, headSha: B, reviewRequestVersion: 2 },
+  "run-d": { id: "run-d", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: 1 },
 };
 
 // Real staleness semantics, not a simplified stand-in: this is exactly what
@@ -94,7 +120,7 @@ mock.module("@octopus/db", () => ({
     reviewRun: {
       findUnique: async ({ where }: { where: { id: string } }) => {
         const run = runs[where.id];
-        return run ? { id: run.id, configSnapshot: {}, state: run.state } : null;
+        return run ? { id: run.id, configSnapshot: {}, state: run.state, headSha: run.headSha, reviewRequestVersion: run.reviewRequestVersion, terminalAt: run.terminalAt } : null;
       },
       updateMany: async ({ where, data }: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
         const run = runs[where.id as string];
@@ -139,15 +165,29 @@ mock.module("@/lib/events", () => ({ eventBus: { emit: () => {} } }));
 const { deferReviewForRepository } = await import("@/lib/review-repository-preparation");
 // Keyed by repository, matching the real function's own signature -- each
 // scenario's repository starts "waiting" independently of the other's.
-const analysisReady: Record<string, boolean> = { "repo-a": false, "repo-b": false };
+const analysisReady: Record<string, boolean> = { "repo-a": false, "repo-b": false, "repo-c": false, "repo-d": false };
+// Scenario D: simulates the pull request moving WHILE this (slow, real AI)
+// check is in flight, by mutating it as a side effect of the check itself --
+// so `deferReviewForRepository`'s guarded update, using the caller's
+// already-stale snapshot, is guaranteed to miss.
+let mutatePrDOnAnalysisCheck = false;
 mock.module("@/lib/review-repository-preparation", () => ({
-  ensureRepositoryAnalysis: async (repositoryId: string) => (analysisReady[repositoryId] ? "ready" : "waiting"),
+  ensureRepositoryAnalysis: async (repositoryId: string) => {
+    if (repositoryId === "repo-d" && mutatePrDOnAnalysisCheck) {
+      prs["pr-d"] = { ...prs["pr-d"], headSha: B, reviewRequestVersion: 2 };
+    }
+    return analysisReady[repositoryId] ? "ready" : "waiting";
+  },
   deferReviewForRepository,
 }));
 
 mock.module("@/lib/cost", () => ({ getOrgSpendLimitStatus: async () => ({ blocked: false }), shouldGuardConcurrency: async () => false }));
 const diff = "diff --git a/src/check.ts b/src/check.ts\n--- a/src/check.ts\n+++ b/src/check.ts\n@@ -1 +1 @@\n-return value;\n+return value.name;\n";
 let failDiffFetch = false;
+// Proves scenario C's "nothing published for A": incremented by every
+// comment/review/summary call, regardless of which pull request it targets --
+// a superseded execution must never reach any of them.
+let publishCalls = 0;
 mock.module("@/lib/github", () => ({
   LargePrError: class LargePrError extends Error {},
   getPullRequestReviewInput: async () => {
@@ -159,9 +199,9 @@ mock.module("@/lib/github", () => ({
     } };
   },
   getPullRequestDetails: async () => ({ body: "Title" }),
-  createPullRequestComment: async () => 123,
-  updatePullRequestComment: async () => {},
-  createPullRequestReview: async (..._args: unknown[]) => 456,
+  createPullRequestComment: async () => { publishCalls++; return 123; },
+  updatePullRequestComment: async () => { publishCalls++; },
+  createPullRequestReview: async (..._args: unknown[]) => { publishCalls++; return 456; },
   createCheckRun: async () => 789,
   updateCheckRun: async () => {},
   getRepositoryTree: async () => ["src/check.ts"],
@@ -213,7 +253,7 @@ mock.module("@/lib/review-validation", () => ({
   gatherVerificationContext: async () => new Map(),
   validateFindings: async (findings: unknown[]) => findings,
 }));
-mock.module("@/lib/review-summary-comment", () => ({ publishReviewSummary: async () => 123 }));
+mock.module("@/lib/review-summary-comment", () => ({ publishReviewSummary: async () => { publishCalls++; return 123; } }));
 
 // `attemptOutcomeForStatus`, `updateCurrentReview` and `resolveReviewConfig` are
 // the real implementations -- this fixture is precisely about their real
@@ -266,4 +306,42 @@ assert.equal(prs["pr-b"].status, "failed");
 assert.equal(runs["run-b"].state, "failed", "a retry that fails must finalize the run as failed, not leave it stuck non-terminal");
 assert.ok(runs["run-b"].terminalAt);
 
-console.log("PASS repository-preparation deferral stays claimable and preserves the run across defer-then-succeed and defer-then-fail");
+// C. Run A defers. While it waits, a newer request (run B, at a new head and
+// version) is admitted and reviewed to completion. A's delayed retry must
+// find its run bound to a request that no longer exists.
+await processReview("pr-c", undefined, "run-c");
+assert.equal(runs["run-c"].state, "running");
+
+// Simulate B's admission: a fresh request at a new head/version, exactly as
+// `startReviewFlowInternal` would leave the row after admitting it.
+prs["pr-c"] = { ...prs["pr-c"], headSha: B, reviewRequestVersion: 2, status: "pending" };
+analysisReady["repo-c"] = true; // shared per-repository state; true for both A and B now
+
+// B's own job runs first and completes normally, under B's own binding.
+await processReview("pr-c", undefined, "run-c2");
+assert.equal(prs["pr-c"].status, "completed", "B must actually complete its own review");
+assert.equal(runs["run-c2"].state, "succeeded");
+const bClaimToken = prs["pr-c"].claimToken;
+const bReviewBody = prs["pr-c"].reviewBody;
+const publishCallsBeforeA = publishCalls;
+
+// A's delayed retry finally executes: still bound to the OLD head/version.
+await processReview("pr-c", undefined, "run-c");
+assert.equal(runs["run-c"].state, "superseded", "A must finalize superseded, not claim B's head under A's stale configuration");
+assert.ok(runs["run-c"].terminalAt);
+assert.equal(prs["pr-c"].status, "completed", "A must not touch B's completed status");
+assert.equal(prs["pr-c"].claimToken, bClaimToken, "A must never claim the row -- B's claim must be untouched");
+assert.equal(prs["pr-c"].reviewBody, bReviewBody, "A must never publish over B's review body");
+assert.equal(runs["run-c2"].state, "succeeded", "B's own outcome must be unaffected by A's late retry");
+assert.equal(publishCalls, publishCallsBeforeA, "nothing may be published for a superseded run");
+
+// D. A deferral whose OWN guarded update misses (the pull request moves
+// between processReviewInternal's read and the defer attempt) must finalize
+// the run superseded, not report "deferred" for a retry nothing will enqueue.
+mutatePrDOnAnalysisCheck = true;
+await processReview("pr-d", undefined, "run-d");
+assert.equal(runs["run-d"].state, "superseded", "a defer whose guarded update misses must not be reported \"deferred\"");
+assert.ok(runs["run-d"].terminalAt, "the run must not be left non-terminal forever with nothing left to retry it");
+assert.equal(enqueuedAfter.filter((e) => e.pullRequestId === "pr-d").length, 0, "nothing was actually deferred, so nothing should have been enqueued");
+
+console.log("PASS repository-preparation deferral stays claimable, preserves the run across defer-then-succeed and defer-then-fail, and finalizes superseded runs on a cross-request race or a missed guarded update");

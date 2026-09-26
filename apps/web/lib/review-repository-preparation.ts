@@ -66,7 +66,16 @@ export async function ensureRepositoryAnalysis(
   }
 }
 
-export async function deferReviewForRepository(pullRequestId: string, headSha?: string | null, reviewRequestVersion?: number, reviewRunId?: string): Promise<void> {
+/**
+ * @returns `true` once both the guarded status update and the retry enqueue
+ * have actually happened -- the only case in which this pull request truly
+ * deferred. `false` means the guarded update matched nothing (the pull
+ * request moved to a different head or version between the caller's own read
+ * and this call), so nothing was deferred: the caller must not report
+ * "deferred" for a run that never actually re-enqueued, which would leave it
+ * non-terminal forever with nothing left to retry it.
+ */
+export async function deferReviewForRepository(pullRequestId: string, headSha?: string | null, reviewRequestVersion?: number, reviewRunId?: string): Promise<boolean> {
   // Must be "pending", not "queued": `processReviewInternal`'s own claim query
   // only takes a "queued" row once it is older than the large-review stale
   // window (~35 minutes), so a "queued" retry scheduled 30 seconds out would
@@ -82,10 +91,11 @@ export async function deferReviewForRepository(pullRequestId: string, headSha?: 
   // which skips finalization on that signal instead of inferring it from
   // status. See the "deferred" return in reviewer.ts.
   const changed = await prisma.pullRequest.updateMany({ where: { id: pullRequestId, ...(headSha !== undefined ? { headSha } : {}), ...(reviewRequestVersion !== undefined ? { reviewRequestVersion } : {}) }, data: { status: "pending" } });
-  if (!changed.count) return;
+  if (!changed.count) return false;
   // The retry re-executes under the SAME frozen run, not live configuration --
   // dropping this here would let a label-selected model silently change on
   // the retry. rayf P-0007 C3.
   const jobId = await enqueueAfter("process-review", reviewRunId ? { pullRequestId, reviewRunId } : { pullRequestId }, 30);
   if (!jobId) throw new Error("Could not enqueue review after repository preparation");
+  return true;
 }

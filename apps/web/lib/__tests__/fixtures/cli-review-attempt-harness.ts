@@ -32,9 +32,7 @@ function matches(where: Record<string, unknown>): boolean {
     : prRow![key as keyof PrRow] === value);
 }
 
-mock.module("@octopus/db", () => ({
-  Prisma: { DbNull: null },
-  prisma: {
+const db = {
     repository: {
       findFirst: async () => ({
         id: "repo_1",
@@ -71,6 +69,14 @@ mock.module("@octopus/db", () => ({
     },
     systemConfig: { findUnique: async () => null },
     organization: { findUnique: async () => ({ defaultReviewConfig: null }) },
+};
+mock.module("@octopus/db", () => ({
+  Prisma: { DbNull: null },
+  prisma: {
+    ...db,
+    // Admission and freeze now share one transaction; this fixture is not
+    // about atomicity, so it passes the same mock client straight through.
+    $transaction: async (callback: (tx: typeof db) => Promise<unknown>) => callback(db),
   },
 }));
 mock.module("@/lib/api-auth", () => ({
