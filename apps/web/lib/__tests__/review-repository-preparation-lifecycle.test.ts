@@ -7,6 +7,8 @@ it("preserves a frozen run's final state across a repository-preparation defer-t
   const [exit, stdout, stderr] = await Promise.all([
     process.exited, new Response(process.stdout).text(), new Response(process.stderr).text(),
   ]);
-  expect({ exit, stderr }).toEqual({ exit: 0, stderr: "" });
-  expect(stdout).toContain("PASS repository-preparation deferral preserves the run across a defer-then-succeed sequence");
+  // Scenario B deliberately fails a review and logs it via `console.error` --
+  // stderr is not asserted empty here, unlike the harness's siblings.
+  expect(exit, stderr).toBe(0);
+  expect(stdout).toContain("PASS repository-preparation deferral stays claimable and preserves the run across defer-then-succeed and defer-then-fail");
 });

@@ -75,10 +75,13 @@ mock.module("@/lib/pubby", () => ({ pubby: { trigger: async (_channel: string, e
 mock.module("@/lib/events", () => ({ eventBus: { emit: () => {} } }));
 mock.module("@/lib/queue", () => ({
   enqueueAfter: async (...args: unknown[]) => {
-    // "queued", not "pending": `attemptOutcomeForStatus` treats "queued" as
-    // non-terminal, so a retry that lands here cannot have already finalized
-    // the run its payload carries. See `deferReviewForRepository`.
-    assert.equal(prStatus, "queued", "deferred reviews must leave the run non-terminal, not finalize it early");
+    // "pending", not "queued": `processReviewInternal`'s claim query only
+    // takes a "queued" row once it is stale (~35 minutes), so a "queued" retry
+    // scheduled 30 seconds out would never be claimable when it runs.
+    // "pending" is the fresh-claim branch that query accepts unconditionally.
+    // The run is kept non-terminal a different way -- see the "deferred"
+    // return `processReviewInternal` reports to `processReview`.
+    assert.equal(prStatus, "pending", "deferred reviews must be claimable by the retry worker");
     queued.push(args);
     return queueFailure ? null : "job-1";
   },

@@ -123,10 +123,10 @@ export async function createReviewAttemptComment(
   }, { key: JSON.stringify([pullRequestId, headSha, reviewRequestVersion]), acknowledged: async () => saved });
 }
 
-export function withForgejoReviewPublication(
+export function withForgejoReviewPublication<T>(
   pullRequestId: string, headSha: string | null, reviewRequestVersion: number,
-  review: () => Promise<void>, signal?: AbortSignal,
-): Promise<void> {
+  review: () => Promise<T>, signal?: AbortSignal,
+): Promise<T> {
   return withForgejoPublication(review, {
     key: JSON.stringify([pullRequestId, headSha, reviewRequestVersion]), signal,
     acknowledged: async tx => (await tx.pullRequest.count({ where: {

@@ -67,17 +67,21 @@ export async function ensureRepositoryAnalysis(
 }
 
 export async function deferReviewForRepository(pullRequestId: string, headSha?: string | null, reviewRequestVersion?: number, reviewRunId?: string): Promise<void> {
-  // Must be "queued", not "pending": `attemptOutcomeForStatus` treats "pending"
-  // as an early exit and finalizes the frozen run as cancelled the moment this
-  // function returns, so a later success could never overwrite that terminal
-  // state. "queued" is its non-terminal case, matching the low-balance
-  // deferral in `reviewer.ts`, which re-enqueues the same run the same way.
+  // Must be "pending", not "queued": `processReviewInternal`'s own claim query
+  // only takes a "queued" row once it is older than the large-review stale
+  // window (~35 minutes), so a "queued" retry scheduled 30 seconds out would
+  // never be claimable when it actually runs -- it would silently no-op every
+  // time until the stuck-review reaper eventually swept it. "pending" is the
+  // fresh-claim branch that query accepts unconditionally, which is what the
+  // pre-merge flow relied on.
   //
-  // This does not reuse the large-review "queued" claim window: that window is
-  // keyed off the run's own `state` (set to "queued" only at the large-review
-  // handoff), not off the pull request's `status`, so a prerequisite retry
-  // stays claimable on the short window.
-  const changed = await prisma.pullRequest.updateMany({ where: { id: pullRequestId, ...(headSha !== undefined ? { headSha } : {}), ...(reviewRequestVersion !== undefined ? { reviewRequestVersion } : {}) }, data: { status: "queued" } });
+  // A frozen run is kept non-terminal across this NOT by the pull request's
+  // status (which `attemptOutcomeForStatus` would otherwise read as a
+  // finished-without-running exit and finalize as cancelled), but by
+  // `processReviewInternal` reporting "deferred" back to `processReview`,
+  // which skips finalization on that signal instead of inferring it from
+  // status. See the "deferred" return in reviewer.ts.
+  const changed = await prisma.pullRequest.updateMany({ where: { id: pullRequestId, ...(headSha !== undefined ? { headSha } : {}), ...(reviewRequestVersion !== undefined ? { reviewRequestVersion } : {}) }, data: { status: "pending" } });
   if (!changed.count) return;
   // The retry re-executes under the SAME frozen run, not live configuration --
   // dropping this here would let a label-selected model silently change on

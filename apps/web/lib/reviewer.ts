@@ -664,7 +664,7 @@ export async function processReview(
     where: { id: pullRequestId }, select: { headSha: true, reviewRequestVersion: true, repository: { select: { id: true, provider: true } } },
   });
 
-  const dispatch = (): Promise<void> => {
+  const dispatch = (): Promise<ReviewInternalOutcome> => {
     if (pr?.repository.provider === "forgejo") {
       return forgejo.runWithForgejoRepository(pr.repository.id, () => {
         if (!forgejo.usesForgejoConnector()) return processReviewInternal(pullRequestId, reviewRunId, executionWindow, pr);
@@ -677,7 +677,7 @@ export async function processReview(
     return processReviewInternal(pullRequestId, reviewRunId, executionWindow);
   };
 
-  if (!reviewRunId) return dispatch();
+  if (!reviewRunId) { await dispatch(); return; }
 
   // Guarded on `pending`, so a replayed job cannot restart a run that already
   // reached a terminal state. A deferred run coming back round is already
@@ -687,12 +687,16 @@ export async function processReview(
     data: { state: "running" },
   });
 
+  let dispatchOutcome: ReviewInternalOutcome;
   try {
-    await dispatch();
+    dispatchOutcome = await dispatch();
   } catch (err) {
     await finalizeAttempt(reviewRunId, "failed", `review threw: ${String(err)}`);
     throw err;
   }
+  // A deferral re-enqueues the same run to retry once its prerequisite is
+  // ready -- it never stopped, so it is not finalized here.
+  if (dispatchOutcome === "deferred") return;
 
   const finished = await prisma.pullRequest.findUnique({
     where: { id: pullRequestId },
@@ -714,7 +718,19 @@ async function finalizeAttempt(
   });
 }
 
-async function processReviewInternal(pullRequestId: string, reviewRunId?: string, executionWindow?: ReviewExecutionWindow, expected?: { headSha: string | null; reviewRequestVersion: number }): Promise<void> {
+/**
+ * `"deferred"` marks the two exits that re-enqueue the same run to retry once
+ * a prerequisite (indexing, analysis) is ready -- as opposed to every other
+ * `return`, which really is the run finishing without executing (paused,
+ * blocked, superseded). `processReview` reads this instead of inferring it
+ * from the pull request's status, because a deferral parks the pull request
+ * back at "pending" (the claim query's only fresh-claim status) rather than
+ * "queued", and "pending" is exactly the status `attemptOutcomeForStatus`
+ * reads as a finished-without-running exit.
+ */
+type ReviewInternalOutcome = "deferred" | undefined;
+
+async function processReviewInternal(pullRequestId: string, reviewRunId?: string, executionWindow?: ReviewExecutionWindow, expected?: { headSha: string | null; reviewRequestVersion: number }): Promise<ReviewInternalOutcome> {
   // Load PR with repo and org info
   const pr = await prisma.pullRequest.findUnique({
     where: { id: pullRequestId },
@@ -1077,7 +1093,7 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
             );
           }
           await deferReviewForRepository(pullRequestId, pr.headSha, pr.reviewRequestVersion, reviewRunId);
-          return;
+          return "deferred";
         } else {
           // Peer failed -- attempt conditional reclaim
           const reclaimed = await prisma.repository.updateMany({
@@ -1306,7 +1322,7 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
         );
       }
       await deferReviewForRepository(pullRequestId, pr.headSha, pr.reviewRequestVersion, reviewRunId);
-      return;
+      return "deferred";
     }
     if (isForgejoConnector) {
       if (pr.headSha) await forgejo.setCommitStatus(org.id, projectPath, pr.headSha, "running", COMMIT_STATUS_NAME, "Octopus review in progress");
