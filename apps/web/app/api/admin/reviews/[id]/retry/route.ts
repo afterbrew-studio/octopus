@@ -69,6 +69,15 @@ export async function POST(
   if (provider !== "github" && provider !== "bitbucket" && provider !== "gitlab" && provider !== "forgejo") {
     return NextResponse.json({ error: "Unsupported review provider" }, { status: 422 });
   }
+  // The run is created as part of admission's OWN atomic write (a short
+  // transaction admission opens itself) -- not a separate step after
+  // admission returns. A crash, or an ambiguous `reviewRun.create` failure,
+  // between two separate writes would otherwise leave a `pending` row with
+  // no run and no job that nothing recovers: the pending-row reaper
+  // (`reap-stuck-reviews.ts`) deliberately skips a row with no run to
+  // address. `freezeReviewRun` is called back by admission with the write
+  // client and the DEFINITIVE identity it settled on -- not `pr.headSha`,
+  // which may be stale by the time admission resolves the authoritative head.
   const admission = await admitReviewRequest({
     provider,
     installationId: pr.repository.installationId ?? pr.repository.organization.githubInstallationId ?? undefined,
@@ -82,39 +91,19 @@ export async function POST(
     headSha: pr.headSha,
     triggerCommentId: pr.triggerCommentId,
     triggerCommentBody: pr.triggerCommentBody,
-  });
-  if (!admission.started) {
-    return NextResponse.json({ error: admission.message, reason: admission.reason }, { status: 409 });
-  }
-  const requested = admission.pullRequest;
-  // Frozen before enqueueing, same as every other admission path -- otherwise
-  // an admin-triggered retry runs on whatever is configured now rather than
-  // what was approved. rayf P-0007 C3.
-  //
-  // Not wrapped in a transaction with admission: that held admission's own
-  // provider API call open for a whole DB transaction and broke its
-  // concurrent-create P2002 recovery (Postgres aborts the transaction on that
-  // error, so the retry read inside it fails instead of resolving to
-  // already_in_progress). A freeze failure instead reverts the admission it
-  // followed, guarded on the exact identity admission just produced, so this
-  // row is retryable rather than stranded `pending` with no run and no job.
-  let reviewRun: { id: string };
-  try {
-    reviewRun = await freezeReviewRun(pr.id, requested.headSha, {
+  }, undefined, (write, pullRequestId, headSha, reviewRequestVersion) =>
+    freezeReviewRun(write, pullRequestId, headSha, reviewRequestVersion, {
       source: "adapter",
       provider: pr.repository.provider,
       orgId: pr.repository.organizationId,
       repoId: pr.repositoryId,
       prNumber: pr.number,
-      reviewRequestVersion: requested.reviewRequestVersion,
-    });
-  } catch (err) {
-    await prisma.pullRequest.updateMany({
-      where: { id: requested.id, headSha: requested.headSha, reviewRequestVersion: requested.reviewRequestVersion, status: "pending" },
-      data: { status: "failed", errorMessage: "Review could not be frozen. Retry the request." },
-    }).catch((e) => console.error("[review-retry] Failed to revert admission after freeze failure:", e));
-    throw err;
+    }));
+  if (!admission.started) {
+    return NextResponse.json({ error: admission.message, reason: admission.reason }, { status: 409 });
   }
+  const requested = admission.pullRequest;
+  const reviewRun = admission.reviewRun;
 
   await pubby.trigger(`presence-org-${pr.repository.organizationId}`, "review-requested", {
     repoId: pr.repositoryId,

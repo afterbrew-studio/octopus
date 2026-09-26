@@ -34,13 +34,15 @@ import assert from "node:assert/strict";
  *      between processReviewInternal's read and the defer attempt) must
  *      finalize the run superseded, not report "deferred" for a retry that
  *      was never actually enqueued.
- *   E/F. a run frozen before the binding columns existed (or before some
- *      caller threaded a head through) records NULL for a field it never
- *      recorded -- that field is unbound, not bound to null, so it must
- *      execute rather than be superseded on a value that merely differs
- *      from NULL. E leaves only the version unbound; F (a stand-in for a
- *      legacy `attemptId` job whose row predates the migration entirely)
- *      leaves both unbound.
+ *   E/H. `reviewRequestVersion` is a new column: a run frozen before it
+ *      existed records NULL for it, not "bound to a version that happens to
+ *      be null" -- that field alone is a wildcard, so it must execute
+ *      against the head it DOES record (E) but still supersede against a
+ *      different one (H). `headSha` gets no such wildcard.
+ *   F. a run with NO recorded head at all (a stand-in for a legacy
+ *      `attemptId` job whose row predates this check entirely) is unbound
+ *      AND unsafe -- fail-safe, not "whatever head is current" -- so it must
+ *      supersede without ever claiming, exactly like any other mismatch.
  *   G. the run-binding check and the claim are separate operations; a newer
  *      request landing in between must not let the claim take that newer
  *      request's head under this run's stale configuration. The run's own
@@ -68,6 +70,7 @@ const repos: Record<string, { id: string; fullName: string; reviewConfig: object
   "repo-e": { id: "repo-e", fullName: "fixture/repo-e", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
   "repo-f": { id: "repo-f", fullName: "fixture/repo-f", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
   "repo-g": { id: "repo-g", fullName: "fixture/repo-g", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
+  "repo-h": { id: "repo-h", fullName: "fixture/repo-h", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
 };
 
 type Row = Record<string, unknown> & { id: string; repositoryId: string; status: string; headSha: string | null; reviewRequestVersion: number; updatedAt: Date };
@@ -102,6 +105,13 @@ const prs: Record<string, Row> = {
     id: "pr-g", repositoryId: "repo-g", number: 7, title: "Title", author: "author", url: "https://example.test/pr/7",
     headSha: A, reviewRequestVersion: 1, status: "pending", reviewBody: null, claimToken: null, updatedAt: new Date(),
   },
+  "pr-h": {
+    // At head B: run-h (below) is bound to head A and unbound on version --
+    // headSha still gets a real check, so this must supersede rather than
+    // review whatever head happens to be current.
+    id: "pr-h", repositoryId: "repo-h", number: 8, title: "Title", author: "author", url: "https://example.test/pr/8",
+    headSha: B, reviewRequestVersion: 1, status: "pending", reviewBody: null, claimToken: null, updatedAt: new Date(),
+  },
 };
 // `headSha`/`reviewRequestVersion` are what the run was frozen for -- the
 // binding `processReviewInternal` checks its execution against, independent
@@ -117,6 +127,7 @@ const runs: Record<string, Run> = {
   "run-e": { id: "run-e", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: null },
   "run-f": { id: "run-f", state: "pending", terminalAt: null, terminalDetail: null, headSha: null, reviewRequestVersion: null },
   "run-g": { id: "run-g", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: 1 },
+  "run-h": { id: "run-h", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: null },
 };
 
 // Real staleness semantics, not a simplified stand-in: this is exactly what
@@ -212,7 +223,7 @@ const { deferReviewForRepository } = await import("@/lib/review-repository-prepa
 const analysisReady: Record<string, boolean> = {
   "repo-a": false, "repo-b": false, "repo-c": false, "repo-d": false,
   // E/F/G need no deferral; their repository is ready from the start.
-  "repo-e": true, "repo-f": true, "repo-g": true,
+  "repo-e": true, "repo-f": true, "repo-g": true, "repo-h": true,
 };
 let interleaveNewAdmissionAfterBindingRead = false;
 // Scenario D: simulates the pull request moving WHILE this (slow, real AI)
@@ -400,12 +411,24 @@ await processReview("pr-e", undefined, "run-e");
 assert.equal(prs["pr-e"].status, "completed", "a run unbound on version must still execute, not be superseded on a value it never recorded");
 assert.equal(runs["run-e"].state, "succeeded");
 
-// F. A fully legacy run (both fields NULL -- a stand-in for a pre-migration
-// row, including one addressed by an old `attemptId`-shaped job) must
-// execute exactly as if it carried no binding at all.
+// F. A run with no recorded head at all (a stand-in for a legacy `attemptId`
+// job whose row predates this check entirely) is unbound AND unsafe: it must
+// supersede without ever claiming, never treated as "whatever head is
+// current" -- that is the wrong-head defect this check exists to close.
 await processReview("pr-f", undefined, "run-f");
-assert.equal(prs["pr-f"].status, "completed", "a run unbound on both fields must still execute");
-assert.equal(runs["run-f"].state, "succeeded");
+assert.equal(runs["run-f"].state, "superseded", "a run with no recorded head must fail safe to superseded, not review whatever head is current");
+assert.ok(runs["run-f"].terminalAt);
+assert.equal(prs["pr-f"].status, "pending", "a run with no recorded head must never claim the row");
+assert.equal(prs["pr-f"].claimToken, null);
+
+// H. A run unbound only on version, like E, but the pull request has since
+// moved to a different head -- headSha still gets a real check, so this
+// must supersede rather than review the new head under E's config.
+await processReview("pr-h", undefined, "run-h");
+assert.equal(runs["run-h"].state, "superseded", "a run bound on head must supersede against a different head even though its version is unbound");
+assert.ok(runs["run-h"].terminalAt);
+assert.equal(prs["pr-h"].status, "pending");
+assert.equal(prs["pr-h"].claimToken, null);
 
 // G. A newer request is admitted in the exact window between the run-binding
 // read and the claim. The claim's own `where` -- built from the run's bound
@@ -420,4 +443,4 @@ assert.ok(runs["run-g"].terminalAt);
 assert.equal(prs["pr-g"].status, "pending", "the claim must never have taken effect -- the newer request's own job must still be able to claim this row");
 assert.equal(prs["pr-g"].claimToken, null, "the row must be untouched by a superseded claim attempt");
 
-console.log("PASS repository-preparation deferral stays claimable, preserves the run across defer-then-succeed and defer-then-fail, finalizes superseded runs on a cross-request race or a missed guarded update, leaves a legacy run's unbound fields unchecked, and closes the binding-check-to-claim race");
+console.log("PASS repository-preparation deferral stays claimable, preserves the run across defer-then-succeed and defer-then-fail, finalizes superseded runs on a cross-request race or a missed guarded update, treats only reviewRequestVersion (never headSha) as a legacy wildcard, and closes the binding-check-to-claim race");

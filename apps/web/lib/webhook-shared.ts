@@ -154,51 +154,22 @@ async function startReviewFlowInternal(params: StartReviewParams, forgejoTransac
     }
   }
 
-  const admission = await admitReviewRequest(params, forgejoTransaction);
+  // The run is created as part of admission's OWN atomic write (a short
+  // transaction of its own, or Forgejo's already-open ambient one) -- not a
+  // separate step after admission returns. A crash, or an ambiguous
+  // `reviewRun.create` failure, between two separate writes would otherwise
+  // leave a `pending` row with no run and no job that nothing recovers: the
+  // pending-row reaper (`reap-stuck-reviews.ts`) deliberately skips a row
+  // with no run to address. `freezeReviewRun` is called back by admission
+  // with the write client and the DEFINITIVE identity it settled on -- not
+  // this closure's own `params.headSha`, which may be empty/null input that
+  // admission resolves to the authoritative head itself.
+  const admission = await admitReviewRequest(params, forgejoTransaction, (write, pullRequestId, headSha, reviewRequestVersion) =>
+    freezeReviewRun(write, pullRequestId, headSha, reviewRequestVersion, params));
   if (!admission.started) return admission;
   const pr = admission.pullRequest;
+  const reviewRun = admission.reviewRun;
   console.log(`[webhook] PullRequest admitted — id: ${pr.id}, number: ${pr.number}`);
-
-  // Freeze the run BEFORE enqueueing, on every provider path -- Forgejo's
-  // transactional early return below used to enqueue with no run at all, so
-  // every Forgejo review ran on live configuration. See the fuller rationale
-  // further down, where the non-Forgejo path used to do this alone.
-  //
-  // Freezes `pr.headSha`/`pr.reviewRequestVersion` -- admission's OWN
-  // returned pull request -- not the caller's input params. Admission
-  // accepts an empty/null input head and resolves the authoritative one
-  // itself (`currentProviderHead`); freezing the input would bind the run to
-  // a head nobody actually reviewed at, and the worker would immediately
-  // find that frozen (null) head not matching the real one and finalize the
-  // run superseded before ever claiming it.
-  let reviewRun: { id: string };
-  if (forgejoTransaction) {
-    // Forgejo's admission already runs inside this ambient transaction, and
-    // freeze joins it -- unchanged from the prior pass.
-    reviewRun = await freezeReviewRun(pr.id, pr.headSha, { ...params, reviewRequestVersion: pr.reviewRequestVersion, client: forgejoTransaction });
-  } else {
-    try {
-      reviewRun = await freezeReviewRun(pr.id, pr.headSha, { ...params, reviewRequestVersion: pr.reviewRequestVersion });
-    } catch (err) {
-      // Wrapping every provider's admission in its own transaction (as a
-      // prior pass did) broke two things admission itself relies on: its
-      // provider API call would hold that transaction open for as long as
-      // the provider takes to respond, risking Prisma's own transaction
-      // timeout; and its concurrent-create P2002 recovery re-queries on the
-      // SAME transaction, which PostgreSQL has already aborted after that
-      // error, turning two concurrent first admissions into a transaction
-      // failure instead of `already_in_progress`. Admission commits on its
-      // own here, same as before that pass, and a freeze failure instead
-      // reverts it -- guarded on the exact identity admission just
-      // produced -- so this row is retryable rather than stranded `pending`
-      // with no run and no job.
-      await prisma.pullRequest.updateMany({
-        where: { id: pr.id, headSha: pr.headSha, reviewRequestVersion: pr.reviewRequestVersion, status: "pending" },
-        data: { status: "failed", errorMessage: "Review could not be frozen. Retry the request." },
-      }).catch((e) => console.error("[webhook] Failed to revert admission after freeze failure:", e));
-      throw err;
-    }
-  }
 
   if (forgejoTransaction) {
     const jobId = await enqueue("process-review", { pullRequestId: pr.id, reviewRunId: reviewRun.id }, {
@@ -275,10 +246,18 @@ async function startReviewFlowInternal(params: StartReviewParams, forgejoTransac
 }
 
 /**
- * Freeze the run BEFORE enqueueing, for every provider path -- including the
- * Forgejo transactional one, whose early return in `startReviewFlowInternal`
- * used to enqueue with no run at all, so every Forgejo review ran on live
- * configuration instead of what was approved.
+ * Called back by `admitReviewRequest` with the SAME write client it used for
+ * the pull request's own create/update -- a short transaction of admission's
+ * own, or Forgejo's already-open ambient one -- so the run it creates commits
+ * (or rolls back) atomically with that write. Never called after admission
+ * returns: a run-less `pending` row is exactly what that separation used to
+ * risk, from a crash or an ambiguous `reviewRun.create` failure between two
+ * writes that neither the pending-row reaper nor a retry could recover.
+ *
+ * `pullRequestId`/`headSha`/`reviewRequestVersion` are the DEFINITIVE
+ * identity admission settled on, not the caller's tentative input: admission
+ * accepts an empty/null input head and resolves the authoritative one itself,
+ * and increments the version on every accepted request.
  *
  * `processReview` merges its configuration from three mutable sources at
  * execution time -- system, organization and repository -- so a change to any of
@@ -292,32 +271,25 @@ async function startReviewFlowInternal(params: StartReviewParams, forgejoTransac
  *
  * Throws rather than falling back to live configuration on failure, matching
  * every other step of admission: none of the six webhook routes catches, so a
- * throw here is a 500 and the provider retries the delivery. Swallowing it
- * would enqueue a review nobody approved -- which is exactly what freezing
- * exists to prevent -- to save a retry the provider already does for free.
+ * throw here is a 500 and the provider retries the delivery, and it rolls
+ * back the same atomic write the pull request's own create/update is part
+ * of -- there is nothing left to compensate afterward.
  */
-export async function freezeReviewRun(pullRequestId: string, headSha: string | null, params: {
-  source: StartReviewParams["source"];
-  correlationId?: string;
-  modelOverride?: string;
-  provider: string;
-  orgId: string;
-  repoId: string;
-  prNumber: number;
-  // The pull request's own version at the moment this run was frozen. An
-  // execution later checks both this and `headSha` against the pull
-  // request's CURRENT values -- a run whose request has since moved to a
-  // different head or a different version at the same head is superseded,
-  // not a continuation of it.
-  reviewRequestVersion: number;
-  // The pull request row this run's foreign key points at may exist only
-  // inside an open transaction on another connection (Forgejo's admission is
-  // transactional). Reading/writing through the global `prisma` client in
-  // that case blocks on -- or, if the transaction later rolls back, orphans a
-  // pending run against -- a row the global connection cannot yet see.
-  client?: Pick<Prisma.TransactionClient, "systemConfig" | "organization" | "repository" | "reviewRun">;
-}): Promise<{ id: string }> {
-  const client = params.client ?? prisma;
+export async function freezeReviewRun(
+  client: Prisma.TransactionClient,
+  pullRequestId: string,
+  headSha: string,
+  reviewRequestVersion: number,
+  params: {
+    source: StartReviewParams["source"];
+    correlationId?: string;
+    modelOverride?: string;
+    provider: string;
+    orgId: string;
+    repoId: string;
+    prNumber: number;
+  },
+): Promise<{ id: string }> {
   const [sysRow, orgRow, repoRow] = await Promise.all([
     client.systemConfig.findUnique({ where: { id: "singleton" }, select: { defaultReviewConfig: true } }),
     client.organization.findUnique({ where: { id: params.orgId }, select: { defaultReviewConfig: true } }),
@@ -350,8 +322,8 @@ export async function freezeReviewRun(pullRequestId: string, headSha: string | n
       pullRequestId,
       source: params.source,
       correlationId: params.correlationId ?? null,
-      headSha: headSha || null,
-      reviewRequestVersion: params.reviewRequestVersion,
+      headSha,
+      reviewRequestVersion,
       provider: params.provider,
       configSnapshot: configSnapshot as object,
       state: "pending",

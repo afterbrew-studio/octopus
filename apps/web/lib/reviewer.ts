@@ -721,19 +721,27 @@ async function finalizeAttempt(
 }
 
 /**
- * A run frozen before this column existed (or before `webhook-shared.ts`
- * threaded a head through some caller) records `null` for a binding field it
- * never actually recorded -- that field is unbound, not "bound to null", so a
- * live value that differs from it is not a mismatch. Only a field the run
- * actually recorded can supersede it.
+ * `reviewRequestVersion` is a new column: a run frozen before it existed
+ * records `null` for it, not "bound to a version that happens to be null" --
+ * that field is unbound, and a live value merely differing from `null` is
+ * not a mismatch, or every run queued before this column's deploy would
+ * supersede on its very first (and only) execution.
+ *
+ * `headSha` gets no such wildcard. It predates this run-binding check
+ * entirely -- a run with no recorded head is one `webhook-shared.ts` never
+ * threaded a head through at all, which is unsafe to treat as "whatever head
+ * is current": that is the wrong-head defect this check exists to close, not
+ * an exemption from it. A run with a NULL head is always treated as
+ * mismatched, not compared away.
  */
 function runBindingMismatch(
   run: { headSha: string | null; reviewRequestVersion: number | null },
   headSha: string | null,
   reviewRequestVersion: number,
 ): boolean {
-  return (run.headSha !== null && run.headSha !== headSha)
-    || (run.reviewRequestVersion !== null && run.reviewRequestVersion !== reviewRequestVersion);
+  if (run.headSha === null) return true;
+  if (run.headSha !== headSha) return true;
+  return run.reviewRequestVersion !== null && run.reviewRequestVersion !== reviewRequestVersion;
 }
 
 /**

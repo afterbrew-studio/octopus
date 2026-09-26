@@ -1,4 +1,5 @@
 import "server-only";
+import crypto from "node:crypto";
 import { prisma, Prisma, type PullRequest } from "@octopus/db";
 import * as github from "@/lib/github";
 import * as bitbucket from "@/lib/bitbucket";
@@ -28,7 +29,28 @@ export type ReviewRequestRejection = {
   message: string;
 };
 
-type AdmissionResult = { started: true; pullRequest: PullRequest } | ReviewRequestRejection;
+/**
+ * Creates the frozen `ReviewRun` this admission produces, as part of the SAME
+ * atomic write as the pull request's own create/update -- not a separate step
+ * after admission returns. A run-less `pending` row is exactly what a crash,
+ * or an ambiguous `reviewRun.create` failure, would otherwise leave behind:
+ * the pending-row reaper (`reap-stuck-reviews.ts`) deliberately skips a row
+ * with no run to address, so nothing would ever recover it.
+ *
+ * Called with the SAME write client the pull request's own statement used
+ * (a short transaction of admission's own, or an already-open ambient one),
+ * and the DEFINITIVE identity admission settled on -- not the caller's
+ * tentative input, which admission may have superseded (a resolved head
+ * where the caller had none, an incremented version).
+ */
+export type CreateRunForAdmission = (
+  write: Prisma.TransactionClient,
+  pullRequestId: string,
+  headSha: string,
+  reviewRequestVersion: number,
+) => Promise<{ id: string }>;
+
+type AdmissionResult = { started: true; pullRequest: PullRequest; reviewRun: { id: string } } | ReviewRequestRejection;
 
 /**
  * When a review in flight is presumed dead.
@@ -68,14 +90,34 @@ async function currentProviderHead(params: ReviewRequestParams): Promise<string 
   return details.headSha || null;
 }
 
-/** Validate provider head before atomically replacing the current request. */
-export async function admitReviewRequest(params: ReviewRequestParams, client: Prisma.TransactionClient = prisma): Promise<AdmissionResult> {
-  return params.provider === "forgejo"
-    ? forgejo.runWithForgejoRepository(params.repoId, () => admitReviewRequestInternal(params, client))
-    : admitReviewRequestInternal(params, client);
+/**
+ * A client already inside an ambient transaction (Forgejo's own) cannot open
+ * another -- Prisma does not support nesting, and everything here is already
+ * atomic with it. The plain client needs a short transaction of its own so
+ * the pull request's write and the run addressing it commit, or roll back,
+ * together; reference equality against the module's own singleton is how the
+ * two are told apart, since a real ambient transaction is never that same
+ * object.
+ */
+async function withRunCreated<T>(
+  client: Prisma.TransactionClient,
+  run: (write: Prisma.TransactionClient) => Promise<T>,
+): Promise<T> {
+  return (client as unknown) === prisma ? prisma.$transaction((tx) => run(tx)) : run(client);
 }
 
-async function admitReviewRequestInternal(params: ReviewRequestParams, client: Prisma.TransactionClient): Promise<AdmissionResult> {
+/** Validate provider head before atomically replacing the current request. */
+export async function admitReviewRequest(
+  params: ReviewRequestParams,
+  client: Prisma.TransactionClient = prisma,
+  createRun: CreateRunForAdmission,
+): Promise<AdmissionResult> {
+  return params.provider === "forgejo"
+    ? forgejo.runWithForgejoRepository(params.repoId, () => admitReviewRequestInternal(params, client, createRun))
+    : admitReviewRequestInternal(params, client, createRun);
+}
+
+async function admitReviewRequestInternal(params: ReviewRequestParams, client: Prisma.TransactionClient, createRun: CreateRunForAdmission): Promise<AdmissionResult> {
   const automatic = params.provider === "forgejo" && params.automatic === true;
   const where = { repositoryId_number: { repositoryId: params.repoId, number: params.prNumber } };
   // A "queued" pull request whose latest run is ALSO marked "queued" is a
@@ -131,13 +173,24 @@ async function admitReviewRequestInternal(params: ReviewRequestParams, client: P
       triggerCommentBody: params.triggerCommentBody,
     };
     if (!existing) {
+      // Pre-generated so the run created in the SAME atomic write can
+      // address it by id -- `create()`'s own generated id isn't known
+      // until after, and the write must not be split into two.
+      const pullRequestId = crypto.randomUUID();
       try {
-        const pullRequest = await client.pullRequest.create({ data: {
-          ...data, repositoryId: params.repoId, number: params.prNumber, reviewRequestVersion: 1,
-        } });
-        return { started: true, pullRequest };
+        const { pullRequest, reviewRun } = await withRunCreated(client, async (write) => {
+          const pullRequest = await write.pullRequest.create({ data: {
+            id: pullRequestId, ...data, repositoryId: params.repoId, number: params.prNumber, reviewRequestVersion: 1,
+          } });
+          const reviewRun = await createRun(write, pullRequest.id, headSha, 1);
+          return { pullRequest, reviewRun };
+        });
+        return { started: true, pullRequest, reviewRun };
       } catch (error) {
         // A concurrent first request created the unique repository/PR row.
+        // The short transaction above rolled back cleanly on this error --
+        // `client` (used for the retry read next iteration) was never part
+        // of it, so it is not the aborted transaction a nested one would be.
         if (error && typeof error === "object" && "code" in error && error.code === "P2002") continue;
         throw error;
       }
@@ -145,18 +198,23 @@ async function admitReviewRequestInternal(params: ReviewRequestParams, client: P
 
     // UPDATE ... RETURNING keeps the accepted snapshot and its version
     // together. Forgejo callers also wrap admission and enqueue in a transaction.
-    const [pullRequest] = await client.pullRequest.updateManyAndReturn({
-      where: {
-        id: existing.id, headSha: existing.headSha, reviewRequestVersion: existing.reviewRequestVersion,
-        status: existing.status, updatedAt: existing.updatedAt,
-        ...(automatic ? { reviewAttempts: { none: { headSha } } } : {}),
-      },
-      data: {
-        ...data, reviewRequestVersion: { increment: 1 }, reviewBody: null,
-        reviewCoverage: Prisma.DbNull, errorMessage: null,
-      },
+    const { pullRequest, reviewRun } = await withRunCreated(client, async (write) => {
+      const [pullRequest] = await write.pullRequest.updateManyAndReturn({
+        where: {
+          id: existing.id, headSha: existing.headSha, reviewRequestVersion: existing.reviewRequestVersion,
+          status: existing.status, updatedAt: existing.updatedAt,
+          ...(automatic ? { reviewAttempts: { none: { headSha } } } : {}),
+        },
+        data: {
+          ...data, reviewRequestVersion: { increment: 1 }, reviewBody: null,
+          reviewCoverage: Prisma.DbNull, errorMessage: null,
+        },
+      });
+      if (!pullRequest) return { pullRequest: undefined, reviewRun: undefined };
+      const reviewRun = await createRun(write, pullRequest.id, headSha, pullRequest.reviewRequestVersion);
+      return { pullRequest, reviewRun };
     });
-    if (pullRequest) return { started: true, pullRequest };
+    if (pullRequest) return { started: true, pullRequest, reviewRun: reviewRun! };
   }
   return { started: false, reason: "request_contended", message: "The review request changed during admission; retry the request" };
 }

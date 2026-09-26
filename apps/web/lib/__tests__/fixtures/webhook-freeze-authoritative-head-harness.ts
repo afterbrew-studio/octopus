@@ -19,29 +19,31 @@ type Row = Record<string, unknown> & { id: string; status: string; headSha: stri
 let current: Row | null = null;
 const runsCreated: Array<{ headSha: string | null; reviewRequestVersion: number | null }> = [];
 
-mock.module("@octopus/db", () => ({
-  Prisma: { DbNull: null },
-  prisma: {
-    organization: { findUnique: async () => ({ reviewsPaused: false, blockedAuthors: [], defaultReviewConfig: null }) },
-    systemConfig: { findUnique: async () => ({ blockedAuthors: [], defaultReviewConfig: null }) },
-    repository: { findUnique: async () => ({ reviewConfig: null }) },
-    reviewAttempt: { findFirst: async () => null },
-    pullRequest: {
-      findUnique: async () => (current ? { ...current, attempts: [] } : null),
-      create: async ({ data }: { data: Record<string, unknown> }) => {
-        current = { ...data, id: "pr-1", reviewRequestVersion: 1, createdAt: new Date(), updatedAt: new Date() } as Row;
-        return { ...current };
-      },
-    },
-    reviewRun: {
-      findFirst: async () => null,
-      create: async ({ data }: { data: { headSha: string | null; reviewRequestVersion: number | null } }) => {
-        runsCreated.push({ headSha: data.headSha, reviewRequestVersion: data.reviewRequestVersion });
-        return { id: "run-1" };
-      },
+const db = {
+  organization: { findUnique: async () => ({ reviewsPaused: false, blockedAuthors: [], defaultReviewConfig: null }) },
+  systemConfig: { findUnique: async () => ({ blockedAuthors: [], defaultReviewConfig: null }) },
+  repository: { findUnique: async () => ({ reviewConfig: null }) },
+  reviewAttempt: { findFirst: async () => null },
+  pullRequest: {
+    findUnique: async () => (current ? { ...current, attempts: [] } : null),
+    create: async ({ data }: { data: Record<string, unknown> }) => {
+      current = { ...data, id: "pr-1", reviewRequestVersion: 1, createdAt: new Date(), updatedAt: new Date() } as Row;
+      return { ...current };
     },
   },
-}));
+  reviewRun: {
+    findFirst: async () => null,
+    create: async ({ data }: { data: { headSha: string | null; reviewRequestVersion: number | null } }) => {
+      runsCreated.push({ headSha: data.headSha, reviewRequestVersion: data.reviewRequestVersion });
+      return { id: "run-1" };
+    },
+  },
+  // The run is created inside admission's own atomic write; this fixture is
+  // not about that atomicity, so it passes the same mock client straight
+  // through rather than modeling a real transaction.
+  $transaction: async (callback: (tx: typeof db) => Promise<unknown>) => callback(db),
+};
+mock.module("@octopus/db", () => ({ Prisma: { DbNull: null }, prisma: db }));
 mock.module("@/lib/github", () => ({
   // The authoritative head admission itself resolves -- distinct from the
   // input head this test deliberately passes as null.
