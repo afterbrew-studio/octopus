@@ -12,6 +12,7 @@ COPY apps/web/package.json ./apps/web/
 # the CLI, but the manifest must be present for the frozen install to validate.
 COPY apps/cli/package.json ./apps/cli/
 COPY packages/db/package.json ./packages/db/
+COPY packages/forgejo-connector/package.json ./packages/forgejo-connector/
 COPY packages/package-analyzer/package.json ./packages/package-analyzer/
 COPY tools/tsconfig/package.json ./tools/tsconfig/
 COPY tools/eslint-config/package.json ./tools/eslint-config/
@@ -25,6 +26,7 @@ COPY --from=deps /app/apps/web/node_modules ./apps/web/node_modules
 COPY --from=deps /app/packages/db/node_modules ./packages/db/node_modules
 COPY tools ./tools
 COPY packages/db ./packages/db
+COPY packages/forgejo-connector ./packages/forgejo-connector
 COPY packages/package-analyzer ./packages/package-analyzer
 COPY apps/web ./apps/web
 COPY package.json bun.lock turbo.json CHANGELOG.md ./

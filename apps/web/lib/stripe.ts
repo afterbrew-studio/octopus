@@ -1,6 +1,8 @@
 import "server-only";
 
 import Stripe from "stripe";
+import { randomUUID } from "node:crypto";
+import { beginMarketingPayment, bindMarketingPayment } from "./marketing-capture";
 import { prisma } from "@octopus/db";
 import { resolveOffSessionCardPaymentMethodId } from "./stripe-payment-method";
 
@@ -103,7 +105,9 @@ export async function createCheckoutSession(
   orgId: string,
   amountUsd: number,
   returnUrl: string,
+  marketingCookie: string | null = null,
 ): Promise<string> {
+  const attributionId = await beginMarketingPayment(orgId, randomUUID(), marketingCookie);
   const customerId = await getOrCreateStripeCustomer(orgId);
   const amountCents = Math.round(amountUsd * 100);
 
@@ -129,6 +133,7 @@ export async function createCheckoutSession(
     cancel_url: `${returnUrl}?canceled=true`,
   });
 
+  await bindMarketingPayment(attributionId, session.id, session);
   return session.url!;
 }
 
@@ -144,7 +149,9 @@ export async function createSubscriptionCheckoutSession(
   planName: string,
   priceUsd: number,
   returnUrl: string,
+  marketingCookie: string | null = null,
 ): Promise<string> {
+  const attributionId = await beginMarketingPayment(orgId, randomUUID(), marketingCookie);
   const customerId = await getOrCreateStripeCustomer(orgId);
 
   const session = await getStripe().checkout.sessions.create({
@@ -168,6 +175,7 @@ export async function createSubscriptionCheckoutSession(
     cancel_url: `${returnUrl}?canceled=true`,
   });
 
+  await bindMarketingPayment(attributionId, session.id, session);
   return session.url!;
 }
 
@@ -210,6 +218,7 @@ export type PaymentMethodInfo = {
 
 export async function getCustomerPaymentMethods(
   stripeCustomerId: string,
+  options: { throwOnError?: boolean } = {},
 ): Promise<PaymentMethodInfo[]> {
   try {
     const methods = await getStripe().paymentMethods.list({
@@ -223,7 +232,8 @@ export async function getCustomerPaymentMethods(
       expMonth: m.card?.exp_month ?? 0,
       expYear: m.card?.exp_year ?? 0,
     }));
-  } catch {
+  } catch (error) {
+    if (options.throwOnError) throw error;
     return [];
   }
 }

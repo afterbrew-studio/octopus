@@ -1028,18 +1028,31 @@ export async function upsertFeedbackPattern(point: {
   }
 }
 
+export type FeedbackSimilarityMatch = {
+  feedback: "up" | "down";
+  cosineSimilarity: number;
+};
+
+/**
+ * Suppression needs absolute dense similarity, never a hybrid/RRF rank score.
+ * The feedback collection's dense vector uses Cosine distance. Keep the same
+ * repo-or-organization scope as the existing feedback policy, bounded to three
+ * candidates per finding. With an org ID, other repositories in that org remain
+ * eligible.
+ */
 export async function searchFeedbackPatterns(
   repoId: string,
   queryVector: number[],
-  limit = 5,
   orgId?: string,
-  queryText?: string,
-): Promise<{ title: string; description: string; feedback: string; repoId: string; score: number }[]> {
-  if (queryVector.length === 0) return [];
-  const qdrant = getQdrantClient();
+): Promise<FeedbackSimilarityMatch[]> {
+  if (!Array.isArray(queryVector) || queryVector.length === 0) return [];
+  for (const value of queryVector) {
+    if (!Number.isFinite(value)) return [];
+  }
+  if (queryVector.every((value) => value === 0)) return [];
+
   try {
-    // Search repo-scoped patterns first
-    const filter: Record<string, unknown> = orgId
+    const filter = orgId
       ? {
           should: [
             { key: "repoId", match: { value: repoId } },
@@ -1049,49 +1062,25 @@ export async function searchFeedbackPatterns(
       : {
           must: [{ key: "repoId", match: { value: repoId } }],
         };
+    const points = await getQdrantClient().search(FEEDBACK_COLLECTION_NAME, {
+      vector: queryVector,
+      filter,
+      limit: 3,
+      with_payload: true,
+    });
 
-    let points: { payload?: Record<string, unknown> | null; score: number }[];
-
-    if (queryText) {
-      try {
-        const sparseQuery = generateSparseVector(queryText);
-        const result = await qdrant.query(FEEDBACK_COLLECTION_NAME, {
-          prefetch: [
-            { query: queryVector, limit: limit * 2, filter },
-            { query: { indices: sparseQuery.indices, values: sparseQuery.values }, using: SPARSE_VECTOR_NAME, limit: limit * 2, filter },
-          ],
-          query: { fusion: "rrf" },
-          limit,
-          with_payload: true,
-        });
-        points = result.points;
-      } catch (error) {
-        if (!isSparseVectorError(error)) throw error;
-        console.warn("[qdrant] Falling back to dense-only search", { collection: FEEDBACK_COLLECTION_NAME, error: error instanceof Error ? error.message : error });
-        points = await qdrant.search(FEEDBACK_COLLECTION_NAME, {
-          vector: queryVector,
-          filter,
-          limit,
-          with_payload: true,
-        });
-      }
-    } else {
-      points = await qdrant.search(FEEDBACK_COLLECTION_NAME, {
-        vector: queryVector,
-        filter,
-        limit,
-        with_payload: true,
-      });
-    }
-
-    return points.map((point) => ({
-      title: (point.payload?.title as string) ?? "",
-      description: (point.payload?.description as string) ?? "",
-      feedback: (point.payload?.feedback as string) ?? "",
-      repoId: (point.payload?.repoId as string) ?? "",
-      score: point.score,
-    }));
+    if (!Array.isArray(points)) return [];
+    return points.slice(0, 3).flatMap((point): FeedbackSimilarityMatch[] => {
+      const payload = point?.payload;
+      const cosineSimilarity = point?.score;
+      if (!payload || (payload.feedback !== "up" && payload.feedback !== "down")) return [];
+      if (payload.repoId !== repoId && (!orgId || payload.orgId !== orgId)) return [];
+      if (typeof cosineSimilarity !== "number" || !Number.isFinite(cosineSimilarity)
+        || cosineSimilarity < -1 || cosineSimilarity > 1) return [];
+      return [{ feedback: payload.feedback, cosineSimilarity }];
+    });
   } catch {
+    // Missing collections, provider errors and malformed results retain findings.
     return [];
   }
 }

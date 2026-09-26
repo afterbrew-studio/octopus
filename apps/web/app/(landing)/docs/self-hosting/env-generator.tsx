@@ -40,7 +40,7 @@ OCTOPUS_DATA_KEY=${dataKey}
 OPENAI_API_KEY=
 ANTHROPIC_API_KEY=
 
-# GitHub App
+# GitHub App (only when connecting GitHub repositories)
 GITHUB_APP_ID=
 GITHUB_APP_PRIVATE_KEY=
 GITHUB_WEBHOOK_SECRET=
@@ -49,6 +49,16 @@ GITHUB_APP_CLIENT_SECRET=
 GITHUB_CLIENT_ID=
 GITHUB_CLIENT_SECRET=
 NEXT_PUBLIC_GITHUB_APP_SLUG=
+
+# Private Forgejo (optional; requires web and review workers on the LAN/VPN)
+# Comma-separated exact HTTPS origins without paths or wildcards.
+# Runtime server flag for custom/prebuilt images. The official self-host image
+# already has NEXT_PUBLIC_OCTOPUS_SELF_HOSTED=true baked in at build time.
+OCTOPUS_SELF_HOSTED=true
+FORGEJO_ALLOWED_PRIVATE_ORIGINS=
+# Mounted trusted PEM CA file for internal certificates, if needed.
+# Never disable TLS verification.
+NODE_EXTRA_CA_CERTS=
 
 # Optional
 COHERE_API_KEY=

@@ -1,9 +1,10 @@
 import "server-only";
+import { observeAiRequest, completionEvidence } from "./request-evidence";
 import Anthropic from "@anthropic-ai/sdk";
 import type { Provider, AiCreateParams, AiResponse } from "./index";
-import { splitSystemForCache, type CacheTtl } from "./system-cache";
-import { resolveThinking } from "./thinking";
-import { stripLoneSurrogates } from "./sanitize";
+import { prepareAnthropicRequest, freezeRequest, usesNativeJsonOutput } from "./anthropic-request";
+import { admitAnthropicReview } from "./anthropic-capacity";
+import { generationTimeout, CapacityAdmissionError, capacityReceipt, refuseCapacity, type CapacityAdmissionReceipt } from "../review-capacity";
 
 let platformClient: Anthropic | null = null;
 
@@ -30,81 +31,58 @@ export const anthropicProvider: Provider = {
   name: "anthropic",
   supportsJsonSchema: true,
   async create(params: AiCreateParams, apiKey?: string | null): Promise<AiResponse> {
-    const client = getClient(apiKey);
-
-    // Prompt-cache TTL for the stable system prefix. Default 1h so the cached
-    // rulepack/instruction prefix survives across a repo's review burst (5m
-    // expires between sporadic reviews → low hit rate). Set PROMPT_CACHE_TTL=5m
-    // to opt back down. Read at call time so it's tunable without a redeploy.
-    const cacheTtl: CacheTtl = process.env.PROMPT_CACHE_TTL === "5m" ? "5m" : "1h";
-
-    // When a responseSchema is provided, use Anthropic tool-use for enforced
-    // structured output: define a single tool whose input_schema matches the
-    // requested shape, force it via tool_choice, then return the tool input.
-    const useTool = params.responseSchema !== undefined;
-
-    // Always-thinking models (Fable/Mythos): raise max_tokens to the floor and,
-    // on the text path, use adaptive thinking + effort so the answer isn't
-    // starved. (These models reject an explicit thinking budget.)
-    const { maxTokens, thinking, outputConfig } = resolveThinking(
-      params.model,
-      params.maxTokens,
-      useTool,
-      params.effort,
-    );
-
-    // Streaming here is purely between this process and the Anthropic API —
-    // finalMessage() buffers the SSE chunks and returns the same complete
-    // Message object messages.create() would. It's required because thinking
-    // models can take minutes before the first byte, and the SDK enforces
-    // streaming for large max_tokens to avoid HTTP timeouts.
-    const stream = client.messages.stream(
-      {
-        model: params.model,
-        max_tokens: maxTokens,
-        ...(thinking ? { thinking } : {}),
-        ...(outputConfig ? { output_config: outputConfig } : {}),
-        // Strip lone UTF-16 surrogates from all text: a diff/file body truncated
-        // mid-emoji can leave an unpaired surrogate, which serializes to invalid
-        // UTF-8 and makes Anthropic 400 the whole request ("no low surrogate").
-        system: params.system
-          ? splitSystemForCache(stripLoneSurrogates(params.system), params.cacheSystem, cacheTtl)
-          : undefined,
-        messages: params.messages.map((m) => ({
-          role: m.role,
-          content: stripLoneSurrogates(m.content),
-        })),
-        ...(useTool
-          ? {
-              tools: [
-                {
-                  name: params.responseSchema!.name,
-                  description: `Return the response as a ${params.responseSchema!.name} object.`,
-                  input_schema: params.responseSchema!.schema as Anthropic.Tool.InputSchema,
-                },
-              ],
-              tool_choice: {
-                type: "tool" as const,
-                name: params.responseSchema!.name,
-              },
-            }
-          : {}),
-      },
-      { signal: AbortSignal.timeout(ANTHROPIC_CALL_TIMEOUT_MS) },
-    );
+    const useTool = params.responseSchema !== undefined && !usesNativeJsonOutput(params.model);
+    let client: Anthropic;
+    let body: Anthropic.MessageCreateParamsStreaming;
+    let admission: CapacityAdmissionReceipt | undefined;
+    let admittedTimeout: (() => number) | undefined;
+    try {
+      client = getClient(apiKey);
+      const prepared = prepareAnthropicRequest(params, process.env.PROMPT_CACHE_TTL === "5m" ? "5m" : "1h");
+      body = params.completeReviewAdmission ? freezeRequest(prepared) : prepared;
+      if (params.completeReviewAdmission) {
+        const admitted = await admitAnthropicReview(params, body, client);
+        admission = admitted.receipt;
+        admittedTimeout = admitted.dispatchTimeout;
+      }
+    } catch (error) {
+      if (error instanceof CapacityAdmissionError || !params.completeReviewAdmission) throw error;
+      refuseCapacity(params.completeReviewAdmission, capacityReceipt(params.completeReviewAdmission, params.model), "unsupported-payload");
+    }
+    const window = params.completeReviewAdmission?.window ?? params.executionWindow;
+    let timeoutMs: number;
+    try {
+      timeoutMs = admittedTimeout ? admittedTimeout() : window ? generationTimeout(window, false) : ANTHROPIC_CALL_TIMEOUT_MS;
+    } catch (error) {
+      if (error instanceof CapacityAdmissionError) throw error;
+      if (admission) refuseCapacity(params.completeReviewAdmission!, admission, "execution-window");
+      throw error;
+    }
+    const signal = window
+      ? AbortSignal.any([window.signal, AbortSignal.timeout(timeoutMs)])
+      : AbortSignal.timeout(timeoutMs);
+    // This is a local call-start observation, not a provider delivery receipt.
+    if (admission) {
+      admission.generationTimeoutMs = timeoutMs;
+      admission.primaryDispatch = "started";
+      params.completeReviewAdmission!.onDecision?.(structuredClone(admission));
+    }
+    const stream = client.messages.stream(observeAiRequest(params, "anthropic", body), {
+      signal,
+      ...(window ? { maxRetries: 0, timeout: timeoutMs } : {}),
+    });
 
     let response: Anthropic.Message;
     try {
       response = await stream.finalMessage();
     } catch (err) {
-      // Map the abort (only our timeout signal can trigger it here) to an
-      // actionable error instead of the SDK's generic "Request was aborted".
+      // Surface both queue cancellation and the bounded stream deadline.
       if (
         err instanceof Anthropic.APIUserAbortError ||
         (err instanceof Error && (err.name === "AbortError" || err.name === "TimeoutError"))
       ) {
         throw new Error(
-          `Anthropic call timed out after ${ANTHROPIC_CALL_TIMEOUT_MS / 1000}s (model: ${params.model})`,
+          `Anthropic call interrupted or timed out within ${timeoutMs / 1000}s (model: ${params.model})`,
         );
       }
       throw err;
@@ -143,6 +121,7 @@ export const anthropicProvider: Provider = {
 
     return {
       text,
+      completion: completionEvidence(response.stop_reason, useTool ? ["tool_use"] : ["end_turn"]),
       provider: "anthropic",
       model: params.model,
       usage: {

@@ -84,7 +84,7 @@ const glossary: { term: string; definition: string }[] = [
   {
     term: "Webhook",
     definition:
-      "An HTTP callback sent by GitHub, GitLab, or Bitbucket to Octopus when an event occurs — typically a pull request or merge request being opened or updated. This is how Octopus knows when to start a review automatically.",
+      "An HTTP callback sent by GitHub, GitLab, Bitbucket, or Forgejo to Octopus when an event occurs — typically a pull request or merge request being opened or updated. This is how Octopus knows when to start a review automatically.",
   },
 ];
 

@@ -1,3 +1,4 @@
+import "server-only";
 import crypto from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { revalidatePath } from "next/cache";
@@ -6,10 +7,10 @@ import { prisma } from "@octopus/db";
 import { auth } from "@/lib/auth";
 import {
   exchangeGithubAppUserCode,
-  listInstallationRepos,
   userCanAccessInstallation,
 } from "@/lib/github";
 import { getGithubAppConfig } from "@/lib/github-app-config";
+import { syncOrgRepos } from "@/lib/repo-sync";
 import { getRedis } from "@/lib/redis";
 import { writeAuditLog } from "@/lib/audit";
 import {
@@ -27,14 +28,26 @@ import {
 const baseUrl = process.env.BETTER_AUTH_URL || "http://localhost:3000";
 const callbackUrl = new URL("/api/github/callback", baseUrl).toString();
 
-async function errorRedirect(reason: string) {
-  // Funnel: every failed connect attempt is recorded with its reason.
-  // Actor/org are unknown on some paths (e.g. invalid state), so only the
-  // reason goes in — writeAuditLog swallows its own errors.
+type FailureActor = { actorId: string; organizationId: string };
+
+async function errorRedirect(
+  reason: string,
+  who?: FailureActor,
+  githubError?: string | null,
+) {
+  // Funnel: every failed connect attempt is recorded with its reason and, once
+  // the signed state has been verified, with the user and organization it was
+  // for — so affected customers can be found. writeAuditLog swallows its own
+  // errors. A *_not_configured reason is OUR misconfiguration: shout in logs.
+  if (reason.endsWith("_not_configured")) {
+    console.error(`[github/callback] misconfiguration: ${reason} — GitHub installs cannot complete`);
+  }
   await writeAuditLog({
     action: "integration.install_failed",
     category: "system",
-    metadata: { provider: "github", reason },
+    actorId: who?.actorId ?? null,
+    organizationId: who?.organizationId ?? null,
+    metadata: { provider: "github", reason, ...(githubError ? { githubError } : {}) },
   });
   const url = new URL("/settings/integrations", baseUrl);
   url.searchParams.set("error", reason);
@@ -111,10 +124,20 @@ async function bindAndSyncInstallation(
   installationId: number,
   organizationId: string,
 ) {
-  const existingBinding = await prisma.organization.findUnique({
+  let existingBinding = await prisma.organization.findUnique({
     where: { githubInstallationId: installationId },
-    select: { id: true },
+    select: { id: true, deletedAt: true },
   });
+
+  // A soft-deleted organization must not squat the installation forever
+  // (deleteOrganization keeps the column): release it and bind here instead.
+  if (existingBinding && existingBinding.id !== organizationId && existingBinding.deletedAt) {
+    await prisma.organization.update({
+      where: { id: existingBinding.id },
+      data: { githubInstallationId: null },
+    });
+    existingBinding = null;
+  }
 
   if (existingBinding && existingBinding.id !== organizationId) {
     return { ok: false as const, reason: "installation_already_bound" };
@@ -128,72 +151,54 @@ async function bindAndSyncInstallation(
   }
 
   try {
-    const ghRepos = await listInstallationRepos(installationId);
-    const dismissedGh = new Set(
-      (
-        await prisma.repository.findMany({
-          where: {
-            organizationId,
-            provider: "github",
-            dismissedAt: { not: null },
-          },
-          select: { externalId: true },
-        })
-      ).map((repository) => repository.externalId),
-    );
-    for (const repo of ghRepos) {
-      if (dismissedGh.has(String(repo.id))) continue;
-      await prisma.repository.upsert({
-        where: {
-          provider_externalId_organizationId: {
-            provider: "github",
-            externalId: String(repo.id),
-            organizationId,
-          },
-        },
-        create: {
-          name: repo.name,
-          fullName: repo.full_name,
-          externalId: String(repo.id),
-          defaultBranch: repo.default_branch,
-          provider: "github",
-          installationId,
-          organizationId,
-        },
-        update: {
-          name: repo.name,
-          fullName: repo.full_name,
-          defaultBranch: repo.default_branch,
-          installationId,
-          isActive: true,
-          organizationId,
-        },
-      });
-    }
-  } catch (error) {
-    console.error("[github/callback] repo sync error:", error);
+    // The callback lists only the newly verified org binding, never legacy repo installations.
+    const result = await syncOrgRepos(organizationId, { source: "webhook", providers: ["github"] });
+    return { ok: true as const, setupError: result.error ?? null };
+  } catch {
+    const message = "GitHub access was authorized, but repository setup did not finish. Retry setup in Settings → Integrations.";
+    await prisma.organization.updateMany({ where: { id: organizationId, githubInstallationId: installationId }, data: {
+      githubSetupStatus: {
+        sync: { status: "failed", checkedAt: new Date().toISOString(), error: message },
+        webhook: { status: "unknown", checkedAt: null, error: null },
+      },
+    } });
+    return { ok: true as const, setupError: message };
   }
 
-  return { ok: true as const };
 }
 
 async function beginVerification(request: NextRequest, stateParam: string) {
   const verified = verifyInstallState(stateParam);
   if (!verified.ok) return errorRedirect(`invalid_state_${verified.reason}`);
+  const who: FailureActor = { actorId: verified.payload.uid, organizationId: verified.payload.oid };
 
   const caller = await requireMatchingSession(verified.payload);
   if (!caller.ok) {
     return caller.reason === "session_required"
       ? loginResumeRedirect(request)
-      : errorRedirect(caller.reason);
+      : errorRedirect(caller.reason, who);
   }
 
   const replay = await consumeState(verified.payload.jti, verified.payload.exp);
-  if (replay === "replay") return errorRedirect("replay_detected");
-  if (replay === "unavailable") return errorRedirect("state_store_unavailable");
+  if (replay === "replay") return errorRedirect("replay_detected", who);
+  if (replay === "unavailable") return errorRedirect("state_store_unavailable", who);
 
   const rawInstallationId = request.nextUrl.searchParams.get("installation_id");
   if (!rawInstallationId) {
+    // GitHub sends the user back without an installation when the install
+    // still needs an organization owner's approval (setup_action=request).
+    // Not an error for the user, but record it so the funnel is not silent.
+    void writeAuditLog({
+      action: "integration.install_failed",
+      category: "system",
+      actorId: who.actorId,
+      organizationId: who.organizationId,
+      metadata: {
+        provider: "github",
+        reason: "installation_pending_approval",
+        setupAction: request.nextUrl.searchParams.get("setup_action"),
+      },
+    }).catch(() => {});
     const response = NextResponse.redirect(
       new URL(safeReturnPath(verified.payload.rt), baseUrl),
     );
@@ -204,11 +209,11 @@ async function beginVerification(request: NextRequest, stateParam: string) {
     return response;
   }
   const installationId = parseInstallationId(rawInstallationId);
-  if (!installationId) return errorRedirect("invalid_installation_id");
+  if (!installationId) return errorRedirect("invalid_installation_id", who);
 
   const appConfig = await getGithubAppConfig();
   if (!appConfig?.clientId || !appConfig.clientSecret) {
-    return errorRedirect("github_verification_not_configured");
+    return errorRedirect("github_verification_not_configured", who);
   }
 
   const nonce = crypto.randomBytes(16).toString("base64url");
@@ -238,27 +243,31 @@ async function beginVerification(request: NextRequest, stateParam: string) {
 async function finishVerification(request: NextRequest, stateParam: string) {
   const verified = verifyInstallationVerificationState(stateParam);
   if (!verified.ok) return errorRedirect(`invalid_state_${verified.reason}`);
+  const who: FailureActor = { actorId: verified.payload.uid, organizationId: verified.payload.oid };
 
   const caller = await requireMatchingSession(verified.payload);
   if (!caller.ok) {
     return caller.reason === "session_required"
       ? loginResumeRedirect(request)
-      : errorRedirect(caller.reason);
+      : errorRedirect(caller.reason, who);
   }
 
   const replay = await consumeState(verified.payload.jti, verified.payload.exp);
-  if (replay === "replay") return errorRedirect("replay_detected");
-  if (replay === "unavailable") return errorRedirect("state_store_unavailable");
+  if (replay === "replay") return errorRedirect("replay_detected", who);
+  if (replay === "unavailable") return errorRedirect("state_store_unavailable", who);
 
-  if (request.nextUrl.searchParams.get("error")) {
-    return errorRedirect("github_authorization_denied");
+  const githubError = request.nextUrl.searchParams.get("error");
+  if (githubError) {
+    // e.g. access_denied (user declined) vs redirect_uri_mismatch (our App's
+    // callback URL is wrong): keep GitHub's code so the two are distinguishable.
+    return errorRedirect("github_authorization_denied", who, githubError);
   }
   const code = request.nextUrl.searchParams.get("code");
-  if (!code) return errorRedirect("github_authorization_failed");
+  if (!code) return errorRedirect("github_authorization_failed", who);
 
   const appConfig = await getGithubAppConfig();
   if (!appConfig?.clientId || !appConfig.clientSecret) {
-    return errorRedirect("github_verification_not_configured");
+    return errorRedirect("github_verification_not_configured", who);
   }
 
   let userAccessToken: string;
@@ -271,7 +280,7 @@ async function finishVerification(request: NextRequest, stateParam: string) {
     });
   } catch (error) {
     console.error("[github/callback] user token exchange failed:", error);
-    return errorRedirect("github_authorization_failed");
+    return errorRedirect("github_authorization_failed", who);
   }
 
   try {
@@ -279,17 +288,17 @@ async function finishVerification(request: NextRequest, stateParam: string) {
       userAccessToken,
       verified.payload.installationId,
     );
-    if (!accessible) return errorRedirect("installation_not_accessible");
+    if (!accessible) return errorRedirect("installation_not_accessible", who);
   } catch (error) {
     console.error("[github/callback] installation ownership verification failed:", error);
-    return errorRedirect("github_authorization_failed");
+    return errorRedirect("github_authorization_failed", who);
   }
 
   const binding = await bindAndSyncInstallation(
     verified.payload.installationId,
     caller.organizationId,
   );
-  if (!binding.ok) return errorRedirect(binding.reason);
+  if (!binding.ok) return errorRedirect(binding.reason, who);
 
   // Funnel: install completed and bound to the org.
   await writeAuditLog({
@@ -307,9 +316,9 @@ async function finishVerification(request: NextRequest, stateParam: string) {
 
   revalidatePath("/", "layout");
   revalidatePath("/");
-  const response = NextResponse.redirect(
-    new URL(safeReturnPath(verified.payload.rt), baseUrl),
-  );
+  const returnUrl = new URL(safeReturnPath(verified.payload.rt), baseUrl);
+  if (binding.setupError) returnUrl.searchParams.set("setup", "attention");
+  const response = NextResponse.redirect(returnUrl);
   response.cookies.delete({
     name: GITHUB_INSTALL_STATE_COOKIE,
     path: "/api/github/callback",

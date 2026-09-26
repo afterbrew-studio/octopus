@@ -7,10 +7,12 @@ import { promisify } from "node:util";
 import { getInstallationToken, getFileContent as ghGetFileContent, getRepositoryDetails } from "@/lib/github";
 import * as bitbucketLib from "@/lib/bitbucket";
 import * as gitlabLib from "@/lib/gitlab";
+import * as forgejoLib from "@/lib/forgejo";
+import { ForgejoResponseTooLargeError } from "@/lib/forgejo-http";
 import { ensureCollection, upsertChunks, deleteRepoChunks, deleteRepoFileChunks } from "@/lib/qdrant";
 import { generateSparseVectors } from "@/lib/sparse-vector";
 import { parseOctopusIgnore, type Ignore } from "@/lib/octopus-ignore";
-import { shouldIndex, chunkText, MAX_FILE_SIZE } from "@/lib/index-chunking";
+import { shouldIndex, chunkText, treeBlobs, MAX_FILE_SIZE, exceedsMaxFileSize } from "@/lib/index-chunking";
 
 const execFileAsync = promisify(execFile);
 
@@ -72,8 +74,42 @@ export async function indexRepository(
   let contributorCount = 0;
   let contributors: Contributor[] = [];
   let resolvedDefaultBranch: string | undefined;
+  let emptyRepository = false;
 
-  if ((provider === "bitbucket" || provider === "gitlab") && organizationId) {
+  if (provider === "forgejo") {
+    if (!organizationId) throw new Error("Forgejo indexing requires an organization");
+    // Use the validated API transport for user-supplied hosts. A git subprocess
+    // would resolve the host independently and bypass its network restrictions.
+    await forgejoLib.runWithForgejoRepository(repoId, async () => {
+      onLog(`Fetching Forgejo repository ${fullName}@${defaultBranch}...`);
+      const head = await forgejoLib.getBranchHead(organizationId, fullName, defaultBranch);
+      if (!head) throw new Error("Forgejo did not return a repository revision");
+      const paths = await forgejoLib.getRepositoryTree(organizationId, fullName, head);
+      totalFileCount = paths.length;
+      emptyRepository = paths.length === 0;
+      const ig = paths.includes(".octopusignore")
+        ? parseOctopusIgnore(await forgejoLib.getFileContent(organizationId, fullName, head, ".octopusignore"))
+        : undefined;
+      for (const filePath of paths.filter(p => shouldIndex(p, undefined, ig))) {
+        signal?.throwIfAborted();
+        let content: string;
+        try {
+          content = await forgejoLib.getFileContent(organizationId, fullName, head, filePath);
+        } catch (error) {
+          if (!(error instanceof ForgejoResponseTooLargeError)) throw error;
+          skipped++;
+          continue;
+        }
+        if (exceedsMaxFileSize(content) || content.includes("\0")) {
+          skipped++;
+          continue;
+        }
+        allChunks.push(...chunkText(content, filePath).map(chunk => ({ ...chunk, filePath })));
+        processed++;
+      }
+      onLog(`Processed ${processed} files, skipped ${skipped}`, "success");
+    });
+  } else if ((provider === "bitbucket" || provider === "gitlab") && organizationId) {
     // ── Bitbucket / GitLab indexing flow (clone-based) ──
     const isGl = provider === "gitlab";
     onLog(`Authenticating with ${isGl ? "GitLab" : "Bitbucket"}...`);
@@ -252,10 +288,11 @@ export async function indexRepository(
 
     onLog(`Fetching repository tree for ${fullName}@${activeBranch}...`);
     let treeRes = await fetch(
-      `${GITHUB_API}/repos/${fullName}/git/trees/${activeBranch}?recursive=1`,
-      { headers },
+      `${GITHUB_API}/repos/${fullName}/git/trees/${encodeURIComponent(activeBranch)}?recursive=1`,
+      { headers, signal },
     );
 
+    let branchExists = false;
     if (!treeRes.ok && treeRes.status === 404) {
       const [owner, repoName] = fullName.split("/");
       const details = await getRepositoryDetails(installationId, owner, repoName, token);
@@ -269,23 +306,34 @@ export async function indexRepository(
         activeBranch = details.default_branch;
         resolvedDefaultBranch = details.default_branch;
         treeRes = await fetch(
-          `${GITHUB_API}/repos/${fullName}/git/trees/${activeBranch}?recursive=1`,
-          { headers },
+          `${GITHUB_API}/repos/${fullName}/git/trees/${encodeURIComponent(activeBranch)}?recursive=1`,
+          { headers, signal },
         );
       }
     }
 
-    if (!treeRes.ok) {
-      if (treeRes.status === 409) {
-        onLog(
-          `Repository '${fullName}' appears to be empty: there are no files to index. Push some code to the repository and try again.`,
-          "error",
-        );
-        throw new Error(
-          `Repository is empty: no files to index. Push some code and retry indexing.`,
-        );
+    // GitHub can return 404 for an existing branch whose commit references
+    // Git's empty tree. Verify the commit instead of calling it a missing branch.
+    if (!treeRes.ok && treeRes.status === 404) {
+      const commitRes = await fetch(
+        `${GITHUB_API}/repos/${fullName}/commits/${encodeURIComponent(activeBranch)}`,
+        { headers, signal },
+      );
+      if (commitRes.ok) {
+        branchExists = true;
+        const commit = await commitRes.json();
+        emptyRepository = commit.commit?.tree?.sha === "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+      } else if (commitRes.status !== 404 && commitRes.status !== 422) {
+        throw new Error(`Failed to verify branch '${activeBranch}': HTTP ${commitRes.status}`);
       }
+    }
+    if (!treeRes.ok && treeRes.status === 409) {
+      const error = await treeRes.json();
+      emptyRepository = error.message === "Git Repository is empty.";
+    }
+    if (!treeRes.ok && !emptyRepository) {
       if (treeRes.status === 404) {
+        if (branchExists) throw new Error(`GitHub returned no tree for existing branch '${activeBranch}' on ${fullName}`);
         onLog(`Branch '${activeBranch}' not found on ${fullName}`, "error");
         throw new Error(`Branch '${activeBranch}' not found on ${fullName}`);
       }
@@ -293,17 +341,12 @@ export async function indexRepository(
       throw new Error(`Failed to fetch tree: ${treeRes.status}`);
     }
 
-    const treeData = await treeRes.json();
-    const allItems = (treeData.tree as TreeItem[] | undefined) ?? [];
-
-    if (allItems.length === 0) {
-      onLog(
-        `Repository '${fullName}' appears to be empty: there are no files to index. Push some code to the repository and try again.`,
-        "error",
-      );
-      throw new Error(
-        `Repository is empty: no files to index. Push some code and retry indexing.`,
-      );
+    const treeData = emptyRepository ? { tree: [] } : await treeRes.json();
+    if (!Array.isArray(treeData.tree)) throw new Error("Invalid repository tree response from GitHub");
+    const allItems = treeData.tree as TreeItem[];
+    emptyRepository = allItems.length === 0;
+    if (emptyRepository) {
+      onLog(`Branch '${activeBranch}' has no files yet. Pull requests can still be reviewed.`, "info");
     }
 
     // Check for .octopusignore
@@ -322,12 +365,11 @@ export async function indexRepository(
       }
     }
 
-    const files: TreeItem[] = allItems.filter(
-      (item) => item.type === "blob" && shouldIndex(item.path, item.size, ig),
-    );
-    totalFileCount = allItems.length;
+    const blobs = treeBlobs(allItems);
+    const files: TreeItem[] = blobs.filter((item) => shouldIndex(item.path, item.size, ig));
+    totalFileCount = blobs.length;
 
-    onLog(`Found ${allItems.length} total files, ${files.length} eligible for indexing`, "success");
+    onLog(`Found ${blobs.length} total files, ${files.length} eligible for indexing`, "success");
 
     // 1b. Fetch contributors
     try {
@@ -458,6 +500,12 @@ export async function indexRepository(
   }
 
   if (allChunks.length === 0) {
+    if (emptyRepository) {
+      if (signal?.aborted) throw new Error("Indexing cancelled");
+      // An empty snapshot must not leave searchable chunks from an older tree.
+      await ensureCollection();
+      await deleteRepoChunks(repoId);
+    }
     onLog("No indexable content found", "warning");
     return {
       totalFiles: totalFileCount,
@@ -542,6 +590,31 @@ export async function indexRepository(
   };
 }
 
+/** Load .octopusignore from the default branch for the incremental path; absence or fetch errors mean "no ignore". */
+async function loadIncrementalIgnore(
+  provider: string,
+  fullName: string,
+  defaultBranch: string,
+  installationId: number,
+  organizationId?: string,
+): Promise<Ignore | undefined> {
+  try {
+    let content: string | null = null;
+    if (provider === "github") {
+      const [owner, repoName] = fullName.split("/");
+      content = await ghGetFileContent(installationId, owner, repoName, defaultBranch, ".octopusignore");
+    } else if (provider === "bitbucket" && organizationId) {
+      const [workspace, repoSlug] = fullName.split("/");
+      content = await bitbucketLib.getFileContent(organizationId, workspace, repoSlug, defaultBranch, ".octopusignore");
+    } else if (provider === "gitlab" && organizationId) {
+      content = await gitlabLib.getFileContent(organizationId, fullName, defaultBranch, ".octopusignore");
+    }
+    return content ? parseOctopusIgnore(content) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Incrementally re-index only the changed files from a merged PR.
  * Deletes old chunks for changed/removed files, fetches & indexes added/modified files.
@@ -559,8 +632,13 @@ export async function incrementalIndex(
   const removed = changedFiles
     .filter((f) => f.status === "removed")
     .map((f) => f.filename);
-  const addedOrModified = changedFiles
-    .filter((f) => f.status !== "removed" && shouldIndex(f.filename))
+  // Extension/path rules first (no I/O); only fetch .octopusignore when something survives them.
+  const candidates = changedFiles.filter((f) => f.status !== "removed" && shouldIndex(f.filename));
+  const ig = candidates.length > 0
+    ? await loadIncrementalIgnore(provider, fullName, defaultBranch, installationId, organizationId)
+    : undefined;
+  const addedOrModified = candidates
+    .filter((f) => shouldIndex(f.filename, undefined, ig))
     .map((f) => f.filename);
 
   // 1. Delete chunks for all changed files (removed + modified + added that had old version)
@@ -583,6 +661,10 @@ export async function incrementalIndex(
         const [owner, repoName] = fullName.split("/");
         const content = await ghGetFileContent(installationId, owner, repoName, defaultBranch, filePath);
         if (!content || content.includes("\0")) continue;
+        if (exceedsMaxFileSize(content)) {
+          console.warn(`[indexer:incremental] Skipping ${filePath}: exceeds ${MAX_FILE_SIZE} bytes`);
+          continue;
+        }
         const chunks = chunkText(content, filePath);
         for (const chunk of chunks) {
           allChunks.push({ text: chunk.text, filePath, startLine: chunk.startLine, endLine: chunk.endLine });
@@ -597,6 +679,10 @@ export async function incrementalIndex(
       try {
         const content = await bitbucketLib.getFileContent(organizationId, workspace, repoSlug, defaultBranch, filePath);
         if (!content || content.includes("\0")) continue;
+        if (exceedsMaxFileSize(content)) {
+          console.warn(`[indexer:incremental] Skipping ${filePath}: exceeds ${MAX_FILE_SIZE} bytes`);
+          continue;
+        }
         const chunks = chunkText(content, filePath);
         for (const chunk of chunks) {
           allChunks.push({ text: chunk.text, filePath, startLine: chunk.startLine, endLine: chunk.endLine });
@@ -610,6 +696,10 @@ export async function incrementalIndex(
       try {
         const content = await gitlabLib.getFileContent(organizationId, fullName, defaultBranch, filePath);
         if (!content || content.includes("\0")) continue;
+        if (exceedsMaxFileSize(content)) {
+          console.warn(`[indexer:incremental] Skipping ${filePath}: exceeds ${MAX_FILE_SIZE} bytes`);
+          continue;
+        }
         const chunks = chunkText(content, filePath);
         for (const chunk of chunks) {
           allChunks.push({ text: chunk.text, filePath, startLine: chunk.startLine, endLine: chunk.endLine });

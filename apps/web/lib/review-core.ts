@@ -1,3 +1,6 @@
+import "server-only";
+import { REVIEW_MAX_TOKENS } from "@/lib/constants";
+
 /**
  * Core review generation logic extracted from reviewer.ts.
  * Used by both the standard PR review pipeline and the local-review API endpoint.
@@ -10,11 +13,10 @@ import { prisma } from "@octopus/db";
 import {
   searchSimilarChunks,
   searchKnowledgeChunks,
-  searchFeedbackPatterns,
-  ensureFeedbackCollection,
   searchReviewChunks,
 } from "@/lib/qdrant";
 import { createEmbeddings } from "@/lib/embeddings";
+import { suppressFindingsFromFeedback } from "@/lib/feedback-suppression";
 import { rerankDocuments } from "@/lib/reranker";
 import { resolveReviewLanguage } from "@/lib/review-language";
 import { getAlwaysIncludeKnowledge, mergeKnowledgeChunks } from "@/lib/knowledge-context";
@@ -379,7 +381,7 @@ export async function generateLocalReview(params: LocalReviewParams): Promise<Lo
     response = await createAiMessage(
       {
         model: reviewModel,
-        maxTokens: 8192,
+        maxTokens: REVIEW_MAX_TOKENS,
         system: systemPrompt,
         cacheSystem: true,
         messages: [
@@ -527,36 +529,8 @@ Rules:
     findings = findings.filter((f) => !disabled.has(f.category.toLowerCase()));
   }
 
-  // Step 8: Semantic feedback matching — suppress known false positives
-  try {
-    await ensureFeedbackCollection();
-    const findingTexts = findings.map((f) => `${f.title} ${f.description}`);
-    if (findingTexts.length > 0) {
-      const findingVectors = await createEmbeddings(findingTexts, {
-        organizationId: org.id,
-        operation: "embedding",
-        repositoryId: repo.id,
-      });
-
-      const suppressedIndexes = new Set<number>();
-      for (let i = 0; i < findings.length; i++) {
-        const matches = await searchFeedbackPatterns(repo.id, findingVectors[i], 3, org.id, findingTexts[i]);
-        const falsePositiveMatch = matches.find(
-          (m) => m.feedback === "down" && m.score > 0.80,
-        );
-        if (falsePositiveMatch) {
-          suppressedIndexes.add(i);
-        }
-      }
-
-      if (suppressedIndexes.size > 0) {
-        findings = findings.filter((_, i) => !suppressedIndexes.has(i));
-        console.log(`[review-core] Suppressed ${suppressedIndexes.size} findings via semantic feedback matching`);
-      }
-    }
-  } catch (err) {
-    console.warn("[review-core] Semantic feedback matching failed, continuing:", err);
-  }
+  // Step 8: Suppress strong dense matches to previously dismissed findings.
+  findings = await suppressFindingsFromFeedback(findings, { repoId: repo.id, orgId: org.id });
 
   // Step 9: Two-pass validation — use Haiku to re-score confidence on all findings
   // with cross-file context for verifying function signatures, types, etc.
@@ -795,7 +769,7 @@ export async function generateBareLocalReview(
     response = await createAiMessage(
       {
         model: reviewModel,
-        maxTokens: 8192,
+        maxTokens: REVIEW_MAX_TOKENS,
         system: systemPrompt,
         cacheSystem: true,
         messages: [

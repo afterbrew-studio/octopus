@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono, Public_Sans } from "next/font/google";
-import Script from "next/script";
+import { Suspense } from "react";
+import { MarketingConsentControls } from "@/components/marketing-consent";
 import { ThemeProvider } from "next-themes";
 import { Toaster } from "sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -30,7 +31,7 @@ export const metadata: Metadata = {
     template: "%s | Octopus",
   },
   description:
-    "Octopus reviews every pull request in minutes with AI. Works with GitHub, GitLab, and Bitbucket. Indexes your codebase, analyzes diffs, and posts severity-rated findings to catch bugs before they merge.",
+    "Octopus reviews every pull request in minutes with AI. Works with GitHub, GitLab, Bitbucket, and Forgejo. Indexes your codebase, analyzes diffs, and posts severity-rated findings to catch bugs before they merge.",
   keywords: [
     "code review",
     "AI code review",
@@ -39,6 +40,7 @@ export const metadata: Metadata = {
     "GitHub code review",
     "GitLab code review",
     "Bitbucket code review",
+    "Forgejo code review",
     "codebase indexing",
     "severity-rated findings",
     "Claude",
@@ -54,7 +56,7 @@ export const metadata: Metadata = {
     siteName: "Octopus",
     title: "AI Code Review | Octopus | Every PR, Reviewed in Minutes",
     description:
-      "Octopus reviews every pull request in minutes with AI. Works with GitHub, GitLab, and Bitbucket. Indexes your codebase, analyzes diffs, and posts severity-rated findings to catch bugs before they merge.",
+      "Octopus reviews every pull request in minutes with AI. Works with GitHub, GitLab, Bitbucket, and Forgejo. Indexes your codebase, analyzes diffs, and posts severity-rated findings to catch bugs before they merge.",
     images: [
       {
         url: "/og-image.png",
@@ -68,7 +70,7 @@ export const metadata: Metadata = {
     card: "summary_large_image",
     title: "AI Code Review | Octopus | Every PR, Reviewed in Minutes",
     description:
-      "Octopus reviews every pull request in minutes with AI. Works with GitHub, GitLab, and Bitbucket. Catch bugs before they merge.",
+      "Octopus reviews every pull request in minutes with AI. Works with GitHub, GitLab, Bitbucket, and Forgejo. Catch bugs before they merge.",
     images: ["/og-image.png"],
   },
   robots: {
@@ -96,26 +98,6 @@ export default function RootLayout({
     <html lang="en" className={publicSans.variable} suppressHydrationWarning>
       <head>
         <meta name="apple-mobile-web-app-title" content="Octopus" />
-        <Script
-          src="https://www.googletagmanager.com/gtag/js?id=G-BNFCHLD0BY"
-          strategy="afterInteractive"
-        />
-        <Script id="google-analytics" strategy="afterInteractive">
-          {`
-            window.dataLayer = window.dataLayer || [];
-            function gtag(){dataLayer.push(arguments);}
-            gtag('js', new Date());
-            gtag('config', 'G-BNFCHLD0BY');
-          `}
-        </Script>
-        <Script id="twitter-pixel" strategy="afterInteractive">
-          {`
-            !function(e,t,n,s,u,a){e.twq||(s=e.twq=function(){s.exe?s.exe.apply(s,arguments):s.queue.push(arguments);
-            },s.version='1.1',s.queue=[],u=t.createElement(n),u.async=!0,u.src='https://static.ads-twitter.com/uwt.js',
-            a=t.getElementsByTagName(n)[0],a.parentNode.insertBefore(u,a))}(window,document,'script');
-            twq('config','rc11o');
-          `}
-        </Script>
       </head>
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
@@ -125,6 +107,7 @@ export default function RootLayout({
           <TooltipProvider>
             {children}
           </TooltipProvider>
+          {process.env.NEXT_PUBLIC_OCTOPUS_SELF_HOSTED !== "true" && <Suspense fallback={null}><MarketingConsentControls /></Suspense>}
           <VersionChecker />
           <GlobalErrorHandler />
           <Toaster richColors />

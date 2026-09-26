@@ -43,7 +43,7 @@ mock.module("@/lib/redis", () => ({
   getRedis: () => redisClient,
 }));
 
-mock.module("@octopus/db", () => ({
+mock.module("@octopus/db", () => ({ Prisma: { DbNull: null },
   prisma: {
     userPresence: {
       upsert: presenceUpsert,

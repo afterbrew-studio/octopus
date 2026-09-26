@@ -1,4 +1,5 @@
 import "server-only";
+import { observeAiRequest, completionEvidence } from "./request-evidence";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import type { Provider, AiCreateParams, AiResponse } from "./index";
 
@@ -24,7 +25,7 @@ export const googleProvider: Provider = {
       parts: [{ text: m.content }],
     }));
 
-    const result = await model.generateContent({
+    const result = await model.generateContent(observeAiRequest(params, "google", {
       contents,
       systemInstruction: params.system
         ? { role: "user", parts: [{ text: params.system }] }
@@ -40,7 +41,7 @@ export const googleProvider: Provider = {
             }
           : {}),
       },
-    });
+    }));
 
     const response = result.response;
     const text = response.text();
@@ -48,6 +49,7 @@ export const googleProvider: Provider = {
 
     return {
       text,
+      completion: completionEvidence(response.candidates?.[0]?.finishReason, ["STOP"]),
       provider: "google",
       model: params.model,
       usage: {

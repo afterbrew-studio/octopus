@@ -13,7 +13,7 @@ import { loadCredentials, type Credentials } from "../lib/credentials.js";
 import { getJson, postJson } from "../lib/api.js";
 import { resolveRepo } from "../lib/repo-resolver.js";
 import { c, success, error, info, heading, table, sanitizeTerminal } from "../lib/output.js";
-import { positionals } from "../lib/args.js";
+import { repoArguments } from "../lib/command-arguments.js";
 import type { ApiRepo } from "../lib/types.js";
 
 const POLL_INTERVAL_MS = 3000;
@@ -95,9 +95,9 @@ export async function repoCommand(argv: string[]): Promise<number> {
     return 2;
   }
 
-  const [sub, repoArg] = positionals(argv);
+  const { subcommand: sub, repository: repoArg } = repoArguments(argv);
 
-  switch (sub ?? "list") {
+  switch (sub) {
     case "list":
       return await listRepos(creds.baseUrl, creds.token);
     case "status":

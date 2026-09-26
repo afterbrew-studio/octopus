@@ -19,7 +19,7 @@ mock.module("server-only", () => ({}));
 describe("the claim fence", () => {
   it("recognises the row as ours while the token matches", async () => {
     const findUnique = mock(async () => ({ claimToken: "tok-a" }));
-    mock.module("@octopus/db", () => ({ prisma: { pullRequest: { findUnique } } }));
+    mock.module("@octopus/db", () => ({ Prisma: { DbNull: null }, prisma: { pullRequest: { findUnique } } }));
     const { stillOurs } = await import("@/lib/claim-fence");
     expect(await stillOurs("pr_1", "tok-a")).toBe(true);
   });

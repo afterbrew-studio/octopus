@@ -19,7 +19,7 @@ The people listed in [MAINTAINERS.md](MAINTAINERS.md) and [.github/CODEOWNERS](.
 
 ### Lead maintainer
 
-The lead maintainer (currently [@redoh](https://github.com/redoh)) has final say on:
+The lead maintainer (currently [@cemoso](https://github.com/cemoso)) has final say on:
 
 - Project scope and direction
 - License changes
@@ -30,9 +30,9 @@ The lead maintainer (currently [@redoh](https://github.com/redoh)) has final say
 
 ### PR review
 
-PRs are reviewed by the [CODEOWNERS](.github/CODEOWNERS) for the touched paths. One maintainer approval is sufficient to merge for routine changes. Architectural or breaking changes require a second maintainer or an RFC (see below).
+The [CODEOWNERS](.github/CODEOWNERS) identify maintainers for review routing. Human or administrator approval is not a prerequisite for merging. Maintainers can still request review or open an RFC for architectural or breaking changes (see below).
 
-The Octopus reviewer bot also reviews every PR. Its **4+/5 quality rating** is a soft gate — maintainers may merge below it for trivial changes, but findings tagged 🔴 Critical must be addressed or explicitly waived in the PR description.
+The Octopus reviewer bot reviews every PR. Its **4+/5 quality rating** and all required CI checks must pass before merging. Findings tagged 🔴 Critical must be addressed before merge.
 
 ### Roadmap changes
 

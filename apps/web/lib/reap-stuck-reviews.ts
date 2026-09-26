@@ -82,7 +82,7 @@ export async function reapStuckReviews(
     // Absent for reviews enqueued before attempts existed. Those keep the old
     // behaviour rather than being refused, which would strand real work.
     const attempt = pr.attempts[0];
-    const attemptId = attempt?.id;
+    const reviewRunId = attempt?.id;
 
     // The age that decides a retry is the ATTEMPT's, not the pull request's. They
     // diverge exactly where it matters: a review dispatched an hour ago against a
@@ -94,7 +94,7 @@ export async function reapStuckReviews(
     if (startedAt > requeueCutoff) {
       await enqueue(
         "process-review",
-        attemptId ? { pullRequestId: pr.id, attemptId } : { pullRequestId: pr.id },
+        reviewRunId ? { pullRequestId: pr.id, reviewRunId } : { pullRequestId: pr.id },
         { singletonKey: `reap:${pr.id}`, singletonSeconds: 3600 },
       );
       requeued++;
@@ -102,9 +102,9 @@ export async function reapStuckReviews(
       // No retry is coming, so the attempt is over. This is the only place that
       // knows: the worker that would have finalised it is gone. The terminalAt
       // guard keeps the "written once" property under a race with a late worker.
-      if (attemptId) {
-        await prisma.reviewAttempt.updateMany({
-          where: { id: attemptId, terminalAt: null },
+      if (reviewRunId) {
+        await prisma.reviewRun.updateMany({
+          where: { id: reviewRunId, terminalAt: null },
           data: {
             state: "failed",
             terminalAt: now,
@@ -155,7 +155,7 @@ export async function reapStuckReviews(
     if (!attempt || attempt.createdAt >= pendingStale) continue;
     await enqueue(
       "process-review",
-      { pullRequestId: pr.id, attemptId: attempt.id },
+      { pullRequestId: pr.id, reviewRunId: attempt.id },
       // Same throttle as the reap path, and a distinct key: a pull request can be
       // both reaped and reconciled over its life, and one singleton would let the
       // first suppress the second for an hour.

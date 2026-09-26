@@ -1,5 +1,6 @@
 "use server";
 
+import "server-only";
 import { headers, cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
@@ -8,8 +9,9 @@ import { prisma } from "@octopus/db";
 import { hasOrgPermission } from "@/lib/org-permissions";
 import { pubby } from "@/lib/pubby";
 import { writeSyncLog, deleteSyncLogs } from "@/lib/elasticsearch";
-import { listInstallationRepos } from "@/lib/github";
-import { listWorkspaceRepos } from "@/lib/bitbucket";
+import { GithubRateLimitError } from "@/lib/github";
+import { syncOrgRepos } from "@/lib/repo-sync";
+import { WELCOME_DEFERRED_REASON } from "@/lib/org-create";
 import type { LogLevel } from "@/lib/indexer";
 import { createAbortController, abortIndexing } from "@/lib/indexing-abort";
 import { runIndexingInBackground } from "@/lib/indexing-runner";
@@ -123,13 +125,25 @@ export async function createOrganization(
       // creates can't double-grant). A WITHHELD first org still consumes the
       // bonus, so it can't be retried after an org hard-delete. Credits are
       // added only when the claim wins AND the risk score clears.
+      //
+      // Users with no OAuth credential (magic-link signups have no `accounts`
+      // row) get neither claim nor grant here — same gate as createOrgForUser:
+      // their bonus is DEFERRED to the first repository connect
+      // (grantDeferredWelcomeCredit), marked on the org via
+      // WELCOME_DEFERRED_REASON.
       let grantBonus = false;
+      let deferred = false;
       if (firstOrg) {
-        const claim = await tx.user.updateMany({
-          where: { id: user.id, welcomeGrantedAt: null },
-          data: { welcomeGrantedAt: new Date() },
-        });
-        grantBonus = claim.count === 1 && welcome.grant;
+        const hasOauthAccount = (await tx.account.count({ where: { userId: user.id } })) > 0;
+        if (hasOauthAccount) {
+          const claim = await tx.user.updateMany({
+            where: { id: user.id, welcomeGrantedAt: null },
+            data: { welcomeGrantedAt: new Date() },
+          });
+          grantBonus = claim.count === 1 && welcome.grant;
+        } else {
+          deferred = true;
+        }
       }
 
       const org = await tx.organization.create({
@@ -144,7 +158,7 @@ export async function createOrganization(
           },
           ...(firstOrg && {
             welcomeRiskScore: welcome.score,
-            welcomeRiskReason: welcome.reason,
+            welcomeRiskReason: deferred ? WELCOME_DEFERRED_REASON : welcome.reason,
           }),
           ...(grantBonus && {
             freeCreditBalance: WELCOME_FREE_CREDITS,
@@ -159,11 +173,14 @@ export async function createOrganization(
           }),
         },
       });
-      return { org, firstOrg, granted: grantBonus };
+      return { org, firstOrg, granted: grantBonus, deferred };
     });
     org = created.org;
     // Surface a silently-withheld (or race-lost) welcome bonus in the logs.
-    logWelcomeOutcome({ userId: user.id, orgId: org.id, firstOrg: created.firstOrg, granted: created.granted, decision: welcome });
+    // A deferred grant isn't withheld — it's pending first repo connect.
+    if (!created.deferred) {
+      logWelcomeOutcome({ userId: user.id, orgId: org.id, firstOrg: created.firstOrg, granted: created.granted, decision: welcome });
+    }
   } catch (err) {
     if (err instanceof Error && err.message === "ORG_LIMIT_REACHED") {
       return { error: `You can own at most ${MAX_OWNED_ORGS_PER_USER} organizations.` };
@@ -283,6 +300,7 @@ export async function updateApiKeys(
   const cohereApiKey = (formData.get("cohereApiKey") as string)?.trim() || null;
   const grokApiKey = (formData.get("grokApiKey") as string)?.trim() || null;
   const openrouterApiKey = (formData.get("openrouterApiKey") as string)?.trim() || null;
+  const alibabaApiKey = (formData.get("alibabaApiKey") as string)?.trim() || null;
 
   if (openaiApiKey && !openaiApiKey.startsWith("sk-")) {
     return { error: "Invalid OpenAI API key format." };
@@ -304,6 +322,10 @@ export async function updateApiKeys(
     return { error: "Invalid OpenRouter API key format." };
   }
 
+  if (alibabaApiKey && !alibabaApiKey.startsWith("sk-")) {
+    return { error: "Invalid Alibaba Cloud Model Studio API key format." };
+  }
+
   // Only update keys that have new values — empty fields keep the existing key.
   // Keys are encrypted at rest with the same helper used for OAuth tokens.
   const data: Record<string, string | null> = {};
@@ -313,6 +335,7 @@ export async function updateApiKeys(
   if (cohereApiKey) data.cohereApiKey = encryptString(cohereApiKey);
   if (grokApiKey) data.grokApiKey = encryptString(grokApiKey);
   if (openrouterApiKey) data.openrouterApiKey = encryptString(openrouterApiKey);
+  if (alibabaApiKey) data.alibabaApiKey = encryptString(alibabaApiKey);
 
   // Per-org provider config: gateway/base-URL overrides + gateway API keys.
   // These clear when submitted empty — a present-but-empty field sets the
@@ -356,7 +379,7 @@ export async function updateApiKeys(
   return { success: true };
 }
 
-const VALID_KEY_FIELDS = ["openaiApiKey", "anthropicApiKey", "googleApiKey", "cohereApiKey", "grokApiKey", "openrouterApiKey"] as const;
+const VALID_KEY_FIELDS = ["openaiApiKey", "anthropicApiKey", "googleApiKey", "cohereApiKey", "grokApiKey", "openrouterApiKey", "alibabaApiKey"] as const;
 
 export async function removeApiKey(
   keyField: (typeof VALID_KEY_FIELDS)[number],
@@ -524,167 +547,37 @@ export async function deleteOrganization(
   redirect("/dashboard");
 }
 
-// getUser() acts as an auth guard — throws if unauthenticated.
-// The return value is intentionally discarded; org scoping uses cookie-based orgId below.
+// The sync itself lives in lib/repo-sync.ts, shared with the webhook and the
+// hourly discover-repositories sweep.
 export async function syncRepos(): Promise<{ synced: number; removed: number; error?: string }> {
-  await getUser();
+  const user = await getUser();
   const cookieStore = await cookies();
   const orgId = cookieStore.get("current_org_id")?.value;
 
   if (!orgId) return { synced: 0, removed: 0, error: "No organization selected." };
-
-  // Collect all unique installationIds: org-level + repo-level
-  const org = await prisma.organization.findUnique({
-    where: { id: orgId },
-    select: { githubInstallationId: true },
+  const member = await prisma.organizationMember.findFirst({
+    where: { userId: user.id, organizationId: orgId, deletedAt: null, organization: { deletedAt: null, bannedAt: null } },
+    select: { role: true, scopes: true },
   });
-
-  const repoInstallations = await prisma.repository.findMany({
-    where: { organizationId: orgId, installationId: { not: null } },
-    select: { installationId: true },
-    distinct: ["installationId"],
-  });
-
-  const installationIds = new Set<number>();
-  if (org?.githubInstallationId) installationIds.add(org.githubInstallationId);
-  for (const r of repoInstallations) {
-    if (r.installationId) installationIds.add(r.installationId);
+  if (!hasOrgPermission(member, "repos:manage")) {
+    return { synced: 0, removed: 0, error: "Insufficient permissions." };
   }
 
-  // Fetch repos from all GitHub installations
-  let synced = 0;
-  let removed = 0;
-  const allGhRepoIds: string[] = [];
-
-  if (installationIds.size > 0) {
-    const dismissedGh = new Set(
-      (
-        await prisma.repository.findMany({
-          where: { organizationId: orgId, provider: "github", dismissedAt: { not: null } },
-          select: { externalId: true },
-        })
-      ).map((r) => r.externalId),
-    );
-
-    for (const instId of installationIds) {
-      try {
-        const ghRepos = await listInstallationRepos(instId);
-        for (const repo of ghRepos) {
-          const externalId = String(repo.id);
-          allGhRepoIds.push(externalId);
-          if (dismissedGh.has(externalId)) continue;
-          await prisma.repository.upsert({
-            where: {
-              provider_externalId_organizationId: { provider: "github", externalId, organizationId: orgId },
-            },
-            create: {
-              name: repo.name,
-              fullName: repo.full_name,
-              externalId,
-              defaultBranch: repo.default_branch,
-              provider: "github",
-              installationId: instId,
-              organizationId: orgId,
-            },
-            update: {
-              name: repo.name,
-              fullName: repo.full_name,
-              defaultBranch: repo.default_branch,
-              installationId: instId,
-              isActive: true,
-            },
-          });
-          synced++;
-        }
-      } catch (err) {
-        console.error(`[syncRepos] Failed to list repos for installation ${instId}:`, err);
-      }
+  try {
+    const result = await syncOrgRepos(orgId, { source: "manual" });
+    revalidatePath("/");
+    if (result.error) return { synced: result.synced, removed: result.removed, error: result.error };
+    if (result.providers.length === 0) {
+      return { synced: 0, removed: 0, error: "No GitHub, Bitbucket, GitLab, or Forgejo integration linked." };
     }
-
-    // Deactivate GitHub repos no longer in any installation.
-    // Skip dismissed repos so we don't churn rows the user has already removed.
-    const ghRemoved = await prisma.repository.updateMany({
-      where: {
-        organizationId: orgId,
-        provider: "github",
-        externalId: { notIn: allGhRepoIds },
-        isActive: true,
-        dismissedAt: null,
-      },
-      data: { isActive: false },
-    });
-    removed += ghRemoved.count;
-  }
-
-  // Sync Bitbucket repos if integration exists
-  const bbIntegration = await prisma.bitbucketIntegration.findUnique({
-    where: { organizationId: orgId },
-    select: { workspaceSlug: true },
-  });
-
-  if (bbIntegration) {
-    try {
-      const bbRepos = await listWorkspaceRepos(orgId, bbIntegration.workspaceSlug);
-      const allBbRepoIds: string[] = [];
-
-      const dismissedBb = new Set(
-        (
-          await prisma.repository.findMany({
-            where: { organizationId: orgId, provider: "bitbucket", dismissedAt: { not: null } },
-            select: { externalId: true },
-          })
-        ).map((r) => r.externalId),
-      );
-
-      for (const repo of bbRepos) {
-        allBbRepoIds.push(repo.uuid);
-        if (dismissedBb.has(repo.uuid)) continue;
-        await prisma.repository.upsert({
-          where: {
-            provider_externalId_organizationId: { provider: "bitbucket", externalId: repo.uuid, organizationId: orgId },
-          },
-          create: {
-            name: repo.name,
-            fullName: repo.full_name,
-            externalId: repo.uuid,
-            defaultBranch: repo.mainbranch?.name ?? "main",
-            provider: "bitbucket",
-            organizationId: orgId,
-          },
-          update: {
-            name: repo.name,
-            fullName: repo.full_name,
-            defaultBranch: repo.mainbranch?.name ?? "main",
-            isActive: true,
-          },
-        });
-        synced++;
-      }
-
-      // Deactivate Bitbucket repos no longer in workspace.
-      // Skip dismissed repos so we don't churn rows the user has already removed.
-      const bbRemoved = await prisma.repository.updateMany({
-        where: {
-          organizationId: orgId,
-          provider: "bitbucket",
-          externalId: { notIn: allBbRepoIds },
-          isActive: true,
-          dismissedAt: null,
-        },
-        data: { isActive: false },
-      });
-      removed += bbRemoved.count;
-    } catch (err) {
-      console.error("[syncRepos] Failed to sync Bitbucket repos:", err);
+    return { synced: result.synced, removed: result.removed };
+  } catch (err) {
+    if (err instanceof GithubRateLimitError) {
+      return { synced: 0, removed: 0, error: "GitHub rate limit reached. Try again in a few minutes." };
     }
+    console.error("[sync-repos] Sync failed:", err);
+    return { synced: 0, removed: 0, error: "Could not sync repositories. Try again or check Settings → Integrations." };
   }
-
-  if (installationIds.size === 0 && !bbIntegration) {
-    return { synced: 0, removed: 0, error: "No GitHub or Bitbucket integration linked." };
-  }
-
-  revalidatePath("/");
-  return { synced, removed };
 }
 
 const INDEX_COOLDOWN_MS = 60_000; // 1 minute
@@ -698,6 +591,8 @@ export async function indexRepository(repoId: string): Promise<{ error?: string 
       id: true,
       fullName: true,
       provider: true,
+      isActive: true,
+      dismissedAt: true,
       defaultBranch: true,
       installationId: true,
       indexStatus: true,
@@ -709,24 +604,47 @@ export async function indexRepository(repoId: string): Promise<{ error?: string 
           githubInstallationId: true,
           members: {
             where: { userId: user.id, deletedAt: null },
-            select: { id: true },
+            select: { role: true, scopes: true },
           },
         },
       },
     },
   });
 
-  if (!repo || repo.organization.members.length === 0) return {};
+  if (!repo || repo.organization.members.length === 0) return { error: "Repository not found." };
+  if (!hasOrgPermission(repo.organization.members[0], "repos:manage")) {
+    return { error: "Only organization owners and admins can start indexing." };
+  }
+  if (!repo.isActive || repo.dismissedAt) {
+    return { error: "This repository is disconnected or removed. Reconnect or restore it before indexing." };
+  }
 
   const installationId = repo.installationId ?? repo.organization.githubInstallationId;
   // GitHub repos need installationId; Bitbucket repos use OAuth tokens
-  if (repo.provider === "github" && !installationId) return {};
+  if (repo.provider === "github" && !installationId) {
+    return { error: "GitHub is disconnected. Reconnect it in Settings → Integrations before indexing." };
+  }
   if (repo.provider === "bitbucket") {
     const bbIntegration = await prisma.bitbucketIntegration.findUnique({
       where: { organizationId: repo.organizationId },
       select: { id: true },
     });
-    if (!bbIntegration) return {};
+    if (!bbIntegration) return { error: "Bitbucket is disconnected. Reconnect it in Settings → Integrations before indexing." };
+  }
+  if (repo.provider === "gitlab") {
+    const integration = await prisma.gitlabIntegration.findUnique({
+      where: { organizationId: repo.organizationId }, select: { id: true },
+    });
+    if (!integration) return { error: "GitLab is disconnected. Reconnect it in Settings → Integrations before indexing." };
+  }
+  if (repo.provider === "forgejo") {
+    const integration = await prisma.forgejoIntegration.findUnique({
+      where: { organizationId: repo.organizationId }, select: { id: true, username: true, connectorError: true },
+    });
+    if (!integration) return { error: "Forgejo is disconnected. Reconnect it in Settings → Integrations before indexing." };
+    if (!integration.username || integration.connectorError) {
+      return { error: "The Forgejo connection is not ready. Check its connector status in Settings → Integrations before indexing." };
+    }
   }
 
   // If stuck in "indexing" for more than 10 minutes, reset to allow re-trigger
@@ -817,14 +735,17 @@ export async function cancelIndexing(repoId: string): Promise<{ error?: string }
         select: {
           members: {
             where: { userId: user.id, deletedAt: null },
-            select: { id: true },
+            select: { role: true, scopes: true },
           },
         },
       },
     },
   });
 
-  if (!repo || repo.organization.members.length === 0) return {};
+  if (!repo || repo.organization.members.length === 0) return { error: "Repository not found." };
+  if (!hasOrgPermission(repo.organization.members[0], "repos:manage")) {
+    return { error: "Only organization owners and admins can cancel indexing." };
+  }
 
   if (repo.indexStatus !== "indexing") {
     return { error: "Repository is not currently indexing." };
@@ -1022,6 +943,44 @@ export async function toggleReviewsPaused(
   await prisma.organization.update({
     where: { id: orgId },
     data: { reviewsPaused: paused },
+  });
+
+  revalidatePath("/settings/reviews");
+  return { success: true };
+}
+
+/**
+ * Turn automatic repository discovery on/off for the org (hourly sweep +
+ * GitHub repository events). Manual Sync keeps working either way.
+ */
+export async function toggleAutoDiscoverRepos(
+  _prevState: { error?: string; success?: boolean },
+  formData: FormData,
+): Promise<{ error?: string; success?: boolean }> {
+  const user = await getUser();
+  const cookieStore = await cookies();
+  const orgId = cookieStore.get("current_org_id")?.value;
+
+  if (!orgId) return { error: "No organization selected." };
+
+  const member = await prisma.organizationMember.findFirst({
+    where: {
+      organizationId: orgId,
+      userId: user.id,
+      deletedAt: null,
+    },
+    select: { role: true, scopes: true },
+  });
+
+  if (!hasOrgPermission(member, "reviews:configure")) {
+    return { error: "Only organization owners and admins can change repository discovery." };
+  }
+
+  const enabled = formData.get("enabled") === "true";
+
+  await prisma.organization.update({
+    where: { id: orgId },
+    data: { autoDiscoverRepos: enabled },
   });
 
   revalidatePath("/settings/reviews");

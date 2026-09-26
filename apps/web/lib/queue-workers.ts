@@ -1,6 +1,8 @@
+import { cleanupForgejoConnectorRequests } from "./forgejo-connector";
 import type { PgBoss } from "pg-boss";
 import { sendWelcomeEmail } from "./emails/welcome";
 import { processReview } from "./reviewer";
+import { createReviewExecutionWindow } from "./review-capacity";
 import {
   handleLargeReviewResult,
   type LargeReviewResultJob,
@@ -11,8 +13,11 @@ import { enforceWebhookDeliveryRetention } from "./webhook-tenant";
 import { refreshReleaseCache } from "./releases";
 import { renewDueSubscriptions } from "./subscription";
 import { reconcileAutoReloadAttempts } from "./credits";
+import { syncMarketingConversions } from "./marketing-outbox";
 import { runOllamaPull } from "./ollama-admin";
 import { reapStuckReviews } from "./reap-stuck-reviews";
+import { discoverRepositories } from "./discover-repositories";
+import { processRepositoryIndex, type RepositoryIndexJob } from "./repository-index-job";
 import type { QueueConfig } from "./queue";
 
 export interface WelcomeEmailJob {
@@ -24,15 +29,51 @@ export interface WelcomeEmailJob {
 export interface ProcessReviewJob {
   pullRequestId: string;
   /**
-   * The frozen attempt this job executes. Optional only because jobs enqueued
-   * before this field existed are still in the queue; a job without one falls
-   * back to resolving live configuration, which is the behaviour it was enqueued
-   * under. New enqueues always set it. See rayf P-0007 C3.
+   * The frozen `ReviewRun` this job executes. Optional only because jobs
+   * enqueued before this field existed are still in the queue; a job without
+   * one falls back to resolving live configuration, which is the behaviour it
+   * was enqueued under. New enqueues always set it. See rayf P-0007 C3.
+   */
+  reviewRunId?: string;
+  /**
+   * The pre-rename field name for `reviewRunId`. pg-boss's queue is durable
+   * across deploys, so a job enqueued before this rename shipped can still be
+   * sitting in the queue when the new code starts reading it; read this as a
+   * fallback rather than silently dropping that job's frozen run.
    */
   attemptId?: string;
 }
 
 export async function registerWorkers(boss: PgBoss, config: QueueConfig): Promise<void> {
+  await boss.work("discover-models", { localConcurrency: 1 }, async (jobs) => {
+    const { refreshModelDiscovery } = await import("./providers/model-discovery");
+    for (const job of jobs) await refreshModelDiscovery(job.signal);
+  });
+  await boss.work("marketing-contexts", { localConcurrency: 1 }, async () => {
+    try {
+      const { activeTrackingConfig, captureMarketingContexts } = await import("./marketing-capture");
+      const tracking = activeTrackingConfig();
+      if (!tracking) return;
+      const { getStripe } = await import("./stripe");
+      const { marketingStripeReader } = await import("./marketing-stripe");
+      await captureMarketingContexts(tracking, marketingStripeReader(getStripe()));
+    } catch {
+      throw new Error("Marketing context reconciliation failed; no billing state was changed");
+    }
+  });
+  await boss.work("marketing-conversions", { localConcurrency: 1 }, async () => {
+    try {
+      await syncMarketingConversions();
+    } catch {
+      // SDK/DB error objects can contain request bodies or credentials.
+      throw new Error("Marketing conversion sweep failed; inspect sanitized outbox status and configuration");
+    }
+  });
+
+  await boss.work<RepositoryIndexJob>("index-repository", { localConcurrency: 1 }, async (jobs) => {
+    for (const job of jobs) await processRepositoryIndex(job.data);
+  });
+
   await boss.work<WelcomeEmailJob>("welcome-email", async (jobs) => {
     for (const job of jobs) {
       console.log(`[queue] Processing welcome-email for ${job.data.email}`);
@@ -42,12 +83,12 @@ export async function registerWorkers(boss: PgBoss, config: QueueConfig): Promis
 
   await boss.work<ProcessReviewJob>(
     "process-review",
-    { localConcurrency: config.reviewConcurrency },
+    { localConcurrency: config.reviewConcurrency, includeMetadata: true },
     async (jobs) => {
       for (const job of jobs) {
         console.log(`[queue] Processing review for PR ${job.data.pullRequestId}`);
         try {
-          await processReview(job.data.pullRequestId, job.data.attemptId);
+          await processReview(job.data.pullRequestId, createReviewExecutionWindow(job), job.data.reviewRunId ?? job.data.attemptId);
         } catch (err) {
           console.error(`[queue] Review failed for PR ${job.data.pullRequestId} (job ${job.id}):`, err);
           throw err;
@@ -88,6 +129,10 @@ export async function registerWorkers(boss: PgBoss, config: QueueConfig): Promis
       }
     },
   );
+
+  await boss.work("cleanup-forgejo-connector", async () => {
+    await cleanupForgejoConnectorRequests();
+  });
 
   // Daily audit-log retention job — scheduled in instrumentation.ts via
   // boss.schedule(); the worker registered here executes a triggered run.
@@ -223,5 +268,23 @@ export async function registerWorkers(boss: PgBoss, config: QueueConfig): Promis
     }
   });
 
-  console.log("[queue] Workers registered: welcome-email, process-review, post-large-review-result, community-review, enforce-audit-retention, enforce-activity-retention, refresh-release-cache, reap-stuck-reviews, subscription-renewals, reconcile-auto-reloads, pull-ollama-model");
+  // Hourly repository discovery sweep — scheduled in instrumentation.ts.
+  // Quiet when nothing changed, like the reaper above.
+  await boss.work("discover-repositories", async (jobs) => {
+    for (const job of jobs) {
+      try {
+        const r = await discoverRepositories();
+        if (r.created || r.removed || r.failed || r.rateLimited) {
+          console.log(
+            `[queue] discover-repositories ${job.id}: orgs=${r.orgs} created=${r.created} removed=${r.removed} failed=${r.failed} rateLimited=${r.rateLimited}`,
+          );
+        }
+      } catch (err) {
+        console.error(`[queue] discover-repositories failed (job ${job.id}):`, err);
+        throw err;
+      }
+    }
+  });
+
+  console.log("[queue] Workers registered: welcome-email, process-review, post-large-review-result, community-review, enforce-audit-retention, enforce-activity-retention, refresh-release-cache, reap-stuck-reviews, discover-repositories, subscription-renewals, reconcile-auto-reloads, pull-ollama-model");
 }

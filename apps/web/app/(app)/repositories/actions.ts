@@ -1,5 +1,6 @@
 "use server";
 
+import "server-only";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
@@ -10,6 +11,7 @@ import { pubby } from "@/lib/pubby";
 import { createAnalysisAbortController, abortAnalysis, clearAnalysisAbortController } from "@/lib/analysis-abort";
 import { abortIndexing } from "@/lib/indexing-abort";
 import { eventBus } from "@/lib/events/bus";
+import { syncForgejoRepos } from "@/lib/repo-sync";
 
 export type RepoDetailData = {
   contributors: { login: string; avatarUrl: string; contributions: number }[];
@@ -570,6 +572,7 @@ export async function transferRepository(
     where: { id: repoId },
     select: {
       id: true,
+      provider: true,
       fullName: true,
       organizationId: true,
       indexStatus: true,
@@ -592,6 +595,9 @@ export async function transferRepository(
 
   if (!hasOrgPermission(repo.organization.members[0], "repos:manage")) {
     return { error: "Only organization owners and admins can transfer repositories." };
+  }
+  if (repo.provider === "forgejo") {
+    return { error: "Connect Forgejo and sync this repository in the target organization. Forgejo connections and review history cannot be transferred between organizations." };
   }
 
   if (repo.organizationId === targetOrgId) {
@@ -713,6 +719,8 @@ export async function restoreRepository(
     where: { id: repoId },
     select: {
       id: true,
+      provider: true,
+      externalId: true,
       fullName: true,
       dismissedAt: true,
       organizationId: true,
@@ -737,6 +745,26 @@ export async function restoreRepository(
 
   if (!repo.dismissedAt) {
     return { error: "Repository is not removed." };
+  }
+
+  if (repo.provider === "forgejo") {
+    const integration = await prisma.forgejoIntegration.findUnique({ where: { organizationId: repo.organizationId }, select: { forgejoHost: true } });
+    if (!integration || !repo.externalId.startsWith(`${integration.forgejoHost}:`)) {
+      return { error: "Reconnect this repository's Forgejo instance before restoring it." };
+    }
+    // Only a current successful provider listing can reactivate a Forgejo row.
+    await prisma.repository.update({ where: { id: repoId }, data: { dismissedAt: null, isActive: false } });
+    try {
+      await syncForgejoRepos(repo.organizationId, { source: "manual" });
+      const restored = await prisma.repository.findUnique({ where: { id: repoId }, select: { isActive: true } });
+      if (!restored?.isActive) throw new Error("Repository unavailable");
+    } catch {
+      await prisma.repository.updateMany({ where: { id: repoId, isActive: false }, data: { dismissedAt: repo.dismissedAt } });
+      revalidatePath("/repositories");
+      return { error: "Could not restore this Forgejo repository. Check that the connected account still administers it, then try again." };
+    }
+    revalidatePath("/repositories");
+    return { success: true };
   }
 
   await prisma.repository.update({
@@ -780,7 +808,7 @@ export async function toggleAutoReview(
     },
   });
 
-  if (!repo || repo.organization.members.length === 0) return {};
+  if (!repo || repo.organization.members.length === 0) return { error: "Repository not found." };
 
   // Previously ungated (any member) — inconsistent with every sibling repo
   // action; auto-review on/off is review configuration.

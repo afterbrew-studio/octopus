@@ -1,6 +1,10 @@
+import { reviewPublicationSignal, type ReviewExecutionWindow } from "./review-capacity";
+import { readReviewJson } from "@/lib/review-fetch";
+import { fetchGitHubReviewInput } from "@/lib/github-review-input";
 import crypto from "node:crypto";
 import { getGithubAppConfig } from "@/lib/github-app-config";
 import { MAX_FETCH_DIFF_CHARS, truncateDiff, truncationNotice } from "@/lib/diff-truncate";
+import { formatReviewInlinePipes } from "@/lib/review-comment-markdown";
 
 const GITHUB_API = "https://api.github.com";
 const RETRYABLE_STATUSES = new Set([502, 503, 504]);
@@ -12,6 +16,7 @@ async function fetchWithRetry(
   init?: RequestInit,
 ): Promise<Response> {
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    init?.signal?.throwIfAborted();
     const res = await fetch(url, init);
     if (!RETRYABLE_STATUSES.has(res.status) || attempt === MAX_RETRIES) {
       return res;
@@ -61,6 +66,24 @@ export async function createAppJwt(): Promise<string> {
   return `${header}.${payload}.${signature}`;
 }
 
+/** Browser settings URL for an installation belonging to this GitHub App. */
+export async function getInstallationSettingsUrl(installationId: number): Promise<string> {
+  const jwt = await createAppJwt();
+  const res = await fetchWithRetry(`${GITHUB_API}/app/installations/${installationId}`, {
+    headers: { Authorization: `Bearer ${jwt}`, Accept: "application/vnd.github+json" },
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!res.ok) throw new Error("Could not read GitHub installation settings");
+  const data = await res.json();
+  if (data.id !== installationId || typeof data.html_url !== "string") throw new Error("Invalid installation response");
+  const url = new URL(data.html_url);
+  const validPath = new RegExp(`^/(?:settings/installations/${installationId}|organizations/[A-Za-z0-9-]+/settings/installations/${installationId})$`);
+  if (url.origin !== "https://github.com" || url.username || url.password || !validPath.test(url.pathname) || url.search || url.hash) {
+    throw new Error("Invalid installation settings URL");
+  }
+  return url.href;
+}
+
 export async function getInstallationPermissions(
   installationId: number,
 ): Promise<Record<string, string>> {
@@ -81,19 +104,6 @@ export async function getInstallationPermissions(
 
   const data = await res.json();
   return (data.permissions ?? {}) as Record<string, string>;
-}
-
-/** The installation's own settings page - where a widened permission is accepted. */
-export async function getInstallationSettingsUrl(
-  installationId: number,
-): Promise<string | null> {
-  const jwt = await createAppJwt();
-  const res = await fetchWithRetry(`${GITHUB_API}/app/installations/${installationId}`, {
-    headers: { Authorization: `Bearer ${jwt}`, Accept: "application/vnd.github+json" },
-  });
-  if (!res.ok) return null;
-  const data = await res.json();
-  return (data.html_url as string | undefined) ?? null;
 }
 
 /**
@@ -131,6 +141,29 @@ export async function getAppMeta(): Promise<{
   };
 }
 
+/**
+ * Thrown when GitHub rate-limited a request: 429, or 403 carrying rate-limit
+ * headers. A bare 403 (suspended installation, missing scope) is NOT a rate
+ * limit and keeps its plain error. Callers running sweeps stop on this.
+ */
+export class GithubRateLimitError extends Error {
+  constructor(
+    readonly status: number,
+    readonly retryAfterSeconds: number | null,
+  ) {
+    super(`GitHub rate limited (${status})`);
+    this.name = "GithubRateLimitError";
+  }
+}
+
+function throwIfRateLimited(res: Response): void {
+  const retryAfter = res.headers.get("retry-after");
+  const remaining = res.headers.get("x-ratelimit-remaining");
+  if (res.status === 429 || (res.status === 403 && (retryAfter !== null || remaining === "0"))) {
+    throw new GithubRateLimitError(res.status, retryAfter ? Number(retryAfter) : null);
+  }
+}
+
 export async function getInstallationToken(
   installationId: number,
 ): Promise<string> {
@@ -146,6 +179,7 @@ export async function getInstallationToken(
     },
   );
 
+  throwIfRateLimited(res);
   if (!res.ok) {
     throw new Error(`Failed to get installation token: ${res.status}`);
   }
@@ -280,6 +314,7 @@ export interface PullRequestDetails {
   url: string;
   author: string;
   headSha: string;
+  baseSha: string | null;
   /** PR description body (may be empty). Untrusted user content. */
   body: string;
 }
@@ -289,11 +324,13 @@ export async function getPullRequestDetails(
   owner: string,
   repo: string,
   prNumber: number,
+  signal?: AbortSignal,
 ): Promise<PullRequestDetails> {
   const token = await getInstallationToken(installationId);
   const res = await fetchWithRetry(
     `${GITHUB_API}/repos/${owner}/${repo}/pulls/${prNumber}`,
     {
+      signal,
       headers: {
         Authorization: `Bearer ${token}`,
         Accept: "application/vnd.github+json",
@@ -312,6 +349,7 @@ export async function getPullRequestDetails(
     url: data.html_url,
     author: data.user?.login ?? "unknown",
     headSha: data.head?.sha ?? "",
+    baseSha: data.base?.sha ?? null,
     body: data.body ?? "",
   };
 }
@@ -425,11 +463,14 @@ export async function updateCheckRun(
   checkRunId: number,
   conclusion: "success" | "failure" | "neutral",
   output: { title: string; summary: string },
+  executionWindow?: ReviewExecutionWindow,
 ): Promise<void> {
   const token = await getInstallationToken(installationId);
+  const signal = reviewPublicationSignal(executionWindow);
   const res = await fetchWithRetry(
     `${GITHUB_API}/repos/${owner}/${repo}/check-runs/${checkRunId}`,
     {
+      signal,
       method: "PATCH",
       headers: {
         Authorization: `Bearer ${token}`,
@@ -614,11 +655,34 @@ export class LargePrError extends Error {
       repo: string;
       prNumber: number;
       reason: "too-many-files" | "diff-too-large";
+      headSha?: string;
+      baseSha?: string;
     },
   ) {
     super(message);
     this.name = "LargePrError";
   }
+}
+
+export async function getPullRequestReviewInput(
+  installationId: number, owner: string, repo: string, prNumber: number, expectedHead: string | null,
+) {
+  const token = await getInstallationToken(installationId);
+  return fetchGitHubReviewInput({
+    expectedHead,
+    onDiffError: (error, revision) => {
+      if (error instanceof LargePrError) Object.assign(error.meta, revision);
+    },
+    maxPatchChars: MAX_FETCH_DIFF_CHARS,
+    fetchDiff: () => getPullRequestDiff(installationId, owner, repo, prNumber, token),
+    readJson: async (suffix) => {
+      const res = await fetchWithRetry(`${GITHUB_API}/repos/${owner}/${repo}/pulls/${prNumber}${suffix}`, {
+        headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" },
+      });
+      if (!res.ok) throw new Error(`Failed to get review input: ${res.status}`);
+      return readReviewJson(res);
+    },
+  });
 }
 
 export async function getPullRequestDiff(
@@ -764,6 +828,28 @@ async function getPullRequestDiffViaFiles(
 // truncation marker we append.
 export const MAX_GITHUB_COMMENT_BODY = 64_000;
 
+function compactCoverageReference(body: string): string {
+  // Read only the provider's coverage preamble, including previously stored
+  // Markdown-link bodies and the publisher's fixed re-review banner. Finding
+  // text and arbitrary links are not metadata.
+  const header = /^(?:Review attempt:[^\r\n]*\r?\n\r?\n)?(?:> ✅ No new issues detected since the last review(?: \(commit `[0-9a-f]{7}`\))?\.\r?\n\r?\n)?### Review coverage\r?\n\r?\n\*\*([^\r\n]+)\*\*\r?\n\r?\n/.exec(body);
+  if (!header) return "";
+  const preamble = body.slice(header[0].length, header[0].length + 2048);
+  const reference = /^(?:Attempt: ([A-Za-z0-9_-]+) (https?:\/\/[^\s<>()`]+)\.\r?\n|Attempt: \[`([A-Za-z0-9_-]+)`\]\((https?:\/\/[^\s<>()`]+)\)\. )Head: `(?:[0-9a-f]{40}|unknown)`\. Base: `(?:[0-9a-f]{40}|unknown)`\.(?=\r?\n|$)/i.exec(preamble);
+  if (!reference) {
+    const compact = /^(?:\*\*Overall: not assessed[^\n]+\n\n)?(?:\[Full coverage and review record\]\((https?:\/\/[^\s()]+\/api\/review-attempts\/[A-Za-z0-9_-]+)\)|Full coverage and review record: (https?:\/\/[^\s<>()`]+\/api\/review-attempts\/[A-Za-z0-9_-]+))(?: · Octopus sign-in required\.)?(?=\r?\n|$)/.exec(preamble);
+    return compact ? `**${header[1]}**\n\n${compact[0]}` : "";
+  }
+  const attemptId = reference[1] ?? reference[3];
+  try {
+    const url = new URL(reference[2] ?? reference[4]);
+    if (url.username || url.password || url.search || url.hash || url.pathname !== `/api/review-attempts/${attemptId}`) return "";
+    return `**${header[1].slice(0, 600).replace(/[\uD800-\uDBFF]$/, "")}**\n\n${reference[0]}`;
+  } catch {
+    return "";
+  }
+}
+
 /**
  * Truncate a comment body to GitHub's accepted size, appending a clear
  * marker so reviewers know there's more. The full review is still
@@ -777,6 +863,34 @@ export function truncateForGithubComment(body: string): string {
   const marker =
     "\n\n---\n\n> ⚠️ **Comment truncated** — this review exceeded GitHub's per-comment size cap. " +
     "Visit the dashboard for the full version.";
+  const heading = /^## 🐙 Octopus Review[ \t]*$/m.exec(body);
+  const footer = /^Last reviewed commit: [0-9a-f]{40}[ \t]*$/im.exec(body);
+  const score = /^### Score[ \t]*\r?\n([\s\S]*?)(?=^#{1,6} |^Last reviewed commit:|(?![\s\S]))/m.exec(body);
+  if (heading && footer && score) {
+    const prefix = /^Review attempt:[^\n]*\n\n/.exec(body)?.[0] ?? "";
+    const attemptReference = compactCoverageReference(body);
+    const history = /^Review history: https?:\/\/[^\s<>()`]+\/review-attempts\/[A-Za-z0-9_-]+[ \t]*$/m.exec(body)?.[0]
+      ?? /^### Review history \(latest [1-5]\)\n\n(?:- (?:[0-9a-f]{7}|Unknown head) · [^\n]{1,30} · https?:\/\/[^\s<>()`]+\/api\/review-attempts\/[A-Za-z0-9_-]+\n?){1,5}\n\nReview records require Octopus organization access\./m.exec(body)?.[0] ?? "";
+    const table = score[1].split("\n").filter(line => {
+      const category = line.split("|")[1]?.trim().replaceAll("**", "");
+      return category && ["Category", "Security", "Code Quality", "Performance", "Error Handling", "Consistency", "Overall"].includes(category);
+    });
+    const incomplete = /Overall: not assessed|Not assessed — incomplete review coverage/.test(body);
+    const assessment = /^Assessment: [^\n]+/m.exec(body)?.[0] ?? "";
+    const reason = assessment.slice(0, 600).replace(/[\uD800-\uDBFF]$/, "");
+    const unassessed = /^\*{0,2}(Overall: not assessed[^\n]*?\.)(?:\*{2})?(?: |$)/m.exec(body)?.[1] ?? "Overall: not assessed — assessment unavailable.";
+    const compactScore = incomplete ? unassessed : table.length > 0 ? table.map(line => {
+      const cells = line.split("|");
+      if (cells.length !== 5) return "";
+      return `|${cells.slice(1, 4).map(cell => {
+        if (cell.length <= 300) return cell;
+        const shortened = cell.slice(0, 300).replace(/[\uD800-\uDBFF]$/, "");
+        return `${shortened}…`;
+      }).join("|")}|`;
+    }).filter(Boolean).join("\n").replace(/^(.*)\n/, "$1\n| --- | --- | --- |\n") : "Not assessed — incomplete review coverage.";
+    const compact = `${prefix}${heading[0]}\n\n### Score\n${compactScore}\n\n${reason}\n\n${attemptReference}${marker}\n\n${history.length <= 3000 ? history : ""}\n\n${footer[0]}`;
+    if (compact.length <= MAX_GITHUB_COMMENT_BODY) return compact;
+  }
   const room = MAX_GITHUB_COMMENT_BODY - marker.length;
   // Prefer cutting at a paragraph boundary near the limit so the truncation
   // doesn't land mid-codeblock or mid-finding.
@@ -798,6 +912,55 @@ export function truncateForGithubComment(body: string): string {
   return cut + marker;
 }
 
+/** GitHub shows the coverage decision; the immutable record owns the inventory. */
+export function compactReviewCoverageComment(body: string): string {
+  if (!compactCoverageReference(body)) return body;
+  const header = /^(?:Review attempt:[^\r\n]*\r?\n\r?\n)?(?:> ✅ No new issues detected since the last review(?: \(commit `[0-9a-f]{7}`\))?\.\r?\n\r?\n)?### Review coverage\r?\n\r?\n\*\*[^\r\n]+\*\*\r?\n\r?\n/.exec(body);
+  const end = /\nAssessment: [^\n]*\n\n/.exec(body);
+  if (!header || !end || end.index < header[0].length) return body;
+  const coverage = body.slice(header[0].length, end.index);
+  const reference = compactCoverageReference(body);
+  const url = /https?:\/\/[^\s<>()`]+/.exec(reference)?.[0]?.replace(/\.$/, "");
+  if (!url) return body;
+  const warning = /^\*\*Overall: not assessed[^\n]+/m.exec(coverage)?.[0];
+  // Inventory rows and technical receipts stay in the archive, not the PR feed.
+  return header[0] + (warning ? warning + "\n\n" : "")
+    + `Full coverage and review record: ${url}\n`
+    + body.slice(end.index);
+}
+
+function formatSummaryComment(body: string, marker?: string): string {
+  const compact = truncateForGithubComment(formatReviewInlinePipes(compactReviewCoverageComment(body)));
+  if (!marker) return compact;
+  const footer = /\n*Last reviewed commit: [0-9a-f]{40}\s*$/i.exec(compact)?.[0] ?? "";
+  return (footer ? compact.slice(0, -footer.length) : compact) + `\n\n${marker}` + footer;
+}
+
+export async function findPullRequestSummaryComment(
+  owner: string, repo: string, prNumber: number, marker: string, token: string, signal: AbortSignal,
+): Promise<number | null> {
+  const config = await getGithubAppConfig();
+  if (!config) throw new Error("GitHub App is not configured for summary reconciliation");
+  for (let page = 1; ; page++) {
+    const res = await fetchWithRetry(`${GITHUB_API}/repos/${owner}/${repo}/issues/${prNumber}/comments?per_page=100&page=${page}`, {
+      signal, headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" },
+    });
+    if (!res.ok) throw new Error(`Failed to reconcile PR summary: ${res.status}`);
+    const comments = await res.json() as { id: number; body?: string; performed_via_github_app?: { id: number } | null }[];
+    // Existing reservations may have been published by a pre-upgrade replica.
+    // Match only the same opaque reference and App; never adopt by display text.
+    const portable = /^Octopus publication reference: ([A-Za-z0-9_-]+):([1-9][0-9]*)$/.exec(marker);
+    const legacyMarker = portable ? `<!-- octopus-summary:${portable[1]}:${portable[2]} -->` : undefined;
+    const match = comments.find(comment => {
+      if (String(comment.performed_via_github_app?.id) !== String(config.appId)) return false;
+      const lines = comment.body?.split("\n") ?? [];
+      return lines.includes(marker) || (legacyMarker !== undefined && lines.includes(legacyMarker));
+    });
+    if (match) return match.id;
+    if (comments.length < 100) return null;
+  }
+}
+
 export async function createPullRequestComment(
   installationId: number,
   owner: string,
@@ -806,13 +969,17 @@ export async function createPullRequestComment(
   body: string,
   /** Pre-resolved token (bot-account mode). Skips getInstallationToken when provided. */
   providedToken?: string,
+  signal?: AbortSignal,
+  summaryMarker?: string,
 ): Promise<number> {
-  const safeBody = truncateForGithubComment(body);
+  const safeBody = formatSummaryComment(body, summaryMarker);
   const token = providedToken ?? await getInstallationToken(installationId);
-  const res = await fetchWithRetry(
+  signal?.throwIfAborted();
+  const res = await fetch(
     `${GITHUB_API}/repos/${owner}/${repo}/issues/${prNumber}/comments`,
     {
       method: "POST",
+      signal,
       headers: {
         Authorization: `Bearer ${token}`,
         Accept: "application/vnd.github+json",
@@ -837,13 +1004,17 @@ export async function updatePullRequestComment(
   body: string,
   /** Pre-resolved token (bot-account mode). Skips getInstallationToken when provided. */
   providedToken?: string,
+  signal?: AbortSignal,
+  summaryMarker?: string,
 ): Promise<void> {
-  const safeBody = truncateForGithubComment(body);
+  const safeBody = formatSummaryComment(body, summaryMarker);
   const token = providedToken ?? await getInstallationToken(installationId);
+  signal?.throwIfAborted();
   const res = await fetchWithRetry(
     `${GITHUB_API}/repos/${owner}/${repo}/issues/comments/${commentId}`,
     {
       method: "PATCH",
+      signal,
       headers: {
         Authorization: `Bearer ${token}`,
         Accept: "application/vnd.github+json",
@@ -1190,6 +1361,7 @@ export async function listInstallationRepos(
       },
     );
 
+    throwIfRateLimited(res);
     if (!res.ok) {
       throw new Error(`Failed to list repos: ${res.status}`);
     }

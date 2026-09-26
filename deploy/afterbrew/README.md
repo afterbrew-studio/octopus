@@ -222,6 +222,26 @@ read-only. That is not incidental: the runtime image carries no migrations and t
 publishes no port, so there is nothing on the host to connect to. Nothing is installed on
 the host and nothing is left behind.
 
+## Before deploying a version that changes the run-binding check
+
+`reviewer.ts` binds a `ReviewRun` to the exact head and version it was frozen for, and a run
+whose recorded `headSha` is NULL is treated as unbound *and unsafe*: it supersedes without
+ever running, rather than reviewing whatever head happens to be current. `reviewRequestVersion`
+is different -- it is a new column, so NULL there alone is an ordinary legacy wildcard, and a
+run missing only that field still executes normally.
+
+```sh
+./check-legacy-runs.sh
+```
+
+Counts non-terminal `review_runs` rows, and how many of those have no recorded `headSha`.
+None is the ordinary case: `headSha` predates this check by a long way, so a genuinely
+head-less row (as opposed to merely predating `reviewRequestVersion`) should already be rare.
+A non-zero count is not silent either way -- each one writes a `terminalDetail` naming what
+it found current when the new image claims it -- but the queue drains on its own schedule
+either way, so run this first and decide whether to wait it out (pause admission, let the
+workers finish, then deploy) rather than finding out from the terminal detail after the fact.
+
 ## Reaching it: a public hostname behind Cloudflare Access
 
 The dashboard is not published to the internet by the compose file, and it is not meant to be

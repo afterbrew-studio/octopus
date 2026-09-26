@@ -10,7 +10,7 @@ let userRow: UserRow;
 const auditCalls: Array<Record<string, unknown>> = [];
 
 mock.module("server-only", () => ({}));
-mock.module("@octopus/db", () => ({
+mock.module("@octopus/db", () => ({ Prisma: { DbNull: null },
   prisma: {
     user: { findUnique: mock(() => Promise.resolve(userRow)) },
   },

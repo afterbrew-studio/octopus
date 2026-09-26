@@ -1,10 +1,13 @@
+import "server-only";
 import crypto from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { headers, cookies } from "next/headers";
 import { prisma } from "@octopus/db";
 import { hasOrgPermission } from "@/lib/org-permissions";
 import { auth } from "@/lib/auth";
-import { listNamespaceProjects, createProjectWebhook } from "@/lib/gitlab";
+import { syncOrgRepos } from "@/lib/repo-sync";
+import { withWebhookSetupLock } from "@/lib/integration-setup-lock";
+import { parseIntegrationSetupStatus } from "@/lib/integration-setup";
 import { decryptJson, encryptString } from "@/lib/crypto";
 
 const GITLAB_OAUTH_INIT_COOKIE = "gitlab_oauth_init";
@@ -170,116 +173,67 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const webhookSecret = crypto.randomBytes(32).toString("hex");
-  const debugLog: string[] = [];
-  debugLog.push(`host: ${gitlabHost}`);
-  debugLog.push(`namespace: ${namespacePath} (${namespaceName})`);
-  if (clientSecret) debugLog.push("oauth: per-org credentials");
-
-  // Persist OAuth creds (encrypted) only for self-hosted (non-env) flow,
-  // so refresh can use them later.
-  const persistOauthClientId = clientSecret ? clientId : null;
-  const persistOauthClientSecretEnc = clientSecret ? encryptString(clientSecret) : null;
-  const accessTokenEnc = encryptString(accessToken);
-  const refreshTokenEnc = encryptString(refreshToken);
-
-  await prisma.gitlabIntegration.upsert({
-    where: { organizationId: orgId },
-    create: {
-      gitlabHost,
-      namespacePath,
-      namespaceName,
-      oauthClientId: persistOauthClientId,
-      oauthClientSecretEnc: persistOauthClientSecretEnc,
-      accessToken: accessTokenEnc,
-      refreshToken: refreshTokenEnc,
-      tokenExpiresAt,
-      scopes,
-      webhookSecret,
-      organizationId: orgId,
-    },
-    update: {
-      gitlabHost,
-      namespacePath,
-      namespaceName,
-      oauthClientId: persistOauthClientId,
-      oauthClientSecretEnc: persistOauthClientSecretEnc,
-      accessToken: accessTokenEnc,
-      refreshToken: refreshTokenEnc,
-      tokenExpiresAt,
-      scopes,
-      webhookSecret,
-    },
-  });
-  debugLog.push("integration upserted OK");
-
-  const appUrl = process.env.BETTER_AUTH_URL || "http://localhost:3000";
-  const callbackUrl = `${appUrl}/api/gitlab/webhook`;
-  debugLog.push(`webhook target: ${callbackUrl}`);
-
-  let projectCount = 0;
-  let hookCount = 0;
+  let saved: boolean;
   try {
-    const projects = await listNamespaceProjects(orgId, namespacePath);
-    projectCount = projects.length;
-    const dismissedGl = new Set(
-      (
-        await prisma.repository.findMany({
-          where: { organizationId: orgId, provider: "gitlab", dismissedAt: { not: null } },
-          select: { externalId: true },
-        })
-      ).map((r) => r.externalId),
-    );
-    for (const project of projects) {
-      if (dismissedGl.has(String(project.id))) continue;
-      await prisma.repository.upsert({
-        where: {
-          provider_externalId_organizationId: {
-            provider: "gitlab",
-            externalId: String(project.id),
-            organizationId: orgId,
-          },
-        },
+    saved = await withWebhookSetupLock(`binding:gitlab:${orgId}`, async (tx) => {
+      const existing = await tx.gitlabIntegration.findUnique({ where: { organizationId: orgId } });
+      if (existing && (existing.gitlabHost !== gitlabHost || existing.namespacePath !== namespacePath)) return false;
+      const webhookSecret = existing ? existing.webhookSecret : crypto.randomBytes(32).toString("hex");
+
+      const persistOauthClientId = clientSecret ? clientId : null;
+      const persistOauthClientSecretEnc = clientSecret ? encryptString(clientSecret) : null;
+      const accessTokenEnc = encryptString(accessToken);
+      const refreshTokenEnc = encryptString(refreshToken);
+
+      await tx.gitlabIntegration.upsert({
+        where: { organizationId: orgId },
         create: {
-          name: project.name,
-          fullName: project.path_with_namespace,
-          externalId: String(project.id),
-          defaultBranch: project.default_branch ?? "main",
-          provider: "gitlab",
-          isActive: true,
+          gitlabHost,
+          namespacePath,
+          namespaceName,
+          oauthClientId: persistOauthClientId,
+          oauthClientSecretEnc: persistOauthClientSecretEnc,
+          accessToken: accessTokenEnc,
+          refreshToken: refreshTokenEnc,
+          tokenExpiresAt,
+          scopes,
+          webhookSecret,
           organizationId: orgId,
         },
         update: {
-          name: project.name,
-          fullName: project.path_with_namespace,
-          defaultBranch: project.default_branch ?? "main",
-          isActive: true,
+          gitlabHost,
+          namespacePath,
+          namespaceName,
+          oauthClientId: persistOauthClientId,
+          oauthClientSecretEnc: persistOauthClientSecretEnc,
+          accessToken: accessTokenEnc,
+          refreshToken: refreshTokenEnc,
+          tokenExpiresAt,
+          scopes,
+          webhookSecret,
+          setupStatus: parseIntegrationSetupStatus(null),
         },
       });
-
-      try {
-        const hookId = await createProjectWebhook(
-          orgId,
-          project.path_with_namespace,
-          callbackUrl,
-          webhookSecret,
-        );
-        if (hookId) hookCount += 1;
-      } catch (err) {
-        console.warn(`[gitlab-callback] Hook creation failed for ${project.path_with_namespace}:`, err);
-      }
-    }
-    debugLog.push(`projects synced: ${projectCount}`);
-    debugLog.push(`hooks created: ${hookCount}`);
-    console.log(`[gitlab-callback] Synced ${projectCount} projects, ${hookCount} hooks for ${namespacePath}`);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    debugLog.push(`project sync FAILED: ${msg}`);
-    console.error("[gitlab-callback] Project sync failed:", err);
+      if (!existing) await tx.repository.updateMany({
+        where: { organizationId: orgId, provider: "gitlab" },
+        data: { webhookSetupStatus: { status: "unknown" }, isActive: false },
+      });
+      return true;
+    });
+  } catch {
+    return NextResponse.redirect(new URL("/settings/integrations?error=connection_busy", baseUrl));
   }
+  if (!saved) return NextResponse.redirect(new URL("/settings/integrations?error=connection_replacement", baseUrl));
 
-  const debugParam = encodeURIComponent(JSON.stringify(debugLog));
-  return NextResponse.redirect(
-    new URL(`/settings/integrations?success=gitlab&gl_debug=${debugParam}`, baseUrl),
-  );
+  let setupFailed = false;
+  try {
+    const result = await syncOrgRepos(orgId, { source: "manual", providers: ["gitlab"] });
+    setupFailed = Boolean(result.error);
+  } catch {
+    setupFailed = true;
+  }
+  return NextResponse.redirect(new URL(
+    `/settings/integrations?authorized=gitlab${setupFailed ? "&setup=attention" : ""}`,
+    baseUrl,
+  ));
 }

@@ -1,3 +1,4 @@
+import "server-only";
 import { headers, cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
@@ -23,6 +24,8 @@ import { ProvidersBanner } from "@/components/dashboard/providers-banner";
 import { OnboardingTips } from "@/components/dashboard/onboarding-tips";
 import { BuyCreditsButton } from "@/components/dashboard/buy-credits-button";
 import { getCustomerPaymentMethods } from "@/lib/stripe";
+import { getOnboardingRepositoryUrl, getRepositoryReadiness } from "@/lib/repository-onboarding";
+import { hasOrgPermission } from "@/lib/org-permissions";
 
 // --- Constants ---
 
@@ -63,6 +66,7 @@ function sanitizeParam(value: string | undefined, pattern: RegExp): string {
 }
 
 interface DashboardSearchParams {
+  onboardingRepo?: string;
   repo?: string;
   author?: string;
   period?: string;
@@ -122,20 +126,27 @@ export default async function DashboardPage({
       userId: session.user.id,
       ...(currentOrgId ? { organizationId: currentOrgId } : {}),
       deletedAt: null,
+      organization: { deletedAt: null, bannedAt: null },
     },
     select: {
+      role: true,
+      scopes: true,
       organization: {
         select: {
           id: true,
           githubInstallationId: true,
+          githubSetupStatus: true,
           stripeCustomerId: true,
           repositories: {
-            where: { isActive: true },
+            where: { isActive: true, dismissedAt: null },
             select: {
               id: true,
               name: true,
               fullName: true,
               provider: true,
+              createdAt: true,
+              installationId: true,
+              webhookSetupStatus: true,
               defaultBranch: true,
               isActive: true,
               indexStatus: true,
@@ -158,6 +169,8 @@ export default async function DashboardPage({
                   url: true,
                   author: true,
                   status: true,
+                  headSha: true,
+                  reviewRequestVersion: true,
                   createdAt: true,
                 },
                 orderBy: { createdAt: "desc" },
@@ -186,7 +199,7 @@ export default async function DashboardPage({
     ? { brand: cards[0].brand, last4: cards[0].last4 }
     : null;
   const indexedRepos = repos.filter((r) => r.indexStatus === "indexed").length;
-  const notIndexedRepos = totalRepos - indexedRepos;
+  const preparingRepos = repos.filter((r) => r.indexStatus === "indexing" || r.analysisStatus === "analyzing").length;
   const githubConnected = org.githubInstallationId !== null;
   // Dropped-install detection: the GitHub App was uninstalled (installationId
   // nulled) but active GitHub repos remain, so PR webhooks are silently dropped
@@ -197,21 +210,86 @@ export default async function DashboardPage({
 
   const bitbucketIntegration = await prisma.bitbucketIntegration.findUnique({
     where: { organizationId: org.id },
-    select: { workspaceName: true },
+    select: { workspaceName: true, setupStatus: true },
   });
   const bitbucketConnected = !!bitbucketIntegration;
   const gitlabIntegration = await prisma.gitlabIntegration.findUnique({
     where: { organizationId: org.id },
-    select: { namespaceName: true },
+    select: { namespaceName: true, gitlabHost: true, setupStatus: true },
   });
   const gitlabConnected = !!gitlabIntegration;
+  const forgejoIntegration = await prisma.forgejoIntegration.findUnique({
+    where: { organizationId: org.id },
+    select: { username: true, forgejoHost: true, connectorTokenHash: true, connectorLastSeenAt: true, connectorError: true, setupStatus: true },
+  });
+  const forgejoConnected = Boolean(forgejoIntegration?.username);
   const bannerDismissed = cookieStore.get("providers_banner_dismissed")?.value === "1";
+  const connected = githubConnected || bitbucketConnected || gitlabConnected || forgejoConnected;
+  const onboardingDismissed = cookieStore.get(`onboarding_first_review_dismissed_${org.id}`)?.value === "1";
+  const selectedId = sanitizeParam(params.onboardingRepo, VALID_REPO_ID);
+  const firstCompletedReview = onboardingDismissed ? null : await prisma.pullRequest.findFirst({
+    where: {
+      firstReviewCompletedAt: { not: null },
+      repository: { organizationId: org.id, isActive: true, dismissedAt: null },
+    },
+    select: { id: true, number: true, url: true, repositoryId: true },
+    orderBy: { firstReviewCompletedAt: "asc" },
+  });
+  const oldestRepos = [...repos].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.id.localeCompare(b.id));
+  const providerConnected = (provider: string) => provider === "github" ? githubConnected
+    : provider === "bitbucket" ? bitbucketConnected
+    : provider === "gitlab" ? gitlabConnected : provider === "forgejo" && forgejoConnected;
+  const selectedRepo = repos.find(r => r.id === selectedId)
+    ?? repos.find(r => r.id === firstCompletedReview?.repositoryId)
+    ?? oldestRepos.find(r => providerConnected(r.provider) &&
+      (r.provider !== "github" || r.installationId === null || r.installationId === org.githubInstallationId))
+    ?? oldestRepos[0] ?? null;
+  const [latestReview, completedReview] = selectedRepo && !onboardingDismissed ? await Promise.all([
+    prisma.pullRequest.findFirst({
+      where: { repositoryId: selectedRepo.id, repository: { organizationId: org.id } },
+      select: { id: true, number: true, status: true, url: true },
+      orderBy: { updatedAt: "desc" },
+    }),
+    prisma.pullRequest.findFirst({
+      where: { repositoryId: selectedRepo.id, repository: { organizationId: org.id }, firstReviewCompletedAt: { not: null } },
+      select: { id: true, number: true, url: true },
+      orderBy: { firstReviewCompletedAt: "asc" },
+    }),
+  ]) : [null, null];
+  const selectedProvider = selectedRepo?.provider;
+  const selectedConnected = selectedRepo ? providerConnected(selectedRepo.provider) : false;
+  const setupStatus = selectedProvider === "github" ? org.githubSetupStatus
+    : selectedProvider === "bitbucket" ? bitbucketIntegration?.setupStatus
+    : selectedProvider === "gitlab" ? gitlabIntegration?.setupStatus : forgejoIntegration?.setupStatus;
+  const onboarding = !onboardingDismissed && (
+    <OnboardingTips
+      key={org.id}
+      orgId={org.id}
+      connected={selectedRepo ? selectedConnected : connected}
+      repositories={repos.map(r => ({ id: r.id, fullName: r.fullName }))}
+      repository={selectedRepo ? {
+        id: selectedRepo.id, fullName: selectedRepo.fullName, provider: selectedRepo.provider,
+        autoReview: selectedRepo.autoReview, indexStatus: selectedRepo.indexStatus, analysisStatus: selectedRepo.analysisStatus,
+        url: getOnboardingRepositoryUrl(selectedRepo.provider, selectedRepo.fullName,
+          selectedProvider === "gitlab" ? gitlabIntegration?.gitlabHost : forgejoIntegration?.forgejoHost),
+        readiness: getRepositoryReadiness({
+          provider: selectedRepo.provider, connected: selectedConnected, setupStatus,
+          webhookSetupStatus: selectedRepo.webhookSetupStatus,
+          installationMatches: selectedProvider !== "github" || selectedRepo.installationId === null || selectedRepo.installationId === org.githubInstallationId,
+          connectorUnavailable: selectedProvider === "forgejo" && Boolean(forgejoIntegration?.connectorError || (forgejoIntegration?.connectorTokenHash &&
+            (!forgejoIntegration.connectorLastSeenAt || Date.now() - forgejoIntegration.connectorLastSeenAt.getTime() > 90_000))),
+        }),
+      } : null}
+      latestReview={latestReview}
+      completedReview={completedReview}
+    />
+  );
 
   // Connect-first empty state: an org with no provider and no repos gets one
   // clear action instead of an all-zero analytics grid. Not dismissible —
   // there is nothing else to show until code is connected. Also skips the
   // chart queries below, which would all be empty for this cohort.
-  if (!githubConnected && !bitbucketConnected && !gitlabConnected && totalRepos === 0) {
+  if (!githubConnected && !bitbucketConnected && !gitlabConnected && !forgejoConnected && totalRepos === 0) {
     return (
       <div className="mx-auto max-w-6xl p-6 md:p-10">
         <div>
@@ -225,18 +303,14 @@ export default async function DashboardPage({
           githubConnected={githubConnected}
           bitbucketConnected={bitbucketConnected}
           gitlabConnected={gitlabConnected}
+          forgejoConnected={forgejoConnected}
           githubAppSlug={githubAppSlug}
           gitlabRedirectUri={process.env.GITLAB_REDIRECT_URI ?? null}
         />
+        {onboarding}
       </div>
     );
   }
-
-  const hasIndexedRepo = repos.some((r) => r.indexStatus === "indexed");
-  const hasAnalyzedRepo = repos.some((r) => r.analysisStatus === "analyzed" || r.analysisStatus === "completed");
-  const hasAutoReviewRepo = repos.some((r) => r.autoReview === true);
-  const onboardingComplete = hasIndexedRepo && hasAnalyzedRepo && hasAutoReviewRepo;
-  const onboardingDismissed = cookieStore.get("onboarding_tips_dismissed")?.value === "1";
 
   // --- Chart Queries ---
 
@@ -565,21 +639,16 @@ export default async function DashboardPage({
         </div>
       )}
 
-      {!githubReconnectNeeded && (!githubConnected || !bitbucketConnected || !gitlabConnected) && !bannerDismissed && (
+      {onboarding}
+
+      {!githubReconnectNeeded && (!githubConnected || !bitbucketConnected || !gitlabConnected || !forgejoConnected) && !bannerDismissed && (
         <ProvidersBanner
           githubConnected={githubConnected}
           bitbucketConnected={bitbucketConnected}
           gitlabConnected={gitlabConnected}
+          forgejoConnected={forgejoConnected}
           githubAppSlug={githubAppSlug}
           gitlabRedirectUri={process.env.GITLAB_REDIRECT_URI ?? null}
-        />
-      )}
-
-      {!onboardingComplete && !onboardingDismissed && (
-        <OnboardingTips
-          hasIndexedRepo={hasIndexedRepo}
-          hasAnalyzedRepo={hasAnalyzedRepo}
-          hasAutoReviewRepo={hasAutoReviewRepo}
         />
       )}
 
@@ -607,17 +676,17 @@ export default async function DashboardPage({
         <Card className="p-3 sm:p-4">
           <div className="flex items-center justify-between">
             <span className="text-xs font-medium text-muted-foreground sm:text-sm">
-              Not Indexed
+              Preparing
             </span>
             <IconActivity className="text-muted-foreground size-3.5 sm:size-4" />
           </div>
-          <div className="mt-1 text-2xl font-bold sm:text-3xl">{notIndexedRepos}</div>
-          {notIndexedRepos > 0 && (
+          <div className="mt-1 text-2xl font-bold sm:text-3xl">{preparingRepos}</div>
+          {preparingRepos > 0 && (
             <a
               href="/repositories"
               className="mt-1 block text-[10px] font-medium text-muted-foreground hover:text-foreground transition-colors sm:text-xs"
             >
-              Start indexing &rarr;
+              View preparation progress &rarr;
             </a>
           )}
         </Card>
@@ -698,6 +767,8 @@ export default async function DashboardPage({
         <RepoTable
           repos={repos.slice(0, DISPLAYED_REPO_COUNT).map((r) => ({
             ...r,
+            repoUrl: getOnboardingRepositoryUrl(r.provider, r.fullName,
+              r.provider === "gitlab" ? gitlabIntegration?.gitlabHost : forgejoIntegration?.forgejoHost) ?? undefined,
             indexedAt: r.indexedAt?.toISOString() ?? null,
             pullRequests: r.pullRequests.map((pr) => ({
               ...pr,
@@ -705,6 +776,7 @@ export default async function DashboardPage({
             })),
           }))}
           orgId={org.id}
+          canManageRepos={hasOrgPermission(member, "repos:manage")}
         />
       </div>
     </div>

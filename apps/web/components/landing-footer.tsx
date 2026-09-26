@@ -8,6 +8,7 @@ import {
   IconBrandX,
   IconBrandYoutube,
   IconBug,
+  IconStar,
 } from "@tabler/icons-react";
 import { TrackedLink, TrackedAnchor } from "@/components/tracked-link";
 import { GetInTouchModal } from "@/components/get-in-touch-modal";
@@ -19,6 +20,23 @@ export function LandingFooter() {
   return (
     <footer className="border-t border-white/[0.06] px-6 py-12 md:px-8 md:py-16">
       <div className="mx-auto max-w-6xl">
+        <div className="mb-10 flex flex-col items-start gap-5 rounded-xl border border-teal-400/20 bg-teal-400/5 p-6 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0">
+            <h2 className="text-lg font-semibold text-white">Support Octopus on GitHub</h2>
+            <p className="mt-1 max-w-xl text-sm leading-relaxed text-[#aaa]">A star helps more developers discover Octopus. Share feedback, report an issue, or contribute to the project.</p>
+          </div>
+          <TrackedAnchor
+            href="https://github.com/octopusreview/octopus"
+            target="_blank"
+            rel="noopener noreferrer"
+            event="footer_click"
+            eventParams={{ label: "github_star" }}
+            className="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-lg bg-white px-5 py-2.5 text-sm font-semibold text-[#111] transition-colors hover:bg-teal-100 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-teal-300"
+          >
+            <IconStar aria-hidden="true" className="size-4" />
+            Star on GitHub
+          </TrackedAnchor>
+        </div>
         <div className="grid gap-10 sm:grid-cols-2 lg:grid-cols-4">
           {/* Brand */}
           <div className="sm:col-span-2 lg:col-span-1">
@@ -428,16 +446,6 @@ export function LandingFooter() {
             </span>
           </div>
           <div className="flex items-center gap-4">
-            <a
-              href="https://claude.ai/code"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center gap-1 text-xs text-[#444] transition-colors hover:text-white"
-            >
-              Powered by
-              <Image src="/claude-color.svg" alt="" width={14} height={14} />
-              <Image src="/claude-text.svg" alt="Claude" width={56} height={14} className="brightness-0 invert" />
-            </a>
             <TrackedLink
               href="/docs/privacy"
               event="footer_click"

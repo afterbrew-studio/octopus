@@ -1,8 +1,13 @@
+import "server-only";
+import { isReviewRequestVersion } from "@/lib/review-status-state";
+import { randomUUID } from "node:crypto";
+import { deliverReviewAttempt } from "@/lib/review-attempt-delivery";
+import { saveReviewAttempt, updateCurrentReview, hasReviewAttempt, recordFirstReviewCompletion } from "@/lib/review-attempt";
+import { publishReviewSummary } from "@/lib/review-summary-comment";
+import { unknownReviewCoverage, applyReviewCoverage, coverageSummary, reviewCheckResult } from "@/lib/review-coverage";
 import { prisma, type Prisma } from "@octopus/db";
 import { pubby } from "@/lib/pubby";
 import {
-  createPullRequestComment as ghCreatePullRequestComment,
-  updatePullRequestComment as ghUpdatePullRequestComment,
   createPullRequestReview as ghCreatePullRequestReview,
   updateCheckRun as ghUpdateCheckRun,
 } from "@/lib/github";
@@ -10,6 +15,7 @@ import { parseFindings } from "@/lib/review-dedup";
 import { findingSignature, mergeFindingsBySignature, inheritReviewIssueTriage } from "@/lib/finding-merge";
 import {
   buildLowSeveritySummary,
+  normalizeLastReviewedCommit,
   stripDetailedFindings,
   filterByConfidence,
   resolveConfidenceThreshold,
@@ -26,15 +32,21 @@ import { attemptOutcomeForStatus, resolveReviewConfig } from "@/lib/review-attem
 
 export type LargeReviewResultJob = {
   pullRequestId: string;
+  attemptId?: string;
+  reviewRequestVersion?: number;
+  headSha?: string | null;
+  baseSha?: string | null;
+  checkRunId?: number | null;
   reviewBody: string;
   durationMs?: number;
   error?: string;
   /**
-   * The frozen attempt this result belongs to, when internal-cli echoed it back.
-   * Absent otherwise, and the attempt is then looked up from the pull request --
-   * see `activeAttempt`.
+   * The frozen `ReviewRun` this result belongs to, when internal-cli echoed it
+   * back. Absent otherwise, and the run is then looked up from the pull request
+   * -- see `activeReviewRun`. Distinct from `attemptId` above, which addresses
+   * the immutable `ReviewAttempt` evidence record this result is saved as.
    */
-  attemptId?: string;
+  reviewRunId?: string;
   /**
    * Which model produced this review, when internal-cli reported it. Absent on
    * an older producer, and the footer then says so rather than naming a model it
@@ -44,23 +56,23 @@ export type LargeReviewResultJob = {
 };
 
 /**
- * The attempt this result belongs to.
+ * The `ReviewRun` this result belongs to.
  *
  * Addressed by id when the job carries one. When it does not -- internal-cli owns
- * that payload and is not in this repository -- the newest attempt that has not
+ * that payload and is not in this repository -- the newest run that has not
  * reached a terminal state is used. That is weaker: it is inference rather than
  * identity, and a pull request with two overlapping dispatches could resolve to
  * the other one. It is still better than the alternative, which was re-merging
  * live configuration and finalising nothing at all.
  */
-export async function activeAttempt(pullRequestId: string, attemptId?: string) {
-  if (attemptId) {
-    return prisma.reviewAttempt.findUnique({
-      where: { id: attemptId },
+export async function activeReviewRun(pullRequestId: string, reviewRunId?: string) {
+  if (reviewRunId) {
+    return prisma.reviewRun.findUnique({
+      where: { id: reviewRunId },
       select: { id: true, configSnapshot: true },
     });
   }
-  return prisma.reviewAttempt.findFirst({
+  return prisma.reviewRun.findFirst({
     where: { pullRequestId, terminalAt: null },
     orderBy: { createdAt: "desc" },
     select: { id: true, configSnapshot: true },
@@ -105,61 +117,24 @@ export async function handleLargeReviewResult(
     return;
   }
 
-  const reviewCommentId = pr.reviewCommentId ? Number(pr.reviewCommentId) : null;
+  // The snapshot wins, exactly as on the standard path. Without this the largest
+  // and most expensive reviews were the ones that silently ran against whatever
+  // was configured at the moment the result came back. rayf P-0007 C3.
+  const reviewRun = await activeReviewRun(pr.id, data.reviewRunId);
 
-  if (data.error) {
-    const errorBody = [
-      "> 🐙 **Octopus Review** encountered an error while analyzing this large pull request.",
-      ">",
-      `> \`${data.error}\``,
-      ">",
-      "> Please try again by commenting `@octopus-review` on this PR.",
-    ].join("\n");
-
-    if (reviewCommentId) {
-      await ghUpdatePullRequestComment(
-        installationId,
-        owner,
-        repoName,
-        reviewCommentId,
-        errorBody,
-      ).catch((e) =>
-        console.error("[large-review-result] Failed to update placeholder:", e),
-      );
-    } else {
-      await ghCreatePullRequestComment(
-        installationId,
-        owner,
-        repoName,
-        pr.number,
-        errorBody,
-      ).catch((e) =>
-        console.error("[large-review-result] Failed to create error comment:", e),
-      );
-    }
-
-    await prisma.pullRequest.update({
-      where: { id: pr.id },
-      data: { status: "failed", errorMessage: data.error },
-    });
-    // This path returns before the config block, so it resolves its own attempt.
-    await finalizeAttempt(
-      await activeAttempt(pr.id, data.attemptId),
-      "failed",
-      `large review failed: ${data.error ?? "unknown"}`,
-    );
-
-    eventBus.emit({
-      type: "review-failed",
-      orgId: org.id,
-      prNumber: pr.number,
-      prTitle: pr.title,
-      error: data.error,
-    });
-    return;
+  const correlated = typeof data.attemptId === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(data.attemptId)
+    && typeof data.headSha === "string" && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(data.headSha)
+    && typeof data.baseSha === "string" && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(data.baseSha);
+  const attemptId = correlated ? data.attemptId! : randomUUID();
+  const coverage = unknownReviewCoverage(repo.provider, "Large-review worker did not supply verified changed-file coverage.");
+  if (correlated) {
+    if (isReviewRequestVersion(data.reviewRequestVersion)) coverage.reviewRequestVersion = data.reviewRequestVersion;
+    coverage.headSha = data.headSha!;
+    coverage.baseSha = data.baseSha!;
+    if (Number.isSafeInteger(data.checkRunId) && data.checkRunId! > 0) coverage.nativeCheckId = String(data.checkRunId);
   }
-
-  const reviewBody = data.reviewBody;
+  const reviewBody = applyReviewCoverage(data.error ? `Large review failed: ${data.error}` : data.reviewBody, coverage, attemptId);
+  await hasReviewAttempt(attemptId, pr.id, coverage, reviewBody);
 
   // 1. Parse findings out of the markdown, then apply the SAME per-category
   // confidence filter + severity cap as the standard path (#652) so the largest,
@@ -175,12 +150,8 @@ export async function handleLargeReviewResult(
   } catch {
     // SystemConfig unavailable — fall back to org/repo config only.
   }
-  // The snapshot wins, exactly as on the standard path. Without this the largest
-  // and most expensive reviews were the ones that silently ran against whatever
-  // was configured at the moment the result came back. rayf P-0007 C3.
-  const attempt = await activeAttempt(pr.id, data.attemptId);
   const reviewConfig = resolveReviewConfig(
-    attempt,
+    reviewRun,
     mergeReviewConfigs(
       systemConfig,
       parseReviewConfig(org.defaultReviewConfig),
@@ -196,52 +167,6 @@ export async function handleLargeReviewResult(
   console.log(
     `[large-review-result] PR #${pr.number}: ${reviewBody.length} chars, ${parsedFindings.length} parsed → ${findings.length} after confidence filter${truncatedCount ? ` (capped ${truncatedCount})` : ""}`,
   );
-
-  // 2. Update placeholder comment with main body (findings JSON stripped — they go inline/summary)
-  const mainCommentBody = stripDetailedFindings(reviewBody);
-  let mainCommentId = reviewCommentId;
-  if (mainCommentId) {
-    try {
-      await ghUpdatePullRequestComment(
-        installationId,
-        owner,
-        repoName,
-        mainCommentId,
-        mainCommentBody,
-      );
-    } catch (err) {
-      // Comment may have been deleted — recreate
-      if (err instanceof Error && err.message.includes("404")) {
-        const newId = await ghCreatePullRequestComment(
-          installationId,
-          owner,
-          repoName,
-          pr.number,
-          mainCommentBody,
-        );
-        mainCommentId = newId;
-        await prisma.pullRequest.update({
-          where: { id: pr.id },
-          data: { reviewCommentId: newId },
-        });
-      } else {
-        throw err;
-      }
-    }
-  } else {
-    const newId = await ghCreatePullRequestComment(
-      installationId,
-      owner,
-      repoName,
-      pr.number,
-      mainCommentBody,
-    );
-    mainCommentId = newId;
-    await prisma.pullRequest.update({
-      where: { id: pr.id },
-      data: { reviewCommentId: newId },
-    });
-  }
 
   // 3. Post a summary review (no inline comments — internal-cli path doesn't compute
   // diff line maps. All findings end up in the summary table.)
@@ -262,45 +187,6 @@ export async function handleLargeReviewResult(
       ? "APPROVE"
       : "COMMENT";
 
-  const findingsBlock = buildLowSeveritySummary(findings);
-  const summaryHeader = `Large PR — ${findings.length} finding${findings.length !== 1 ? "s" : ""}${
-    mainCommentId && pr.url ? ` | [View details](${pr.url}#issuecomment-${mainCommentId})` : ""
-  }`;
-  const summaryBody = [
-    summaryHeader,
-    findingsBlock,
-    `<sub>Reviewed by [Octopus Review](https://octopus-review.ai) using \`${data.model ?? "an unreported model"}\` (large-PR pipeline, no inline comments).</sub>`,
-  ]
-    .filter(Boolean)
-    .join("\n\n");
-
-  try {
-    await ghCreatePullRequestReview(
-      installationId,
-      owner,
-      repoName,
-      pr.number,
-      summaryBody,
-      reviewEvent,
-      [],
-    );
-    console.log(
-      `[large-review-result] PR review submitted (${reviewEvent}, ${findings.length} findings in summary)`,
-    );
-  } catch (err) {
-    console.error(
-      "[large-review-result] Failed to submit review, falling back to comment:",
-      err,
-    );
-    await ghCreatePullRequestComment(
-      installationId,
-      owner,
-      repoName,
-      pr.number,
-      summaryBody,
-    );
-  }
-
   // 4. Persist findings to review_issues
   // Signature-matched findings inherit prior triage state; delete+create run
   // atomically so a mid-way failure can never wipe triage without replacement.
@@ -318,113 +204,145 @@ export async function handleLargeReviewResult(
       signature: findingSignature({ filePath: f.filePath || "", category: f.category, title }),
     };
   });
-  const { merged, inherited } = mergeFindingsBySignature<Prisma.ReviewIssueCreateManyInput>({
+  const { merged } = mergeFindingsBySignature<Prisma.ReviewIssueCreateManyInput>({
     prior: priorIssues,
     current,
     inherit: inheritReviewIssueTriage,
   });
-  await prisma.$transaction([
-    prisma.reviewIssue.deleteMany({ where: { pullRequestId: pr.id } }),
-    ...(merged.length > 0 ? [prisma.reviewIssue.createMany({ data: merged })] : []),
-  ]);
-  if (merged.length > 0) {
-    console.log(
-      `[large-review-result] Saved ${merged.length} review issues to DB` +
-        (inherited > 0 ? ` (${inherited} inherited prior triage state)` : ""),
-    );
+
+  // The immutable result (and eligible current findings) must commit before
+  // any final comment or native completion. Identical retries cannot promote
+  // the same archive again or overwrite a replacement report.
+  await saveReviewAttempt(attemptId, pr.id, coverage, reviewBody, data.error ? undefined : merged);
+  if (coverage.nativeCheckId) {
+    const result = reviewCheckResult(coverage, false, 0);
+    await ghUpdateCheckRun(installationId, owner, repoName, Number(coverage.nativeCheckId), result.conclusion, {
+      title: result.title, summary: result.summary,
+    });
   }
+  const stillCurrent = async () => {
+    if (!correlated || !isReviewRequestVersion(coverage.reviewRequestVersion)) return false;
+    const latest = await prisma.pullRequest.findUnique({ where: { id: pr.id }, select: { headSha: true, reviewRequestVersion: true, reviewBody: true } });
+    return latest?.headSha === coverage.headSha && latest.reviewRequestVersion === coverage.reviewRequestVersion && latest.reviewBody === reviewBody;
+  };
+  if (!await stillCurrent()) return;
 
-  // 5. Mark PR completed
-  await prisma.pullRequest.update({
-    where: { id: pr.id },
-    data: { status: "completed", reviewBody, errorMessage: null },
-  });
-
-  // 6. Update check run if PR has headSha (best effort — we don't track checkRunId
-  // across the queue boundary, so we recreate-or-skip via a fresh check run.)
-  if (pr.headSha) {
-    try {
-      const conclusion = shouldRequestChanges ? "failure" : "success";
-      const summaryText = shouldRequestChanges
-        ? hasCritical
-          ? "Critical issues found that must be fixed before merge."
-          : hasHigh
-            ? "High severity issues found that should be fixed before merge."
-            : "Medium severity issues found that should be fixed before merge."
-        : findings.length > 0
-          ? "Review complete. No issues above the configured threshold."
-          : "Review complete. No issues found.";
-
-      const { createCheckRun: ghCreateCheckRun } = await import("@/lib/github");
-      const checkRunId = await ghCreateCheckRun(
-        installationId,
-        owner,
-        repoName,
-        pr.headSha,
-        "Octopus Review (Large PR)",
-      );
-      await ghUpdateCheckRun(
-        installationId,
-        owner,
-        repoName,
-        checkRunId,
-        conclusion,
-        {
-          title: `${findings.length} finding${findings.length !== 1 ? "s" : ""}`,
-          summary: summaryText,
-        },
-      );
-    } catch (err) {
-      console.error("[large-review-result] Check run update failed:", err);
+  // Archive existence does not mean that remote delivery completed. Persist
+  // checkpoints separately, so retries resume the unfinished publication.
+  await deliverReviewAttempt(attemptId, async (progress, checkpoint) => {
+    if (!await stillCurrent()) return;
+    let mainCommentId: bigint | number | null = progress.mainCommentId;
+    if (!mainCommentId) {
+      const errorBody = [
+        "> 🐙 **Octopus Review** encountered an error while analyzing this large pull request.",
+        ">", `> \`${data.error}\``, ">",
+        "> Please try again by commenting `@octopus-review` on this PR.",
+      ].join("\n");
+      const commentBody = data.error ? applyReviewCoverage(errorBody, coverage, attemptId) : stripDetailedFindings(reviewBody);
+      mainCommentId = await publishReviewSummary({ pullRequestId: pr.id, headSha: coverage.headSha,
+        reviewRequestVersion: coverage.reviewRequestVersion, installationId, owner, repo: repoName,
+        prNumber: pr.number, body: commentBody, expectedReviewBody: reviewBody });
+      if (mainCommentId === null) return;
+      await checkpoint({ mainCommentId });
     }
-  }
+    if (!await stillCurrent()) return;
+    if (data.error) {
+      const failedUpdate = await updateCurrentReview(pr.id, coverage.headSha, coverage.reviewRequestVersion, { status: "failed", errorMessage: data.error }, reviewBody);
+      if (failedUpdate.count) eventBus.emit({ type: "review-failed", orgId: org.id, prNumber: pr.number, prTitle: pr.title, error: data.error });
+      await finalizeReviewRun(reviewRun, "failed", `large review failed: ${data.error}`);
+      return;
+    }
+    if (!progress.summaryPublished) {
+      const findingsBlock = buildLowSeveritySummary(findings);
+      const summaryHeader = `${coverageSummary(coverage)} Large PR — ${findings.length} finding${findings.length !== 1 ? "s" : ""}${
+        mainCommentId && pr.url ? ` | [View details](${pr.url}#issuecomment-${mainCommentId})` : ""
+      }`;
+      const summaryBody = [
+        summaryHeader,
+        findingsBlock,
+        `<sub>Reviewed by [Octopus Review](https://octopus-review.ai) using \`${data.model ?? "an unreported model"}\` (large-PR pipeline, no inline comments).</sub>`,
+      ]
+        .filter(Boolean)
+        .join("\n\n");
 
-  // 7. Pubby + event bus
-  await pubby
-    .trigger(`presence-org-${org.id}`, "review-status", {
-      repoId: repo.id,
-      pullRequestId: pr.id,
-      number: pr.number,
-      status: "completed",
-      step: "completed",
-    })
-    .catch((e) =>
-      console.error("[large-review-result] Pubby trigger failed:", e),
+      try {
+        await ghCreatePullRequestReview(
+          installationId,
+          owner,
+          repoName,
+          pr.number,
+          summaryBody,
+          reviewEvent,
+          [],
+          undefined,
+          coverage.headSha ?? undefined,
+        );
+        console.log(
+          `[large-review-result] PR review submitted (${reviewEvent}, ${findings.length} findings in summary)`,
+        );
+      } catch (err) {
+        console.error(
+          "[large-review-result] Failed to submit review, falling back to comment:",
+          err,
+        );
+        if (await publishReviewSummary({ pullRequestId: pr.id, headSha: coverage.headSha,
+          reviewRequestVersion: coverage.reviewRequestVersion, installationId, owner, repo: repoName,
+          prNumber: pr.number, body: normalizeLastReviewedCommit(`${stripDetailedFindings(reviewBody)}\n\n${summaryBody}`, coverage.headSha),
+          expectedReviewBody: reviewBody }) === null) return;
+      }
+      await checkpoint({ summaryPublished: true });
+    }
+    if (!await stillCurrent()) return;
+    // 7. Pubby + event bus
+    await recordFirstReviewCompletion(pr.id, coverage.headSha, coverage.reviewRequestVersion, reviewBody);
+    await pubby
+      .trigger(`presence-org-${org.id}`, "review-status", {
+        repoId: repo.id,
+        pullRequestId: pr.id,
+        headSha: coverage.headSha,
+        reviewRequestVersion: coverage.reviewRequestVersion,
+        number: pr.number,
+        status: "completed",
+        step: "completed",
+      })
+      .catch((e) =>
+        console.error("[large-review-result] Pubby trigger failed:", e),
+      );
+
+    eventBus.emit({
+      type: "review-completed",
+      orgId: org.id,
+      prNumber: pr.number,
+      prTitle: pr.title,
+      prUrl: pr.url,
+      findingsCount,
+      filesChanged: 0, // not known on this path; could be passed from internal-cli later
+    });
+
+    // The run was left non-terminal when the review was handed off -- `queued`
+    // means work is still in flight, and this is where it stops being in flight.
+    const finished = await prisma.pullRequest.findUnique({
+      where: { id: pr.id },
+      select: { status: true },
+    });
+    const outcome = attemptOutcomeForStatus(finished?.status);
+    if (outcome && reviewRun) await finalizeReviewRun(reviewRun, outcome.state, `large ${outcome.detail}`);
+
+    console.log(
+      `[large-review-result] Completed PR #${pr.number} (duration ${data.durationMs ?? "?"}ms)`,
     );
-
-  eventBus.emit({
-    type: "review-completed",
-    orgId: org.id,
-    prNumber: pr.number,
-    prTitle: pr.title,
-    prUrl: pr.url,
-    findingsCount,
-    filesChanged: 0, // not known on this path; could be passed from internal-cli later
   });
-
-  // The attempt was left non-terminal when the review was handed off -- `queued`
-  // means work is still in flight, and this is where it stops being in flight.
-  const finished = await prisma.pullRequest.findUnique({
-    where: { id: pr.id },
-    select: { status: true },
-  });
-  const outcome = attemptOutcomeForStatus(finished?.status);
-  if (outcome) await finalizeAttempt(attempt, outcome.state, `large ${outcome.detail}`);
-
-  console.log(
-    `[large-review-result] Completed PR #${pr.number} (duration ${data.durationMs ?? "?"}ms)`,
-  );
 }
 
 /** Written once. The `terminalAt` guard is what makes that true under a race. */
-async function finalizeAttempt(
-  attempt: { id: string } | null,
+async function finalizeReviewRun(
+  reviewRun: { id: string } | null,
   state: "succeeded" | "failed" | "cancelled",
   detail: string,
 ): Promise<void> {
-  if (!attempt) return;
-  await prisma.reviewAttempt.updateMany({
-    where: { id: attempt.id, terminalAt: null },
+  if (!reviewRun) return;
+  await prisma.reviewRun.updateMany({
+    where: { id: reviewRun.id, terminalAt: null },
     data: { state, terminalAt: new Date(), terminalDetail: detail },
   });
 }

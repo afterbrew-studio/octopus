@@ -38,6 +38,18 @@ export async function GET(request: NextRequest) {
   // Reasoned, not silent. This route is reached from a banner rendered ON /dashboard, so a
   // bare redirect back to it is indistinguishable from a button that does nothing.
   if (!orgId) {
+    // No organization selected (cookie not set yet / cleared). Recorded so a
+    // dead Connect button is visible in the funnel, and reasoned rather than
+    // silent for the user: this route is reached from a banner rendered ON
+    // /dashboard, so a bare redirect back to it is indistinguishable from a
+    // button that does nothing.
+    void writeAuditLog({
+      action: "integration.install_failed",
+      category: "system",
+      actorId: session.user.id,
+      actorEmail: session.user.email,
+      metadata: { provider: "github", reason: "no_org_selected" },
+    }).catch(() => {});
     return NextResponse.redirect(new URL("/dashboard?error=no_org_selected", baseUrl));
   }
 
@@ -47,6 +59,14 @@ export async function GET(request: NextRequest) {
   });
 
   if (!membership) {
+    void writeAuditLog({
+      action: "integration.install_failed",
+      category: "system",
+      actorId: session.user.id,
+      actorEmail: session.user.email,
+      organizationId: orgId,
+      metadata: { provider: "github", reason: "not_a_member" },
+    }).catch(() => {});
     return NextResponse.redirect(new URL("/dashboard?error=not_a_member", baseUrl));
   }
 

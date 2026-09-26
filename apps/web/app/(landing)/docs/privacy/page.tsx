@@ -20,7 +20,7 @@ export default function PrivacyPage() {
         <h1 className="text-3xl font-bold tracking-tight text-white sm:text-4xl">
           Privacy Policy
         </h1>
-        <p className="mt-3 text-sm text-[#555]">Last updated: June 2026</p>
+        <p className="mt-3 text-sm text-[#555]">Last updated: September 2026</p>
       </div>
 
       <Section title="1. Introduction">
@@ -53,16 +53,31 @@ export default function PrivacyPage() {
         <H3>Repository Data</H3>
         <P>
           When you connect a repository, we access its contents through the
-          GitHub, GitLab, or Bitbucket API to create code embeddings and perform
+          GitHub, GitLab, Bitbucket, or Forgejo API to create code embeddings and perform
           reviews. We process pull request diffs, file contents, and
           repository metadata.
+        </P>
+        <P>
+          A self-hosted Forgejo repository follows the same review data flow:
+          Octopus reads its contents and sends relevant code to the configured
+          AI services. This applies to both a direct public HTTPS connection and
+          a local connector for private LAN/VPN access. The connector keeps the
+          Forgejo personal access token on your machine, but sends repository
+          contents and review context to Octopus Cloud. Hosting Forgejo yourself
+          does not keep Cloud review processing on your network.
         </P>
 
         <H3>Usage Data</H3>
         <P>
-          We collect anonymous usage analytics (page views, feature usage)
-          through Google Analytics to improve the product. We also track AI
-          token consumption per organization for billing purposes.
+          With your permission, we collect usage analytics (page views and feature
+          usage) through Google Analytics. Separate advertising-measurement
+          permission controls the X pixel and linking consented visits to signups
+          and purchases in Unified Ads. Our first-party visitor identifiers are
+          random and are not derived from email addresses or IP addresses. Use
+          Privacy choices to change or withdraw these permissions. Sales and
+          refunds are also recorded as business transactions independently of
+          optional visitor attribution. We track AI token consumption per
+          organization for billing purposes.
         </P>
       </Section>
 
@@ -78,10 +93,12 @@ export default function PrivacyPage() {
 
       <Section title="4. Code and Data Storage">
         <P>
-          Code embeddings (vector representations of your code) are stored in
-          Qdrant. These embeddings cannot be reverse-engineered back into
-          source code. We do not permanently store your raw source code. Pull
-          request diffs are processed in memory and discarded after review.
+          Octopus stores review and indexing data, including searchable code
+          chunks and embeddings in Qdrant. Retention depends on your deployment
+          and configuration. See the{" "}
+          <a href="/docs/data-retention" className="text-white underline">
+            data-retention documentation
+          </a>.
         </P>
         <P>
           Review results, findings, and AI-generated summaries are stored in
@@ -102,7 +119,7 @@ export default function PrivacyPage() {
             reviews
           </li>
           <li>
-            <strong className="text-white">GitHub / GitLab / Bitbucket</strong> for
+            <strong className="text-white">GitHub / GitLab / Bitbucket / Forgejo</strong> for
             repository access and webhook events
           </li>
           <li>
@@ -111,8 +128,10 @@ export default function PrivacyPage() {
           </li>
           <li>
             <strong className="text-white">Google Analytics</strong> for
-            anonymous usage analytics
+            consented usage analytics
           </li>
+          <li><strong className="text-white">X</strong> for consented advertising measurement</li>
+          <li><strong className="text-white">Unified Ads</strong> for sales reporting and consented visit attribution</li>
         </UL>
         <P>
           Code snippets sent to AI providers are subject to their respective

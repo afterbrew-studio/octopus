@@ -1,3 +1,4 @@
+import "server-only";
 import { prisma } from "@octopus/db";
 import { NextRequest } from "next/server";
 
@@ -28,7 +29,7 @@ export async function GET(request: NextRequest) {
 
     // Atomic clear — only succeed if token still exists (prevents double-read race)
     const updated = await prisma.cliAuthSession.updateMany({
-      where: { id: session.id, token: { not: null } },
+      where: { id: session.id, status: "approved", expiresAt: { gt: new Date() }, token: { not: null } },
       data: { token: null },
     });
 
@@ -39,7 +40,8 @@ export async function GET(request: NextRequest) {
     return Response.json({
       status: "approved",
       token,
-      organization: {
+      scope: session.scope,
+      organization: session.scope === "user" ? null : {
         id: session.orgId,
         slug: session.orgSlug,
         name: session.orgName,
@@ -48,7 +50,7 @@ export async function GET(request: NextRequest) {
         name: session.userName,
         email: session.userEmail,
       },
-    });
+    }, { headers: { "Cache-Control": "no-store" } });
   }
 
   return Response.json({ status: "pending" });

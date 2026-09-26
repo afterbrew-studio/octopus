@@ -13,8 +13,8 @@ mock.module("server-only", () => ({}));
 
 const findUnique = mock(async () => ({ id: "att_by_id", configSnapshot: {} }));
 const findFirst = mock(async () => ({ id: "att_newest", configSnapshot: {} }));
-mock.module("@octopus/db", () => ({
-  prisma: { reviewAttempt: { findUnique, findFirst } },
+mock.module("@octopus/db", () => ({ Prisma: { DbNull: null },
+  prisma: { reviewRun: { findUnique, findFirst } },
 }));
 mock.module("@/lib/pubby", () => ({ pubby: { trigger: async () => {} } }));
 mock.module("@/lib/events", () => ({ eventBus: { emit: () => {} } }));
@@ -23,24 +23,28 @@ mock.module("@/lib/github", () => ({
   updatePullRequestComment: async () => {},
   createPullRequestReview: async () => {},
   updateCheckRun: async () => {},
+  // Consulted by publishReviewSummary (GitHub's placeholder-comment path),
+  // loaded transitively even though this file only exercises activeReviewRun.
+  getInstallationToken: async () => "fixture-token",
+  findPullRequestSummaryComment: async () => null,
 }));
 
-const { activeAttempt } = await import("@/lib/large-review-result");
+const { activeReviewRun } = await import("@/lib/large-review-result");
 
-describe("activeAttempt", () => {
+describe("activeReviewRun", () => {
   beforeEach(() => {
     findUnique.mockClear();
     findFirst.mockClear();
   });
 
   it("addresses the attempt by id when the result carried one", async () => {
-    const got = await activeAttempt("pr_1", "att_by_id");
+    const got = await activeReviewRun("pr_1", "att_by_id");
     expect(got?.id).toBe("att_by_id");
     expect(findFirst).not.toHaveBeenCalled();
   });
 
   it("falls back to the newest attempt that has not finished", async () => {
-    const got = await activeAttempt("pr_1");
+    const got = await activeReviewRun("pr_1");
     expect(got?.id).toBe("att_newest");
     expect(findUnique).not.toHaveBeenCalled();
     // The filter is the assertion: a terminal attempt must not be resurrected by

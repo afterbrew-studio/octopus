@@ -1,0 +1,19 @@
+{
+  "name": "@octopus/forgejo-connector",
+  "version": "1.2.4",
+  "private": true,
+  "exports": {
+    "./http": "./src/http.ts",
+    "./protocol": "./src/protocol.ts"
+  },
+  "scripts": {
+    "build": "bun build ./src/runner.ts --target=node --outfile=dist/runner.mjs",
+    "start": "node dist/runner.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@octopus/tsconfig": "workspace:*",
+    "@types/node": "^25",
+    "typescript": "^5"
+  }
+}

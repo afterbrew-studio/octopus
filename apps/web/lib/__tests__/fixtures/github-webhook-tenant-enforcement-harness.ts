@@ -19,6 +19,10 @@ const mutationCalls: Array<{ kind: string; args: Record<string, unknown> }> = []
 let failNextLedgerWrite = false;
 let installationBindingCleared = false;
 let legacyRepositoryLookups = 0;
+let autoDiscoverEnabled = true;
+let createdRepository = false;
+let repositoryDismissed = false;
+const syncCalls: Array<{ organizationId: string; source: string }> = [];
 
 const webhookDeliveryStore = {
   upsert: (args: DeliveryUpsertArgs) => {
@@ -62,6 +66,17 @@ mock.module("@/lib/github", () => ({
   // config file", which is the state every repository in this harness is in.
   getFileContent: () => Promise.resolve(configuredReviewLabels),
 }));
+mock.module("@/lib/repo-sync", () => ({
+  syncOrgRepos: (organizationId: string, opts: { source: string }) => {
+    syncCalls.push({ organizationId, source: opts.source });
+    return Promise.resolve({ synced: 0, created: 0, removed: 0, createdRepos: [], providers: [] });
+  },
+  applyRepositoryEvent: (organizationId: string, installationId: number, action: string) => {
+    syncCalls.push({ organizationId, source: `repository.${action}@${installationId}` });
+    if (!repositoryDismissed) createdRepository = true;
+    return Promise.resolve("created");
+  },
+}));
 mock.module("@/lib/webhook-shared", () => ({
   startReviewFlow: (input: Record<string, unknown>) => {
     reviewCalls.push(input);
@@ -71,6 +86,12 @@ mock.module("@/lib/webhook-shared", () => ({
 mock.module("@octopus/db", () => ({
   prisma: {
     organization: {
+      findFirst: (args: { where: { id?: string } }) =>
+        Promise.resolve(
+          args.where.id === "org_b" && !installationBindingCleared
+            ? { id: "org_b", autoDiscoverRepos: autoDiscoverEnabled }
+            : null,
+        ),
       findUnique: (args: {
         where: { githubInstallationId?: number; id?: string };
       }) => {
@@ -79,7 +100,7 @@ mock.module("@octopus/db", () => ({
           return Promise.resolve({ id: "org_b" });
         }
         if (args.where.id === "org_b") {
-          return Promise.resolve({ blockedAuthors: [] });
+          return Promise.resolve({ blockedAuthors: [], autoDiscoverRepos: autoDiscoverEnabled });
         }
         return Promise.resolve(null);
       },
@@ -109,6 +130,10 @@ mock.module("@octopus/db", () => ({
         };
       }) => {
         if (args.where.provider_externalId_organizationId) {
+          // Only the shared repository (9001) has a row; 9002 is brand new.
+          if (args.where.provider_externalId_organizationId.externalId !== "9001" && !createdRepository) {
+            return Promise.resolve(null);
+          }
           return Promise.resolve({ id: "repo_b", organizationId: "org_b" });
         }
         if (args.where.id === "repo_b") {
@@ -120,6 +145,8 @@ mock.module("@octopus/db", () => ({
             fullName: "shared/repository",
             defaultBranch: "main",
             indexStatus: "pending",
+            isActive: true,
+            dismissedAt: repositoryDismissed ? new Date() : null,
           });
         }
         return Promise.resolve(null);
@@ -398,6 +425,105 @@ try {
     "uninstall lost its pre-mutation tenant snapshot",
   );
   assert(installationBindingCleared, "uninstall did not clear the installation binding");
+  assert(syncCalls.length === 0, "uninstall or earlier events unexpectedly triggered a repo sync");
+
+  // A first PR recovers a missed creation event before routing the review.
+  installationBindingCleared = false;
+  const firstPrBody = JSON.stringify({
+    ...JSON.parse(pullRequestBody()),
+    repository: { id: 9002, name: "brand-new", full_name: "shared/brand-new", default_branch: "main" },
+  });
+  const reviewsBeforeRecovery = reviewCalls.length;
+  autoDiscoverEnabled = false;
+  await POST(webhookRequest(firstPrBody));
+  await runAfterCallbacks();
+  assert(reviewCalls.length === reviewsBeforeRecovery && syncCalls.length === 0, "PR discovery ignored opt-out");
+  autoDiscoverEnabled = true;
+  repositoryDismissed = true;
+  await POST(webhookRequest(pullRequestBody()));
+  await POST(webhookRequest(issueCommentBody(), { eventType: "issue_comment" }));
+  await runAfterCallbacks();
+  assert(reviewCalls.length === reviewsBeforeRecovery, "a previously discovered, dismissed repository was reviewed");
+  await POST(webhookRequest(firstPrBody));
+  await runAfterCallbacks();
+  assert(reviewCalls.length === reviewsBeforeRecovery, "a dismissed repository was reviewed");
+  repositoryDismissed = false;
+  await POST(webhookRequest(firstPrBody));
+  await runAfterCallbacks();
+  assert(reviewCalls.length === reviewsBeforeRecovery + 1, "first PR was dropped after discovery");
+  assert(reviewCalls.at(-1)?.orgId === "org_b", "first PR crossed the installation boundary");
+  createdRepository = false;
+  syncCalls.length = 0;
+
+  // Re-bind the installation for the repository lifecycle scenarios.
+  installationBindingCleared = false;
+  const repositoryCreatedBody = JSON.stringify({
+    action: "created",
+    installation: { id: 222 },
+    repository: { id: 9002, full_name: "shared/brand-new" },
+  });
+  const createdResponse = await POST(
+    webhookRequest(repositoryCreatedBody, {
+      deliveryId: "delivery-repo-created",
+      eventType: "repository",
+    }),
+  );
+  await runAfterCallbacks();
+  assert(createdResponse.status === 200, "repository.created response failed");
+  assert(
+    syncCalls.length === 1 &&
+      syncCalls[0].organizationId === "org_b" &&
+      syncCalls[0].source === "repository.created@222",
+    "repository.created did not write the mapped organization's repository",
+  );
+
+  const unmappedCreatedBody = JSON.stringify({
+    action: "created",
+    installation: { id: 999 },
+    repository: { id: 9003, full_name: "stranger/brand-new" },
+  });
+  const unmappedCreatedResponse = await POST(
+    webhookRequest(unmappedCreatedBody, {
+      deliveryId: "delivery-repo-created-unmapped",
+      eventType: "repository",
+    }),
+  );
+  await runAfterCallbacks();
+  assert(unmappedCreatedResponse.status === 200, "unmapped repository.created response failed");
+  assert(syncCalls.length === 1, "unmapped repository.created was not dropped");
+
+  autoDiscoverEnabled = false;
+  const optOutResponse = await POST(
+    webhookRequest(repositoryCreatedBody, {
+      deliveryId: "delivery-repo-created-opt-out",
+      eventType: "repository",
+    }),
+  );
+  await runAfterCallbacks();
+  autoDiscoverEnabled = true;
+  assert(optOutResponse.status === 200, "opt-out repository.created response failed");
+  assert(syncCalls.length === 1, "repository.created ignored the organization opt-out");
+
+  const addedBody = JSON.stringify({
+    action: "added",
+    installation: { id: 222 },
+    repositories_added: [{ id: 9004, name: "added", full_name: "shared/added" }],
+    repositories_removed: [],
+  });
+  const addedResponse = await POST(
+    webhookRequest(addedBody, {
+      deliveryId: "delivery-repos-added",
+      eventType: "installation_repositories",
+    }),
+  );
+  await runAfterCallbacks();
+  assert(addedResponse.status === 200, "installation_repositories response failed");
+  assert(
+    syncCalls.length === 2 &&
+      syncCalls[1].organizationId === "org_b" &&
+      syncCalls[1].source === "webhook",
+    "installation_repositories did not run the shared sync for the mapped organization",
+  );
 
   originalConsole.log(JSON.stringify({
     invalidSignatureRejected: true,
@@ -407,6 +533,11 @@ try {
     labelTriggerScoped: true,
     ledgerFailureNonFatal: true,
     uninstallTenantCaptured: true,
+    repositoryCreatedSynced: true,
+    repositoryCreatedUnmappedDropped: true,
+    repositoryCreatedRespectsOptOut: true,
+    installationRepositoriesSynced: true,
+    firstPrRecoversMissingRepository: true,
   }));
 } catch (error) {
   originalConsole.warn(error);

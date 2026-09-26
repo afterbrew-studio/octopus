@@ -41,6 +41,10 @@ const faqs = [
     a: "Yes. Octopus supports GitHub, Bitbucket, and GitLab (gitlab.com and self-hosted) — connect a group or user namespace via OAuth and MRs get the same auto-review treatment as GitHub PRs.",
   },
   {
+    q: "Can Octopus review repositories on Forgejo?",
+    a: "Yes. Choose Octopus Cloud with a direct public HTTPS connection, Octopus Cloud with a local connector for private LAN/VPN access, or self-hosted Octopus with direct network access. All three use a Forgejo personal access token and signed repository webhooks. Octopus posts review comments and commit statuses. With either Cloud option, Octopus Cloud and your configured AI services process code for reviews. The integrations guide has separate steps for each connection.",
+  },
+  {
     q: "What are the main differences in approach?",
     a: "Under the hood, Octopus uses RAG: it pre-indexes your codebase into vector embeddings and retrieves the most relevant chunks during review. CodeRabbit uses Dynamic Discovery, fetching context on demand while it reviews the diff. Both are valid strategies with different tradeoffs: RAG is consistent and fast at review time; Dynamic Discovery avoids index maintenance. Beyond the technical approach, Octopus is source-available with self-hosting and usage-based pricing, while CodeRabbit is a managed SaaS with per-developer pricing.",
   },

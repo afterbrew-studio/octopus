@@ -2,8 +2,8 @@
  * Extended-thinking configuration for Anthropic models.
  *
  * Claude-5-family models (Fable 5, Opus 5, Mythos, …) emit extended-thinking
- * blocks that spend from the max_tokens budget BEFORE any text. The small
- * review/title budgets (8192 / 256) get consumed by thinking on hard inputs, so
+ * blocks that spend from the max_tokens budget BEFORE any text. Small caller
+ * budgets can be consumed by thinking on hard inputs, so
  * the response ends with stop_reason "max_tokens" and zero text blocks — an
  * empty review. So for these models we raise max_tokens to a floor (a ceiling,
  * not a spend — free on easy inputs) so thinking has room to finish and still
@@ -38,6 +38,22 @@ export function resolveEffort(): ThinkingEffort {
   return asThinkingEffort(process.env.FABLE_THINKING_EFFORT) ?? DEFAULT_THINKING_EFFORT;
 }
 
+/**
+ * A caller's explicit `thinking: "disabled"` wins on models that allow it.
+ * Always-thinking models (Fable/Mythos/Opus 5) reject thinking-off, so they
+ * keep whatever resolveThinking produced.
+ */
+export function resolveThinkingOverride(
+  model: string,
+  requested: "disabled" | undefined,
+  resolved: { type: "adaptive" } | undefined,
+): { type: "adaptive" } | { type: "disabled" } | undefined {
+  if (requested === "disabled" && !ALWAYS_THINKING_MODEL_RX.test(model)) {
+    return { type: "disabled" };
+  }
+  return resolved;
+}
+
 export type ResolvedThinking = {
   maxTokens: number;
   thinking?: { type: "adaptive" };
@@ -50,8 +66,8 @@ export type ResolvedThinking = {
  * thinking + an effort level. All other models are returned with their
  * requested max_tokens unchanged (no floor — their per-model cap may be lower).
  *
- * Adaptive is applied only on the plain-text path: the forced-`tool_choice`
- * (structured output) path keeps the floor alone and leaves thinking implicit,
+ * Plain-text and native JSON-schema output allow adaptive thinking. The
+ * forced-`tool_choice` path keeps the floor alone and leaves thinking implicit
  * to avoid thinking/tool_choice interactions.
  */
 export function resolveThinking(

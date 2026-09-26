@@ -1,6 +1,12 @@
+import "server-only";
+import { reviewPublicationSignal, type ReviewExecutionWindow } from "./review-capacity";
+import { readReviewJson } from "@/lib/review-fetch";
+import { attachReviewPatches, type ReviewInput, type ReviewFileInput } from "@/lib/review-coverage";
 import { prisma } from "@octopus/db";
 import { truncateDiff, MAX_FETCH_DIFF_CHARS } from "@/lib/diff-truncate";
 import { encryptString, decryptStringMaybeLegacy } from "@/lib/crypto";
+import { withWebhookSetupLock } from "@/lib/integration-setup-lock";
+import { WebhookSetupError } from "@/lib/integration-setup";
 
 const BITBUCKET_API = "https://api.bitbucket.org/2.0";
 
@@ -132,6 +138,7 @@ export interface PullRequestDetails {
   url: string;
   author: string;
   headSha: string;
+  baseSha: string | null;
   /** PR description body (may be empty). Untrusted user content. */
   body: string;
 }
@@ -141,11 +148,12 @@ export async function getPullRequestDetails(
   workspace: string,
   repoSlug: string,
   prId: number,
+  signal?: AbortSignal,
 ): Promise<PullRequestDetails> {
   const token = await getAccessToken(organizationId);
   const res = await fetch(
     `${BITBUCKET_API}/repositories/${workspace}/${repoSlug}/pullrequests/${prId}`,
-    { headers: { Authorization: `Bearer ${token}` } },
+    { headers: { Authorization: `Bearer ${token}` }, signal },
   );
 
   if (!res.ok) {
@@ -159,6 +167,7 @@ export async function getPullRequestDetails(
     url: data.links?.html?.href ?? "",
     author: data.author?.display_name ?? data.author?.nickname ?? "unknown",
     headSha: data.source?.commit?.hash ?? "",
+    baseSha: data.destination?.commit?.hash ?? null,
     body: data.summary?.raw ?? data.description ?? "",
   };
 }
@@ -190,11 +199,14 @@ export async function createPullRequestComment(
   repoSlug: string,
   prId: number,
   body: string,
+  executionWindow?: ReviewExecutionWindow,
 ): Promise<number> {
   const token = await getAccessToken(organizationId);
+  const signal = reviewPublicationSignal(executionWindow);
   const res = await fetch(
     `${BITBUCKET_API}/repositories/${workspace}/${repoSlug}/pullrequests/${prId}/comments`,
     {
+      signal,
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
@@ -220,11 +232,14 @@ export async function updatePullRequestComment(
   prId: number,
   commentId: number,
   body: string,
+  executionWindow?: ReviewExecutionWindow,
 ): Promise<void> {
   const token = await getAccessToken(organizationId);
+  const signal = reviewPublicationSignal(executionWindow);
   const res = await fetch(
     `${BITBUCKET_API}/repositories/${workspace}/${repoSlug}/pullrequests/${prId}/comments/${commentId}`,
     {
+      signal,
       method: "PUT",
       headers: {
         Authorization: `Bearer ${token}`,
@@ -424,39 +439,62 @@ export async function createWebhook(
   workspaceSlug: string,
   callbackUrl: string,
   secret: string,
+  expectedBinding?: { id: string; workspaceSlug: string },
 ): Promise<string> {
-  const token = await getAccessToken(organizationId);
-  const res = await fetch(
-    `${BITBUCKET_API}/workspaces/${workspaceSlug}/hooks`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        description: "Octopus Review",
-        url: callbackUrl,
-        active: true,
-        secret,
-        events: [
-          "pullrequest:created",
-          "pullrequest:updated",
-          "pullrequest:comment_created",
-        ],
-      }),
-    },
-  );
-
-  if (!res.ok) {
-    const errBody = await res.text();
-    console.error(`[bitbucket] Failed to create webhook: ${res.status} ${errBody}`);
-    // Non-fatal — webhook creation is best-effort
-    return "";
+  const integration = await getIntegration(organizationId);
+  const binding = expectedBinding ?? integration;
+  const checkBinding = (current: typeof integration | null) => {
+    if (!current || current.id !== binding.id || current.workspaceSlug !== binding.workspaceSlug
+      || current.workspaceSlug !== workspaceSlug || current.webhookSecret !== secret) {
+      throw new WebhookSetupError("Bitbucket connection changed during setup. Retry setup for the current connection.");
+    }
+  };
+  checkBinding(integration);
+  // Repository listing refreshes tokens first. Keep one checked credential snapshot
+  // here so reconnecting cannot combine an old workspace/secret with a new token.
+  if (integration.tokenExpiresAt.getTime() - Date.now() < 60_000) {
+    throw new WebhookSetupError("Bitbucket authorization expired during setup. Retry setup to refresh it.");
   }
-
-  const data = await res.json();
-  return data.uuid as string;
+  const token = decryptStringMaybeLegacy(integration.accessToken);
+  const endpoint = `${BITBUCKET_API}/workspaces/${encodeURIComponent(workspaceSlug)}/hooks`;
+  const description = `Octopus Review (${organizationId}) [${integration.id}]`;
+  const events = ["pullrequest:created", "pullrequest:updated", "pullrequest:comment_created"];
+  const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
+  return withWebhookSetupLock([`binding:bitbucket:${organizationId}`, `bitbucket:${workspaceSlug}`], async (tx) => {
+    checkBinding(await tx.bitbucketIntegration.findUnique({ where: { organizationId } }));
+    const deadline = AbortSignal.timeout(45_000); // Finish before the setup lock's transaction expires.
+    type Hook = { uuid: string; url: string; description?: string; active?: boolean; events?: string[]; secret_set?: boolean };
+    const hooks: Hook[] = [];
+    for (let page = 1; ; page++) {
+      if (page > 20) throw new WebhookSetupError("Bitbucket has too many webhooks to check safely. Check workspace webhook settings.");
+      const response = await fetch(`${endpoint}?pagelen=100&page=${page}`, { headers, signal: AbortSignal.any([deadline, AbortSignal.timeout(10_000)]) });
+      if (!response.ok) throw new WebhookSetupError("Could not check Bitbucket webhooks. Reconnect with webhook permissions using a workspace owner account, then retry setup.");
+      const data = await response.json() as { values?: Hook[]; next?: string };
+      if (!Array.isArray(data.values)) throw new WebhookSetupError("Bitbucket returned an invalid webhook list. Retry setup.");
+      hooks.push(...data.values);
+      // Construct pagination locally: never send credentials to a provider-supplied next URL.
+      if (!data.next) break;
+    }
+    const owned = hooks.find(h => h.description === description);
+    if (owned) {
+      if (owned.url !== callbackUrl || !owned.active || owned.secret_set === false || !events.every(e => owned.events?.includes(e))) {
+        throw new WebhookSetupError("The existing Octopus Bitbucket webhook needs attention. Check its callback URL, secret, enabled state and pull-request events in workspace settings, then retry setup.");
+      }
+      return owned.uuid;
+    }
+    if (hooks.some(h => h.url === callbackUrl && (h.description?.startsWith(`Octopus Review (${organizationId})`) || !/^Octopus Review \([^()\s]+\)(?: \[[^\]\s]+\])?$/.test(h.description ?? "")))) {
+      throw new WebhookSetupError(`An existing Octopus Bitbucket webhook has no saved ownership evidence. Open “Repair an existing webhook” only after confirming it belongs to this organization. Use the current saved secret and exact connection-specific description from those details, verify its events, then retry setup. No duplicate was created.`);
+    }
+    checkBinding(await tx.bitbucketIntegration.findUnique({ where: { organizationId } }));
+    const response = await fetch(endpoint, {
+      method: "POST", headers, signal: AbortSignal.any([deadline, AbortSignal.timeout(10_000)]),
+      body: JSON.stringify({ description, url: callbackUrl, active: true, secret, events }),
+    });
+    if (!response.ok) throw new WebhookSetupError("Could not create the Bitbucket webhook. Reconnect with webhook permissions using a workspace owner account, then retry setup.");
+    const data = await response.json() as { uuid?: string };
+    if (!data.uuid) throw new WebhookSetupError("Bitbucket did not confirm the new webhook. Retry setup to check whether it was created.");
+    return data.uuid;
+  });
 }
 
 export async function deleteWebhook(
@@ -476,4 +514,38 @@ export async function deleteWebhook(
   if (!res.ok) {
     console.error(`[bitbucket] Failed to delete webhook: ${res.status}`);
   }
+}
+
+export async function getPullRequestReviewInput(organizationId: string, workspace: string, repoSlug: string, prId: number, expectedHead: string | null): Promise<{ input: ReviewInput; rawDiff: string }> {
+  const token = await getAccessToken(organizationId);
+  const base = `${BITBUCKET_API}/repositories/${workspace}/${repoSlug}/pullrequests/${prId}`;
+  type InputPage = { source?: { commit?: { hash?: string } }; destination?: { commit?: { hash?: string } }; size?: number; next?: string; values?: { old?: { path?: string }; new?: { path?: string }; status: string; lines_added?: number; lines_removed?: number }[] };
+  const read = async (suffix: string) => {
+    const response = await fetch(base + suffix, { headers: { Authorization: `Bearer ${token}` } });
+    if (!response.ok) throw new Error(`Failed to get Bitbucket review input: ${response.status}`);
+    return readReviewJson<InputPage>(response);
+  };
+  const before = await read("");
+  const headSha = before.source?.commit?.hash;
+  const baseSha = before.destination?.commit?.hash ?? null;
+  if (!headSha || (expectedHead && headSha !== expectedHead)) throw new Error("PR revision changed before review input was fetched");
+  const rawDiff = await getPullRequestDiff(organizationId, workspace, repoSlug, prId);
+  const files: ReviewFileInput[] = [];
+  let inventoryComplete = false, expectedFiles: number | null = null;
+  for (let page = 1; page <= 30; page++) {
+    const result = await read(`/diffstat?pagelen=100&page=${page}`);
+    if (!Array.isArray(result.values)) throw new Error("Invalid Bitbucket changed-file response");
+    if (typeof result.size === "number" && Number.isSafeInteger(result.size) && result.size >= 0) expectedFiles = result.size;
+    for (const f of result.values) {
+      const path = f.new?.path ?? f.old?.path;
+      if (typeof path !== "string") throw new Error("Invalid Bitbucket changed-file entry");
+      files.push({ path, previousPath: f.old?.path, change: f.status === "added" ? "added" : f.status === "removed" ? "removed" : f.status, additions: f.lines_added, deletions: f.lines_removed });
+    }
+    // Construct our own next URL so a response cannot redirect credentials.
+    if (!result.next) { inventoryComplete = true; break; }
+  }
+  const after = await read("");
+  if (after.source?.commit?.hash !== headSha || after.destination?.commit?.hash !== baseSha) throw new Error("PR revision changed while review input was being fetched");
+  inventoryComplete = inventoryComplete && (expectedFiles === null || expectedFiles === files.length) && Boolean(baseSha);
+  return { rawDiff, input: { provider: "bitbucket", headSha, baseSha, files: attachReviewPatches(files, rawDiff), expectedFiles: expectedFiles ?? (inventoryComplete ? files.length : null), inventoryComplete, limitations: inventoryComplete ? [] : ["Bitbucket changed-file inventory could not be verified completely."] } };
 }

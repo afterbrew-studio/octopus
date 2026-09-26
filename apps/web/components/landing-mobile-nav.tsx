@@ -85,8 +85,8 @@ export function LandingMobileNav({ isLoggedIn }: { isLoggedIn: boolean }) {
                   >
                     <IconPlugConnected className="mt-0.5 size-4 shrink-0 text-teal-400" />
                     <div>
-                      <div className="text-sm font-medium text-[#ccc]">Editor Plugin</div>
-                      <div className="mt-0.5 text-[11px] text-[#555]">Reviews inside Cursor &amp; Claude Code</div>
+                      <div className="text-sm font-medium text-[#ccc]">AI Coding Agents</div>
+                      <div className="mt-0.5 text-[11px] text-[#555]">Reviews for AI coding agents</div>
                     </div>
                   </TrackedLink>
                   <TrackedLink

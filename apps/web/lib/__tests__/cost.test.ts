@@ -4,7 +4,7 @@ mock.module("server-only", () => ({}));
 
 // Mock the db module before importing cost.ts (which imports prisma at top level).
 // Bun's module mocks are file-scoped and automatically cleaned up — no manual restore needed.
-mock.module("@octopus/db", () => ({
+mock.module("@octopus/db", () => ({ Prisma: { DbNull: null },
   prisma: {},
 }));
 
@@ -158,4 +158,9 @@ describe("formatNumber", () => {
   it("formats zero", () => {
     expect(formatNumber(0)).toBe((0).toLocaleString());
   });
+});
+
+it("prices Opus 5.5 cache reads at published $0.20 per million before markup", () => {
+  const rates = new Map([["claude-opus-5-5", { input: 4, output: 20 }]]);
+  expect(calcCost(rates, "claude-opus-5-5", 1_000_000, 0, 1_000_000, 0)).toBeCloseTo(0.20 * 1.2, 8);
 });

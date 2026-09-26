@@ -1,7 +1,7 @@
-import Markdown from "react-markdown";
+import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-export function RepositoryAnalysisMarkdown({ content }: { content: string }) {
+export function RepositoryAnalysisMarkdown({ content, components }: { content: string; components?: Components }) {
   return (
     <Markdown
       remarkPlugins={[remarkGfm]}
@@ -49,6 +49,7 @@ export function RepositoryAnalysisMarkdown({ content }: { content: string }) {
           </a>
         ),
         img: ({ alt }) => <span>{alt ?? ""}</span>,
+        ...components,
       }}
     >
       {content}

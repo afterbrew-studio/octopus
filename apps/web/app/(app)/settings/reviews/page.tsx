@@ -7,6 +7,7 @@ import { ReviewSettingsForm } from "./review-settings-form";
 import { ReviewOnlyWhenCiPassesSwitch } from "./review-only-when-ci-passes-switch";
 import { ApproveWhenCleanSwitch } from "./approve-when-clean-switch";
 import { ReviewsPausedSwitch } from "./reviews-paused-switch";
+import { AutoDiscoverSwitch } from "./auto-discover-switch";
 import { OrgReviewConfigForm } from "./org-review-config-form";
 import { ReviewLanguageForm } from "./review-language-form";
 import { BlockedAuthorsForm } from "./blocked-authors-form";
@@ -35,6 +36,7 @@ export default async function ReviewsSettingsPage() {
           approveWhenClean: true,
           reviewOnlyWhenCiPasses: true,
           reviewsPaused: true,
+          autoDiscoverRepos: true,
           defaultReviewConfig: true,
           reviewLanguage: true,
           blockedAuthors: true,
@@ -61,6 +63,10 @@ export default async function ReviewsSettingsPage() {
       <ReviewsPausedSwitch
         isOwner={canManage}
         paused={member.organization.reviewsPaused}
+      />
+      <AutoDiscoverSwitch
+        isOwner={canManage}
+        enabled={member.organization.autoDiscoverRepos}
       />
       <ReviewSettingsForm
         isOwner={canManage}

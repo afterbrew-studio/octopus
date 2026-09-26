@@ -24,6 +24,8 @@ function AuthorizeContent() {
   const searchParams = useSearchParams();
   const code = searchParams.get("code");
 
+  const [userScope, setUserScope] = React.useState(false);
+  const [userEmail, setUserEmail] = React.useState("");
   const [orgs, setOrgs] = React.useState<Organization[]>([]);
   const [selectedOrgId, setSelectedOrgId] = React.useState<string>("");
   const [loading, setLoading] = React.useState(true);
@@ -36,13 +38,18 @@ function AuthorizeContent() {
 
     const abortController = new AbortController();
 
-    fetch("/api/cli/auth/orgs", { signal: abortController.signal })
-      .then((res) => {
-        if (!res.ok) throw new Error("Failed to load organizations");
-        return res.json() as Promise<{ organizations: Organization[] }>;
+    fetch(`/api/cli/auth/orgs?device_code=${encodeURIComponent(code)}`, { signal: abortController.signal })
+      .then(async (res) => {
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({})) as { error?: string };
+          throw new Error(body.error ?? "Could not load CLI approval. Run octp login again.");
+        }
+        return res.json() as Promise<{ organizations: Organization[]; scope?: string; user?: { email: string } }>;
       })
       .then((data) => {
         setOrgs(data.organizations);
+        setUserScope(data.scope === "user");
+        setUserEmail(data.user?.email ?? "");
         if (data.organizations.length === 1) {
           setSelectedOrgId(data.organizations[0].id);
         }
@@ -59,7 +66,7 @@ function AuthorizeContent() {
   }, [code]);
 
   async function handleAuthorize() {
-    if (!selectedOrgId || !code) return;
+    if ((!userScope && !selectedOrgId) || !code) return;
 
     setApproving(true);
     setError(null);
@@ -68,7 +75,7 @@ function AuthorizeContent() {
       const res = await fetch("/api/cli/auth/approve", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ deviceCode: code, organizationId: selectedOrgId }),
+        body: JSON.stringify(userScope ? { deviceCode: code } : { deviceCode: code, organizationId: selectedOrgId }),
       });
 
       if (!res.ok) {
@@ -125,7 +132,7 @@ function AuthorizeContent() {
           </div>
           <CardTitle>Authorize Octopus CLI</CardTitle>
           <CardDescription>
-            Select an organization to grant CLI access.
+            {userScope ? "Sign in once. Choose your organisation from the CLI for each project." : "Approve this CLI session."}
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -133,11 +140,16 @@ function AuthorizeContent() {
             <div className="flex items-center justify-center py-6">
               <IconLoader2 className="text-muted-foreground size-5 animate-spin" />
             </div>
-          ) : orgs.length === 0 ? (
+          ) : userScope ? (
+            <div className="space-y-3 text-sm">
+              <p className="break-words font-medium">{userEmail}</p>
+              <p className="text-muted-foreground">Allow this CLI session to access the organisations you belong to. Your current permissions apply, and you can revoke the session with <code>octp logout</code>.</p>
+            </div>
+          ) : orgs.length === 0 ? (error ? null : (
             <p className="text-muted-foreground text-center text-sm">
               You are not a member of any organization.
             </p>
-          ) : (
+          )) : (
             <div className="space-y-2">
               {orgs.map((org) => (
                 <button
@@ -157,14 +169,14 @@ function AuthorizeContent() {
             </div>
           )}
           {error && (
-            <p className="mt-3 text-center text-sm text-red-500">{error}</p>
+            <p role="alert" className="mt-3 text-center text-sm text-red-500">{error}</p>
           )}
         </CardContent>
-        {orgs.length > 0 && !loading && (
+        {(userScope || orgs.length > 0) && !loading && (
           <CardFooter>
             <Button
               className="w-full"
-              disabled={!selectedOrgId || approving}
+              disabled={(!userScope && !selectedOrgId) || approving}
               onClick={handleAuthorize}
             >
               {approving ? (

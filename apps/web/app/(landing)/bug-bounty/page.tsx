@@ -95,7 +95,7 @@ const severityLevels = [
 const inScope = [
   "octopus-review.ai web application",
   "Public API endpoints",
-  "GitHub & Bitbucket integration flows",
+  "GitHub, GitLab, Bitbucket and Forgejo integration flows",
   "Authentication & authorization flows",
   "Octopus CLI tool",
   "Webhook processing pipeline",

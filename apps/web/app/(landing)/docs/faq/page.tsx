@@ -14,11 +14,11 @@ export const metadata = {
 const generalFaqs = [
   {
     q: "What is Octopus?",
-    a: "Octopus is an AI-powered code review tool. It connects to your GitHub, GitLab, or Bitbucket repositories, indexes your codebase, and automatically reviews pull requests — posting findings as inline comments with severity levels.",
+    a: "Octopus is an AI-powered code review tool. It connects to your GitHub, GitLab, Bitbucket, or Forgejo repositories, indexes your codebase, and automatically reviews pull requests — posting findings as inline comments with severity levels.",
   },
   {
     q: "How does Octopus review my code?",
-    a: "When a pull request is opened, Octopus fetches the diff, retrieves relevant context from your indexed codebase using vector search, and sends it to an LLM (Claude, OpenAI, or Google Gemini) for analysis. The results are posted as PR comments with severity indicators: 🔴 Critical, 🟠 Major, 🟡 Minor, 🔵 Suggestion, 💡 Tip.",
+    a: "When a pull request is opened, Octopus fetches the diff, retrieves relevant context from your indexed codebase using vector search, and sends it to an LLM (Anthropic Claude, OpenAI GPT, Google Gemini, xAI Grok, Alibaba Qwen, or any model on OpenRouter) for analysis. The results are posted as PR comments with severity indicators: 🔴 Critical, 🟠 Major, 🟡 Minor, 🔵 Suggestion, 💡 Tip.",
   },
   {
     q: "Which programming languages does Octopus support?",
@@ -37,26 +37,30 @@ const generalFaqs = [
 const securityFaqs = [
   {
     q: "Is my code safe?",
-    a: "Yes. Your code is processed in-memory and never stored permanently on our servers. Embeddings are stored in a Qdrant vector database for search, but the original source code is not retained. If you self-host, the entire pipeline — including Qdrant — runs on your own infrastructure.",
+    a: "Octopus reads repository content to index and review your code, and your configured AI services process code and review context. This also applies to self-hosted Forgejo repositories connected to Octopus Cloud. Self-hosted Octopus lets you choose where the application and AI services run. See the security overview and data-retention documentation for storage details.",
   },
   {
     q: "Can I self-host Octopus?",
-    a: "Absolutely. Octopus is source-available under a Modified MIT License and fully self-hostable. You can deploy it with Docker on your own infrastructure — your code never leaves your servers. See the Self-Hosting documentation for setup instructions.",
+    a: "Yes. Octopus is source-available under a Modified MIT License and can run with Docker on your own infrastructure. Code is still sent to any external AI services you configure. Use local services for processing that must stay on your network. See the Self-Hosting documentation for setup instructions.",
   },
   {
     q: "Which AI models process my code?",
-    a: "Octopus supports Anthropic Claude, OpenAI (GPT), and Google Gemini as review models. You can configure which your organization uses, or bring your own API key (BYOK) for any of them — including a Google Gemini key — so requests go directly to the provider without any intermediary. (Embeddings use OpenAI, and Cohere is used for search re-ranking.)",
+    a: "Octopus supports Anthropic Claude, OpenAI (GPT), Google Gemini, and Qwen (Alibaba Cloud Model Studio) as review models. You can configure which your organization uses, or bring your own API key (BYOK) for any of them — including a Google Gemini key — so requests go directly to the provider without any intermediary. (Embeddings use OpenAI, and Cohere is used for search re-ranking.)",
   },
   {
     q: "Does Octopus train AI models on my code?",
-    a: "No. Your code is never used for training. When using the cloud service, code is sent to Anthropic, OpenAI, or Google via their API, which do not use API inputs for model training. When self-hosting, you control the entire pipeline.",
+    a: "Octopus sends code to your configured AI services for indexing and reviews. Check each service's current terms and account settings for its data-use policy. Use local services when your requirements prohibit external processing.",
   },
 ];
 
 const integrationFaqs = [
   {
     q: "Which Git platforms are supported?",
-    a: "Octopus integrates with GitHub (including GitHub Enterprise), GitLab, and Bitbucket. It installs as a GitHub App, or connects to GitLab and Bitbucket via OAuth, and listens for pull request and merge request webhooks.",
+    a: "Octopus connects to GitHub, GitLab, Bitbucket, and Forgejo. Use a GitHub App, GitLab or Bitbucket OAuth, or a Forgejo personal access token. Forgejo needs an HTTPS instance and a signed pull request webhook configured for each repository.",
+  },
+  {
+    q: "Does using self-hosted Forgejo keep my code on my server?",
+    a: <>Forgejo hosts your repositories. Octopus reads their contents for indexing and reviews, and your configured AI services process code and review context. Choose a direct public HTTPS connection to Octopus Cloud, a local connector for Octopus Cloud with private LAN/VPN access, or direct access from self-hosted Octopus. The connector keeps Forgejo private, but sends code and review context to Octopus Cloud. Use self-hosted Octopus and local AI services if processing must stay on your network. See the <Link href="/docs/integrations#forgejo" className="text-white underline">Forgejo setup guide</Link>.</>,
   },
   {
     q: "Can I connect Octopus to Slack?",
@@ -102,7 +106,7 @@ const pricingFaqs = [
 const technicalFaqs = [
   {
     q: "How does codebase indexing work?",
-    a: "Octopus fetches your repository contents via the Git provider API, splits the code into overlapping chunks (1500 characters with 200 character overlap), generates vector embeddings, and stores them in Qdrant. The original source code is processed in-memory and not retained — only the embeddings are persisted. This enables fast, semantic code search during reviews.",
+    a: <>Octopus fetches repository contents, splits code into chunks, and stores searchable chunks and embeddings in Qdrant. Octopus stores review and indexing data; retention depends on your deployment and configuration. See the <Link href="/docs/data-retention" className="text-white underline">data-retention documentation</Link>.</>,
   },
   {
     q: "What is the Knowledge Base?",

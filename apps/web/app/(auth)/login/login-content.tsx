@@ -66,7 +66,7 @@ const LOGIN_FEATURES = [
     icon: IconGitPullRequest,
     title: "Reviews on every pull request",
     description:
-      "Inline, source-backed comments on GitHub, GitLab and Bitbucket — minutes after every push.",
+      "Inline, source-backed comments on GitHub, GitLab, Bitbucket and Forgejo — minutes after every push.",
   },
   {
     icon: IconShieldLock,
@@ -84,7 +84,7 @@ const LOGIN_FEATURES = [
     icon: IconBolt,
     title: "Free credits to start",
     description:
-      "Sign in and get reviewing in two minutes. No credit card, nothing to install or run.",
+      "Sign in, connect your code host and follow the setup steps for your repositories. Free credits let you try your first reviews.",
   },
 ] as const;
 
@@ -437,7 +437,10 @@ export function LoginContent({
           </ul>
 
           <p className="mt-10 text-xs leading-relaxed text-[#555]">
-            Your code is never stored long-term or used to train models.
+            Octopus and your configured AI services process code for reviews.{" "}
+            <Link href="/docs/data-retention" className="underline underline-offset-4">
+              Read about data retention
+            </Link>.
           </p>
           <Link
             href="/docs/self-hosting"

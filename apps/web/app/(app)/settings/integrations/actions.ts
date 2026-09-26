@@ -1,12 +1,20 @@
 "use server";
 
+import "server-only";
+import { withWebhookSetupLock } from "@/lib/integration-setup-lock";
+import { randomBytes } from "node:crypto";
 import { headers, cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { auth } from "@/lib/auth";
 import { prisma } from "@octopus/db";
 import { hasOrgPermission } from "@/lib/org-permissions";
-import { decryptStringMaybeLegacy } from "@/lib/crypto";
+import { decryptStringMaybeLegacy, encryptString } from "@/lib/crypto";
+import { validateForgejoConnection } from "@/lib/forgejo";
+import { normalizeForgejoHost as normalizeConnectorHost } from "@octopus/forgejo-connector/http";
+import { createConnectorToken, hashConnectorToken } from "@/lib/forgejo-connector";
+import { normalizeForgejoHost } from "@/lib/forgejo-http";
+import { syncForgejoRepos } from "@/lib/repo-sync";
 
 async function getAdminOrg() {
   const session = await auth.api.getSession({
@@ -19,7 +27,7 @@ async function getAdminOrg() {
   if (!orgId) return null;
 
   const member = await prisma.organizationMember.findFirst({
-    where: { userId: session.user.id, organizationId: orgId, deletedAt: null },
+    where: { userId: session.user.id, organizationId: orgId, deletedAt: null, organization: { deletedAt: null, bannedAt: null } },
     select: { role: true, organizationId: true },
   });
 
@@ -28,6 +36,209 @@ async function getAdminOrg() {
   }
 
   return { orgId: member.organizationId };
+}
+
+/** Check only the selected provider; authorization is retained if setup fails. */
+export async function retryIntegrationSetup(provider: "github" | "bitbucket" | "gitlab" | "forgejo"): Promise<{ error?: string; synced?: number }> {
+  const ctx = await getAdminOrg();
+  if (!ctx) return { error: "Insufficient permissions." };
+  if (!["github", "bitbucket", "gitlab", "forgejo"].includes(provider)) {
+    return { error: "Choose a supported code provider." };
+  }
+  try {
+    const where = { organizationId: ctx.orgId };
+    const connected = provider === "github"
+      ? (await prisma.organization.findUnique({ where: { id: ctx.orgId }, select: { githubInstallationId: true } }))?.githubInstallationId
+      : provider === "bitbucket"
+        ? await prisma.bitbucketIntegration.findUnique({ where, select: { id: true } })
+        : provider === "gitlab"
+          ? await prisma.gitlabIntegration.findUnique({ where, select: { id: true } })
+          : await prisma.forgejoIntegration.findUnique({ where, select: { id: true } });
+    if (!connected) return { error: "Connect this provider before checking setup." };
+    const { syncOrgRepos } = await import("@/lib/repo-sync");
+    const result = await syncOrgRepos(ctx.orgId, { source: "manual", providers: [provider] });
+    return { synced: result.synced, ...(result.error ? { error: result.error } : {}) };
+  } catch {
+    return { error: "Setup could not be completed. Check the provider connection and try again. Your authorization has been kept." };
+  } finally {
+    revalidatePath("/settings/integrations");
+    revalidatePath("/repositories");
+    revalidatePath("/dashboard");
+  }
+}
+
+/** Retrieve the existing signing secret only after an administrator asks for it. */
+export async function getIntegrationWebhookDetails(provider: "bitbucket" | "gitlab"): Promise<{
+  error?: string;
+  details?: { url: string; secret: string; description?: string; hookId?: string | null };
+}> {
+  const ctx = await getAdminOrg();
+  if (!ctx) return { error: "Insufficient permissions." };
+  if (provider !== "bitbucket" && provider !== "gitlab") return { error: "Choose Bitbucket or GitLab." };
+  try {
+    const appUrl = process.env.BETTER_AUTH_URL;
+    if (!appUrl) return { error: "The Octopus application URL is not configured. Ask the instance administrator to set BETTER_AUTH_URL before repairing webhooks." };
+    if (provider === "bitbucket") {
+      const integration = await prisma.bitbucketIntegration.findUnique({
+        where: { organizationId: ctx.orgId }, select: { id: true, webhookSecret: true, webhookUuid: true },
+      });
+      if (!integration?.webhookSecret) return { error: "No saved Bitbucket webhook secret was found. Reconnect Bitbucket before retrying setup." };
+      return { details: { url: `${appUrl}/api/bitbucket/webhook`, secret: integration.webhookSecret,
+        description: `Octopus Review (${ctx.orgId}) [${integration.id}]`, hookId: integration.webhookUuid } };
+    }
+    const integration = await prisma.gitlabIntegration.findUnique({
+      where: { organizationId: ctx.orgId }, select: { id: true, webhookSecret: true },
+    });
+    if (!integration?.webhookSecret) return { error: "No saved GitLab webhook secret was found. Reconnect GitLab before retrying setup." };
+    const url = new URL(`${appUrl}/api/gitlab/webhook`);
+    url.searchParams.set("octopus_org", ctx.orgId);
+    url.searchParams.set("octopus_connection", integration.id);
+    return { details: { url: url.toString(), secret: integration.webhookSecret } };
+  } catch {
+    return { error: "Webhook details could not be loaded. Try again in a moment." };
+  }
+}
+
+// ── Forgejo Actions ──
+
+export async function connectForgejo(formData: FormData): Promise<{ error?: string; synced?: number }> {
+  const ctx = await getAdminOrg();
+  if (!ctx) return { error: "Insufficient permissions." };
+  const rawHost = formData.get("host");
+  const rawToken = formData.get("token");
+  if (typeof rawHost !== "string" || typeof rawToken !== "string" ||
+      !rawHost.trim() || !rawToken.trim() || rawHost.length > 2048 || rawToken.length > 4096) {
+    return { error: "Enter your Forgejo instance URL and personal access token." };
+  }
+  try {
+    const host = normalizeForgejoHost(rawHost);
+    const existing = await prisma.forgejoIntegration.findUnique({ where: { organizationId: ctx.orgId } });
+    if (existing?.connectorTokenHash) return { error: "Disconnect the private connector before changing to a direct connection." };
+    if (existing && existing.forgejoHost !== host) {
+      return { error: "Disconnect your current Forgejo instance before connecting another host." };
+    }
+    const connection = await validateForgejoConnection(host, rawToken.trim());
+    if (existing && existing.username.toLowerCase() !== connection.username.toLowerCase()) {
+      return { error: "Disconnect your current Forgejo account before connecting another account." };
+    }
+    const accessTokenEnc = encryptString(rawToken.trim());
+    await prisma.$transaction(async (tx) => {
+      if (existing) {
+        await tx.forgejoIntegration.update({ where: { id: existing.id }, data: { accessTokenEnc } });
+      } else {
+        await tx.forgejoIntegration.create({ data: {
+          organizationId: ctx.orgId,
+          forgejoHost: connection.host,
+          username: connection.username,
+          accessTokenEnc,
+          webhookSecret: randomBytes(32).toString("hex"),
+        } });
+      }
+      // Old credentials may have broader access than a replacement token.
+      await tx.repository.updateMany({
+        where: { organizationId: ctx.orgId, provider: "forgejo" },
+        data: { isActive: false },
+      });
+    });
+  } catch {
+    return { error: "Could not connect to Forgejo. Check the HTTPS URL, network access, token and read:user, write:repository and write:issue permissions. For private LAN/VPN, choose the local connector or configure direct access on self-hosted Octopus." };
+  }
+  return syncForgejo();
+}
+
+/** Connector tokens authorize only this integration's API requests, never an org API. */
+export async function createForgejoConnector(formData: FormData): Promise<{ error?: string; connectorToken?: string }> {
+  const ctx = await getAdminOrg();
+  if (!ctx) return { error: "Insufficient permissions." };
+  const rawHost = formData.get("host");
+  if (typeof rawHost !== "string" || rawHost.length > 2048) return { error: "Enter your Forgejo HTTPS origin." };
+  try {
+    // Syntax/address validation only. Cloud never resolves or connects to this private host.
+    const forgejoHost = normalizeConnectorHost(rawHost, { allowPrivate: true });
+    const connectorToken = createConnectorToken();
+    await prisma.forgejoIntegration.create({ data: {
+      organizationId: ctx.orgId, forgejoHost, username: "", accessTokenEnc: null,
+      connectorTokenHash: hashConnectorToken(connectorToken), webhookSecret: randomBytes(32).toString("hex"),
+    } });
+    revalidatePath("/settings/integrations");
+    return { connectorToken };
+  } catch {
+    return { error: "Could not create the connector. Use an HTTPS origin and disconnect any existing Forgejo connection first. Loopback and link-local addresses are not supported." };
+  }
+}
+
+export async function rotateForgejoConnector(integrationId: string): Promise<{ error?: string; connectorToken?: string }> {
+  const ctx = await getAdminOrg();
+  if (!ctx) return { error: "Insufficient permissions." };
+  const connectorToken = createConnectorToken();
+  const result = await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT "id" FROM "forgejo_integrations" WHERE "id" = ${integrationId} AND "organizationId" = ${ctx.orgId} FOR UPDATE`;
+    const integration = await tx.forgejoIntegration.findFirst({ where: { id: integrationId, organizationId: ctx.orgId, connectorTokenHash: { not: null } } });
+    if (!integration) return { error: "This connector is no longer connected." };
+    const pendingWrite = await tx.forgejoConnectorRequest.findFirst({ where: { integrationId, method: { not: "GET" }, OR: [{ status: { in: ["leased", "completed", "delivered", "publishing"] } }, { status: "uncertain", leaseExpiresAt: { gt: new Date() } }] }, select: { id: true } });
+    if (pendingWrite) return { error: "A Forgejo write is still awaiting a result. Wait for it to finish, or check Forgejo and resume the paused connector before rotating." };
+    await tx.forgejoConnectorRequest.deleteMany({ where: { integrationId } });
+    await tx.forgejoIntegration.update({ where: { id: integrationId }, data: { connectorTokenHash: hashConnectorToken(connectorToken), connectorLastSeenAt: null } });
+    return { connectorToken };
+  });
+  revalidatePath("/settings/integrations");
+  return result;
+}
+
+export async function resumeForgejoConnector(integrationId: string): Promise<{ error?: string }> {
+  const ctx = await getAdminOrg();
+  if (!ctx) return { error: "Insufficient permissions." };
+  const result = await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT "id" FROM "forgejo_integrations" WHERE "id" = ${integrationId} AND "organizationId" = ${ctx.orgId} FOR UPDATE`;
+    const integration = await tx.forgejoIntegration.findFirst({ where: { id: integrationId, organizationId: ctx.orgId, connectorTokenHash: { not: null } } });
+    if (!integration) return { error: "This connector is no longer connected." };
+    if (!integration.connectorError) return { error: "This connector is not paused." };
+    const active = await tx.forgejoConnectorRequest.findFirst({ where: { integrationId, OR: [
+      { status: { in: ["leased", "uncertain"] }, leaseExpiresAt: { gt: new Date() } },
+      { status: { in: ["delivered", "publishing"] }, expiresAt: { gt: new Date() } },
+    ] }, select: { id: true } });
+    if (active) return { error: "A connector request is still running. Wait 30 seconds, then check Forgejo again before resuming." };
+    await tx.forgejoConnectorRequest.deleteMany({ where: { integrationId } });
+    await tx.forgejoIntegration.update({ where: { id: integrationId }, data: { connectorError: null } });
+    return {};
+  });
+  revalidatePath("/settings/integrations");
+  return result;
+}
+
+export async function syncForgejo(): Promise<{ error?: string; synced?: number }> {
+  const ctx = await getAdminOrg();
+  if (!ctx) return { error: "Insufficient permissions." };
+  try {
+    const result = await syncForgejoRepos(ctx.orgId, { source: "manual" });
+    revalidatePath("/settings/integrations");
+    revalidatePath("/dashboard");
+    revalidatePath("/repositories");
+    return { synced: result.synced, ...(result.error ? { error: result.error } : {}) };
+  } catch {
+    revalidatePath("/settings/integrations");
+    revalidatePath("/dashboard");
+    revalidatePath("/repositories");
+    return { error: "Forgejo is connected, but repository sync failed. Check the token permissions and instance availability, then retry Sync repositories." };
+  }
+}
+
+export async function disconnectForgejo(): Promise<{ error?: string }> {
+  const ctx = await getAdminOrg();
+  if (!ctx) return { error: "Insufficient permissions." };
+  await prisma.$transaction(async (tx) => {
+    // Serialize with sync and connector claim/result before revoking credentials.
+    await tx.$queryRaw`SELECT "id" FROM "forgejo_integrations" WHERE "organizationId" = ${ctx.orgId} FOR UPDATE`;
+    await tx.forgejoIntegration.deleteMany({ where: { organizationId: ctx.orgId } });
+    await tx.repository.updateMany({
+      where: { organizationId: ctx.orgId, provider: "forgejo" },
+      data: { isActive: false },
+    });
+  });
+  revalidatePath("/settings/integrations");
+  revalidatePath("/dashboard");
+  revalidatePath("/repositories");
+  return {};
 }
 
 // ── Slack Actions ──
@@ -224,28 +435,17 @@ export async function disconnectGitlab(): Promise<{ error?: string }> {
   const ctx = await getAdminOrg();
   if (!ctx) return { error: "Insufficient permissions." };
 
-  const integration = await prisma.gitlabIntegration.findUnique({
-    where: { organizationId: ctx.orgId },
-    select: { id: true },
-  });
-
-  if (!integration) return { error: "No GitLab integration found." };
-
-  // We don't track per-project hook IDs, so webhooks are left as-is on
-  // GitLab and will simply 401 against the rotated secret. That's safe and
-  // matches the "minimal" Bitbucket-style disconnect flow.
-
-  await prisma.gitlabIntegration.delete({
-    where: { id: integration.id },
-  });
-
-  await prisma.repository.updateMany({
-    where: {
-      organizationId: ctx.orgId,
-      provider: "gitlab",
-    },
-    data: { isActive: false },
-  });
+  try {
+    await withWebhookSetupLock(`binding:gitlab:${ctx.orgId}`, async (tx) => {
+      await tx.gitlabIntegration.deleteMany({ where: { organizationId: ctx.orgId } });
+      await tx.repository.updateMany({
+        where: { organizationId: ctx.orgId, provider: "gitlab" },
+        data: { isActive: false, webhookSetupStatus: { status: "unknown" } },
+      });
+    });
+  } catch {
+    return { error: "Connection setup is running or the disconnect failed. Retry shortly." };
+  }
 
   revalidatePath("/settings/integrations");
   return {};
@@ -257,36 +457,17 @@ export async function disconnectBitbucket(): Promise<{ error?: string }> {
   const ctx = await getAdminOrg();
   if (!ctx) return { error: "Insufficient permissions." };
 
-  const integration = await prisma.bitbucketIntegration.findUnique({
-    where: { organizationId: ctx.orgId },
-    select: { id: true, workspaceSlug: true, webhookUuid: true },
-  });
-
-  if (!integration) return { error: "No Bitbucket integration found." };
-
-  // Delete webhook (best-effort)
-  if (integration.webhookUuid) {
-    try {
-      const { deleteWebhook } = await import("@/lib/bitbucket");
-      await deleteWebhook(ctx.orgId, integration.workspaceSlug, integration.webhookUuid);
-    } catch (err) {
-      console.error("[bitbucket] Webhook cleanup failed:", err);
-    }
+  try {
+    await withWebhookSetupLock(`binding:bitbucket:${ctx.orgId}`, async (tx) => {
+      await tx.bitbucketIntegration.deleteMany({ where: { organizationId: ctx.orgId } });
+      await tx.repository.updateMany({
+        where: { organizationId: ctx.orgId, provider: "bitbucket" },
+        data: { isActive: false, webhookSetupStatus: { status: "unknown" } },
+      });
+    });
+  } catch {
+    return { error: "Connection setup is running or the disconnect failed. Retry shortly." };
   }
-
-  // Delete integration
-  await prisma.bitbucketIntegration.delete({
-    where: { id: integration.id },
-  });
-
-  // Deactivate all Bitbucket repos for this org
-  await prisma.repository.updateMany({
-    where: {
-      organizationId: ctx.orgId,
-      provider: "bitbucket",
-    },
-    data: { isActive: false },
-  });
 
   revalidatePath("/settings/integrations");
   return {};

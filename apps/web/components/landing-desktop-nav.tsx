@@ -61,8 +61,8 @@ export function LandingDesktopNav({ isLoggedIn }: { isLoggedIn: boolean }) {
                 >
                   <IconPlugConnected className="mt-0.5 size-5 shrink-0 text-teal-400" />
                   <div>
-                    <div className="text-sm font-medium text-[#ccc]">Editor Plugin</div>
-                    <div className="mt-0.5 text-xs text-[#555]">Octopus reviews inside Cursor &amp; Claude Code</div>
+                    <div className="text-sm font-medium text-[#ccc]">AI Coding Agents</div>
+                    <div className="mt-0.5 text-xs text-[#555]">Octopus reviews for AI coding agents</div>
                   </div>
                 </TrackedLink>
                 <TrackedLink

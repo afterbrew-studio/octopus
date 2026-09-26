@@ -9,7 +9,7 @@ let chargedSum: number | null;
 const usageLogs: Array<Record<string, unknown>> = [];
 
 mock.module("server-only", () => ({}));
-mock.module("@octopus/db", () => ({
+mock.module("@octopus/db", () => ({ Prisma: { DbNull: null },
   prisma: {
     creditTransaction: {
       findFirst: mock(() => Promise.resolve(purchaseRow)),

@@ -1,8 +1,10 @@
 import "server-only";
+import { observeAiRequest, completionEvidence } from "./request-evidence";
 import OpenAI from "openai";
 import { Agent } from "undici";
 import type { AiCreateParams, AiResponse, AiProvider } from "./index";
 import { splitReasoning } from "./reasoning";
+import { stripLoneSurrogates } from "./sanitize";
 
 /**
  * Shared implementation for OpenAI-compatible gateway providers (acp, opencode,
@@ -147,14 +149,14 @@ export async function callOpenAiGateway(
   });
 
   const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [];
-  if (params.system) messages.push({ role: "system", content: params.system });
-  for (const m of params.messages) messages.push({ role: m.role, content: m.content });
+  if (params.system) messages.push({ role: "system", content: stripLoneSurrogates(params.system) });
+  for (const m of params.messages) messages.push({ role: m.role, content: stripLoneSurrogates(m.content) });
 
   const model = params.model.startsWith(opts.modelPrefix)
     ? params.model.slice(opts.modelPrefix.length)
     : params.model;
 
-  const response = await client.chat.completions.create({
+  const response = await client.chat.completions.create(observeAiRequest(params, opts.name, {
     // Extensions first, so a reserved key could never win even if one slipped
     // past parseExtraBody.
     ...(opts.extraBody ?? {}),
@@ -183,7 +185,7 @@ export async function callOpenAiGateway(
           },
         }
       : {}),
-  });
+  }));
 
   const finishReason = response.choices[0]?.finish_reason ?? "unknown";
   const raw = response.choices[0]?.message?.content ?? "";
@@ -227,6 +229,7 @@ export async function callOpenAiGateway(
 
   return {
     text,
+    completion: completionEvidence(response.choices[0]?.finish_reason, ["stop"]),
     provider: opts.name,
     model: params.model,
     usage: {

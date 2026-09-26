@@ -21,6 +21,7 @@ import {
   IconX,
   IconArrowRight,
   IconGitPullRequest,
+  IconGitFork,
   IconShieldCheck,
   IconCopy,
   IconCheck,
@@ -46,6 +47,7 @@ export function ProvidersBanner({
   githubConnected,
   bitbucketConnected,
   gitlabConnected,
+  forgejoConnected,
   githubAppSlug,
   gitlabRedirectUri,
   hero = false,
@@ -53,6 +55,7 @@ export function ProvidersBanner({
   githubConnected: boolean;
   bitbucketConnected: boolean;
   gitlabConnected: boolean;
+  forgejoConnected: boolean;
   githubAppSlug: string | undefined;
   gitlabRedirectUri: string | null;
   /** Connect-first empty state: bigger headline, not dismissible. */
@@ -118,7 +121,7 @@ export function ProvidersBanner({
           )}
         </div>
 
-        <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           {/* GitHub Card */}
           <div className="border-border/60 bg-muted/30 flex flex-col rounded-lg border p-4">
             <div className="flex items-center gap-2.5">
@@ -259,6 +262,26 @@ export function ProvidersBanner({
               )}
             </div>
           </div>
+
+          <div className="border-border/60 bg-muted/30 flex min-w-0 flex-col rounded-lg border p-4">
+            <div className="flex items-center gap-2.5">
+              {forgejoConnected ? <IconCircleCheck className="size-4 shrink-0 text-emerald-500" /> : <IconCircle className="size-4 shrink-0 text-muted-foreground" />}
+              <IconGitFork className="size-5 shrink-0 text-orange-500" />
+              <span className="text-sm font-medium">Forgejo</span>
+            </div>
+            <p className="text-muted-foreground mt-2 text-xs leading-relaxed">Use Cloud with public HTTPS or a local connector for private LAN/VPN access. Self-hosted Octopus can connect directly.</p>
+            <div className="text-muted-foreground mt-3 flex flex-wrap items-center gap-2 text-[10px]">
+              <span className="flex items-center gap-1"><IconGitPullRequest className="size-3" />Auto-review PRs</span>
+              <span className="flex items-center gap-1"><IconShieldCheck className="size-3" />Self-hosted</span>
+            </div>
+            <div className="mt-auto pt-3">
+              <Button size="sm" variant={forgejoConnected ? "outline" : "cta"} className="h-8 w-full text-xs" asChild>
+                <a href="/settings/integrations#forgejo" onClick={() => trackEvent("cta_click", { location: hero ? "dashboard_connect_hero" : "dashboard_providers_banner", label: "connect_forgejo" })}>
+                  {forgejoConnected ? "Manage Forgejo" : "Connect Forgejo"} &rarr;
+                </a>
+              </Button>
+            </div>
+          </div>
         </div>
 
         <p className="mt-3 text-[11px] text-muted-foreground">
@@ -320,7 +343,7 @@ export function ProvidersBanner({
               </Button>
 
               <p className="text-muted-foreground text-center text-xs">
-                Secure access only - we never store your code.
+                Octopus accesses repository content for indexing and posts review comments.
               </p>
             </div>
           </div>
@@ -430,7 +453,7 @@ export function ProvidersBanner({
             </Button>
 
             <p className="text-muted-foreground text-center text-xs">
-              Secure access only - we never store your code.
+              Octopus accesses repository content for indexing and posts review comments.
             </p>
           </form>
         </DialogContent>

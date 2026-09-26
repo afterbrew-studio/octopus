@@ -132,3 +132,25 @@ jobs:
       - name: Test billing auto-reload invariants against PostgreSQL
         run: bun test lib/__tests__/billing.db.test.ts
         working-directory: apps/web
+
+      - name: Test CLI user sessions and organisation isolation against PostgreSQL
+        run: bun test lib/__tests__/cli-user-auth.db.test.ts
+        working-directory: apps/web
+        env:
+          RUN_CLI_AUTH_DB_TESTS: "1"
+
+      - name: Test Forgejo connector isolation and recovery against PostgreSQL
+        run: bun test lib/__tests__/forgejo-connector.test.ts lib/__tests__/forgejo-connector-protocol.test.ts
+        working-directory: apps/web
+        env:
+          FORGEJO_CONNECTOR_TEST_DATABASE_URL: "postgresql://octopus:octopus@localhost:5432/octopus_agent_task_test"
+
+      - name: Test conversion cash facts and transport
+        run: bun test lib/__tests__/marketing-conversions.test.ts lib/__tests__/marketing-stripe.test.ts
+        working-directory: apps/web
+
+      - name: Test conversion migration, capture and delivery recovery against PostgreSQL
+        run: bun test lib/__tests__/marketing-outbox.db.test.ts
+        working-directory: apps/web
+        env:
+          RUN_MARKETING_DB_TESTS: "1"

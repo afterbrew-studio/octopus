@@ -1,3 +1,9 @@
+import { flagValue, positionals } from "./args.js";
+
+export function reviewPrArgument(argv: string[]): string | undefined {
+  return flagValue(argv, "--pr") ?? positionals(argv, ["--since", "--format", "--pr"])[0];
+}
+
 /**
  * Parse a PR/MR identifier for `octp review --pr`. Accepts a bare number or a
  * GitHub / Bitbucket / GitLab (incl. self-hosted, nested subgroups) URL.

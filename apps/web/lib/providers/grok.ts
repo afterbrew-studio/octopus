@@ -1,6 +1,8 @@
 import "server-only";
+import { observeAiRequest, completionEvidence } from "./request-evidence";
 import OpenAI from "openai";
 import type { Provider, AiCreateParams, AiResponse } from "./index";
+import { stripLoneSurrogates } from "./sanitize";
 
 /**
  * Grok (xAI). OpenAI-compatible REST at `https://api.x.ai/v1` — reuse the
@@ -29,10 +31,10 @@ export const grokProvider: Provider = {
     const client = getClient(apiKey);
 
     const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [];
-    if (params.system) messages.push({ role: "system", content: params.system });
-    for (const m of params.messages) messages.push({ role: m.role, content: m.content });
+    if (params.system) messages.push({ role: "system", content: stripLoneSurrogates(params.system) });
+    for (const m of params.messages) messages.push({ role: m.role, content: stripLoneSurrogates(m.content) });
 
-    const response = await client.chat.completions.create({
+    const response = await client.chat.completions.create(observeAiRequest(params, "grok", {
       model: params.model,
       max_completion_tokens: params.maxTokens,
       messages,
@@ -48,12 +50,13 @@ export const grokProvider: Provider = {
             },
           }
         : {}),
-    });
+    }));
 
     const text = response.choices[0]?.message?.content ?? "";
 
     return {
       text,
+      completion: completionEvidence(response.choices[0]?.finish_reason, ["stop"]),
       provider: "grok",
       model: params.model,
       usage: {

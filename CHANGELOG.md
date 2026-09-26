@@ -7,6 +7,339 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.6] - 2026-09-25
+
+### Added
+- Claude Opus 5.5 is available as an opt-in review model with native structured JSON output. Existing defaults and pinned models remain unchanged.
+- Automatic [model discovery](docs/model-discovery.md) saves provider catalog results and failures for administrator review.
+
+### Upgrade notes
+- Apply the additive Opus 5.5 catalog and discovery-cache migration before updating the application and workers.
+
+## [1.2.5] - 2026-09-22
+
+### Improved
+- Authorized operators can retain cash-delivery reconciliation snapshots and compare existing payment and refund receipts without replaying events. Missing or unresolved records remain visible as gaps.
+
+### Upgrade notes
+- Apply the additive retained-cash observation migration before rollout. Operator observation requires a separately verified source and project binding; this release starts no observation or collection job.
+
+## [1.2.4] - 2026-09-20
+
+### Improved
+- The dashboard now guides one repository from connection and readiness through opening a pull request to its first completed review. Automatic indexing and analysis appear as preparation progress; manual preparation is optional.
+- Integration cards distinguish authorized access, repository sync and webhook setup, with provider-specific checks and repair instructions.
+
+### Fixed
+- Auto Review displays the saved setting and remains editable during preparation. Indexing no longer turns a disabled setting back on.
+- Failed indexing, cancellation and sync actions keep their error messages visible. Recovery links open the correct Git provider settings.
+- Webhook setup checks existing repositories and preserves organization ownership and signing secrets when retrying setup.
+
+### Upgrade notes
+- Apply the additive integration setup-status and first-review completion migrations before updating review workers and the web application. Existing connections initially show unchecked setup until their next sync. The first-review milestone uses newly confirmed publication; historical reports are not backfilled. Refresh indexed help content after deployment.
+
+## [1.2.3] - 2026-09-20
+
+### Added
+- Setup guides for Codex, OpenCode, Hermes Agent, OpenClaw, Cursor and Claude Code, with a shared downloadable Octopus skill and checks for the agent's actual execution environment.
+- A footer banner inviting visitors to star Octopus on GitHub and support the project.
+
+### Fixed
+- Corrected Claude plugin marketplace, installation and token setup instructions. CLI skill commands now match the published native binary, and review requests are clearly distinguished from completed reviews.
+- Removed the footer's "Powered by Claude" attribution.
+
+## [1.2.2] - 2026-09-20
+
+### Improved
+- Forgejo's private Cloud setup now explains where to get and run the connector, with direct setup links, separate token instructions, copyable commands and clear checks for each step. Certificate and recovery guidance is grouped into expandable sections.
+
+### Fixed
+- Forgejo webhook instructions now name the actual event selections for pull request changes, new commits and review commands. Repository setup accounts for indexing that starts automatically and Auto Review already being enabled.
+
+## [1.2.1] - 2026-09-20
+
+### Fixed
+- Clarified the homepage Cloud card: Octopus is hosted for you, while private LAN/VPN Forgejo instances need a local connector.
+
+## [1.2.0] - 2026-09-19
+
+### Added
+- Octopus Cloud can review repositories on private LAN/VPN Forgejo instances through a local outbound connector. Forgejo stays private and its personal access token stays on your machine. Both Forgejo and the connector need outbound HTTPS access to Cloud; code and review context are processed by Octopus Cloud and configured AI services.
+- Choose clearly separated Forgejo setup paths: [Cloud + public HTTPS](https://octopus-review.ai/docs/integrations#forgejo-cloud-public), [Cloud + private LAN/VPN with a connector](https://octopus-review.ai/docs/integrations#forgejo-cloud-private), or [self-hosted Octopus + direct private access](https://octopus-review.ai/docs/integrations#forgejo-self-hosted). The website, onboarding emails and help content use the same distinction.
+- Connector settings show connection status and support token rotation and disconnection. An uncertain Forgejo write pauses the connector until an administrator checks the result and resumes it.
+
+### Upgrade notes
+- Apply the additive connector schema and guarded email-template migrations before updating the web application and review workers. Customized email bodies and delivery settings remain unchanged. Refresh indexed help content after deployment.
+
+## [1.1.1] - 2026-09-19
+
+### Fixed
+- Recognize Stripe `pyr_` refunds when delivering cash conversions to Unified Ads, preserving individual refund IDs and original-payment validation. Previously blocked deliveries still require deliberate recovery.
+- Add an authenticated preview and guarded retry for refunds blocked before transport by reference validation; reuse the delivered original purchase without replaying it or changing credits.
+
+## [1.1.0] - 2026-09-19
+
+### Added
+- Connect self-hosted Forgejo repositories with a personal access token and signed webhooks. Octopus can sync repositories, review pull requests, post comments and publish commit statuses.
+- Self-hosted Octopus can reach private LAN or VPN Forgejo instances through an explicit HTTPS-origin allowlist, with verified TLS and support for trusted internal certificate authorities. See the [Forgejo setup guide](https://octopus-review.ai/docs/integrations#forgejo).
+- Forgejo setup is included in the dashboard, marketing pages, help content and onboarding emails.
+
+### Upgrade notes
+- Apply both Forgejo database migrations before updating the web application and review workers. The email migration updates untouched system-template defaults and preserves customized bodies and delivery settings. Refresh indexed help content after deployment; see the [content audit](docs/plans/forgejo-content-audit.md).
+
+## [1.0.161] - 2026-09-19
+
+### Fixed
+- Saving with auto-reload enabled and no saved payment method now opens Add card. See [Credits & Billing](/docs/pricing) for the card setup and settings save flow.
+
+## [1.0.160] - 2026-09-19
+
+### Fixed
+- Consented visit collection now waits briefly for Redis to connect after startup, avoiding temporary rejections while preserving rate limits and outage protection.
+
+## [1.0.159] - 2026-09-17
+
+### Added
+- Choose usage analytics and advertising measurement separately, and change or withdraw optional consent from Privacy choices.
+- Operators: optional consented visitor and verified signup/payment attribution in Unified Ads, with durable retries and unchanged sales/refund identities and currencies. Apply both additive tracking migrations and agree the LIVE enrollment and new-events cutoff before activation; see [setup and rollback](docs/unified-ads-tracking.md).
+
+## [1.0.158] - 2026-09-15
+
+### Added
+- Operators: optional hosted delivery of registrations, Stripe-confirmed cash payments and successful individual refunds to Unified Ads, with durable retries and separate TEST/LIVE sources. Apply the additive marketing conversion migration before enabling delivery; see [setup and limits](docs/unified-ads-conversions.md). Receiver totals are observed product events; ad attribution and ad-network forwarding are separate capabilities.
+
+### Fixed
+- Native CLI 0.5.1 finishes writing onboarding JSON before it exits, so coding agents receive complete onboarding results when capturing output through a pipe.
+
+## [1.0.157] - 2026-09-12
+
+### Added
+- Native CLI 0.6.0 signs in once as a user. Use `octp org list --json` and per-command `--org <slug|id>` across current memberships; repository setup infers a unique organisation or returns choices before starting work.
+- CLI browser approval no longer asks new user sessions to select an organisation. Sessions expire after 30 days; logout, revocation and membership removal invalidate derived organisation access. Existing organisation tokens and legacy device clients remain supported.
+- Operators: apply the additive `20260912005000_cli_user_sessions` migration through the normal backup/migration/deploy gates before publishing CLI 0.6.0. The previous app remains compatible with the expanded schema.
+
+## [1.0.156] - 2026-09-12
+
+### Fixed
+- CLI onboarding reuses the active repository when an inactive historical record shares its GitHub name, avoiding a failed connection or an unnecessary access prompt. Dismissed-only repositories remain dismissed. No database migration is required.
+
+## [1.0.155] - 2026-09-11
+
+### Fixed
+- GitHub summaries now offer one Review history link to a readable page with saved results, dates and commits. JSON is an explicit download; existing record links open the readable page in browsers.
+- Removed blanket sign-in and organisation-access notices from summary comments. Actual access checks remain on the review page and exports.
+- Operators: immutable records, coverage, scores and tenant boundaries are preserved. React is aligned with the existing React DOM patch version for server rendering. No database migration is required.
+
+## [1.0.154] - 2026-09-11
+
+### Fixed
+- GitHub review summaries escape literal pipes in supported prose code spans for strict evidence readers; see the [publication contract and limits](docs/review-coverage.md#limits-and-follow-up-work). No database migration is required.
+
+## [1.0.153] - 2026-09-11
+
+### Added
+- Give your coding AI a copyable homepage prompt to install octp and connect, index and analyse the GitHub repository in your current project. You approve sign-in and GitHub access using direct links; the AI continues setup through the CLI.
+- Native CLI 0.5.0 adds `octp onboard --agent --json` with resumable server status and explicit next actions. Existing CLI installers remain available.
+
+## [1.0.152] - 2026-09-11
+
+### Fixed
+- Compact review summaries use plain record links and a short history list that strict evidence readers can consume. Invalid assessments remain unscored.
+- Operators: publication recovery still recognizes existing summary references; archived attempts and current-head publication checks are unchanged. No database migration is required.
+- Clarified where review explanations belong so re-review commentary does not follow the findings count table without a section heading. Invalid or inconsistent assessments still receive no overall score.
+
+## [1.0.151] - 2026-09-11
+
+### Added
+- Eligible oversized reviews can supply the complete diff when the selected model's measured input, output, cost and execution limits allow it. Explicit input limits remain in effect; counting alone never produces a score.
+- Operators: see [measured complete review admission](docs/measured-review-capacity.md) for eligibility, limits, billing attribution and expiry handling. No database migration is required.
+
+## [1.0.150] - 2026-09-11
+
+### Fixed
+- Incomplete reviews distinguish a deliberately withheld score from malformed output. A valid partial-input response stays unscored, while malformed findings and interrupted provider calls retain their own failure reasons.
+- Operators: response validation is recorded independently from input coverage, actual request provenance and provider completion. Complete reviews still require a valid numeric assessment; input limits, exclusions and severity/confidence gates remain in effect. No database migration is required.
+
+## [1.0.149] - 2026-09-11
+
+### Fixed
+- GitHub reviews recognize declared binary JPEG images, TTF/WOFF2 fonts and ZIP archives alongside PNGs. Coverage explicitly excludes these assets and states that their contents were not reviewed; archives are not opened or checked for safety. Supplied text remains eligible, including code that handles these assets.
+- Operators: `github-binary-assets-v2` receipts bind the asset kind to verified declarations, file metadata and exact revisions. Historical PNG receipts retain their original policy and format. Input allowances and assessment gates remain in effect; text-budget omissions can still leave a review unassessed. No database migration is required.
+
+## [1.0.148] - 2026-09-11
+
+### Fixed
+- GitHub reviews recover complete newly added text files when the files API omits their patch but the full diff contains it. Recovered content must match the file's exact Git blob hash.
+- Operators: recovered patches use the existing acquisition and review allowances. Binary exclusions, provider selection and completeness gates are unchanged; oversized reviews can still remain unassessed. No database migration is required.
+
+## [1.0.147] - 2026-09-11
+
+### Fixed
+- GitHub reviews show coverage totals and a link to the full record instead of listing every changed file in the PR conversation.
+- GitHub re-reviews reuse the existing summary through queued, running and completed states, with links to the five latest saved reviews. Stale heads or review requests cannot replace the current summary; deleted summaries are recreated.
+- Operators: the full coverage manifest and immutable attempt records remain unchanged. No database migration, input-budget or review-gate change is required.
+
+## [1.0.146] - 2026-09-11
+
+### Fixed
+- Reviews: a standalone Conflict Risk advisory after the Findings Summary no longer invalidates an otherwise valid review. Invalid assessments explicitly distinguish complete input from an unassessed result and show no category or overall scores.
+- Operators: response validation records a specific structural failure reason without retaining response excerpts. Complete changed-file input alone cannot pass the review check; malformed findings, missing request evidence and incomplete provider responses still fail. No database migration is required.
+- Reviews: hosted PR reviewers receive the changed-file visibility manifest. Explicit unsupported claims about missing content in excluded files are withheld with a verification gap and no overall score, while unrelated parsed findings remain available.
+- Operators: excluded-input containment preserves the original response digest and provider receipt, keeps eligible-input coverage independent, and fails assessment rather than inventing a passing score. This bounded English claim guard does not verify arbitrary paraphrases or unseen source; repository exclusions and all severity/confidence settings remain unchanged.
+
+## [1.0.145] - 2026-09-11
+
+### Fixed
+- Reviews: feedback-based suppression now checks semantic similarity, preventing search ranking alone from hiding a finding.
+- Operators: feedback matching keeps the existing repository/organization scope and strict cosine threshold above 0.80. No database migration or reindex is required; failed or invalid feedback lookups retain findings.
+
+## [1.0.144] - 2026-09-11
+
+### Fixed
+- GitHub reviews can assess accompanying text when an added or modified PNG has a validated provider binary declaration. Coverage lists those images as excluded and not reviewed; missing source patches and incomplete model assessments still block a complete result.
+
+## [1.0.143] - 2026-09-11
+
+### Fixed
+- Reviews: moderately large PRs can supply up to 350,000 changed-source characters by default. Retrying an incomplete assessment performs a full review, retaining findings in previously omitted files and at previously commented locations.
+- Operators: follow-up restrictions now require complete evidence from the preceding review request; missing or stale evidence retains full assessment. Explicit input-limit overrides and coverage/assessment gates remain in effect.
+
+## [1.0.142] - 2026-09-11
+
+### Fixed
+- Review coverage tables now use ordinary Markdown instead of HTML. Attempt URLs and revision details remain visible, including in shortened GitHub comments and retries of older report formats.
+
+## [1.0.141] - 2026-09-11
+
+### Fixed
+- Large pull requests now retain a complete changed-file inventory, prioritize source files, and explicitly report omitted or partial coverage. Incomplete coverage or unfinished model responses no longer receive a passing overall review score.
+- Review reports preserve findings and revision details through formatting and comment-size limits. Older reviews and delayed retries cannot replace a newer review result.
+
+### Added
+- Authenticated, organization-scoped review-attempt downloads retain immutable coverage and assessment evidence for troubleshooting.
+
+## [1.0.140] - 2026-09-09
+
+### Fixed
+- A repository's first pull request now waits for repository analysis even when automatic discovery has already finished indexing. Concurrent first reviews share the analysis, and waiting reviews retry automatically.
+
+## [1.0.139] - 2026-09-09
+
+### Fixed
+- New GitHub repositories now start indexing automatically after connection or discovery. A first pull request also recovers a repository missed by its creation webhook.
+- Pull requests against an empty initial branch can now be reviewed. GitHub's empty-tree response is no longer reported as a missing branch, while access and invalid-branch errors remain actionable.
+- Empty repositories are checked again after code is pushed, and abandoned indexing jobs recover during repository discovery.
+
+## [1.0.138] - 2026-09-05
+
+### Changed
+- `octp onboard`: the sign-in step opens the approval page in your browser (Enter opens it again, Esc goes back) and the sign-in choice reads "Cloud (Octopus hosted)". On Cloud the review-model step offers "Use org default" first, since Cloud reviews follow the organization's model setting; a provider picked here only overrides local `octp review` runs. Ollama (local) is offered only for self-hosted instances and unreleased providers are no longer listed. The model catalogue matches the current Cloud catalog (default Claude Opus 5; GPT-6 Astra and GPT-5.3 Codex for OpenAI).
+
+### Added
+- `GET /api/cli/models`: the organization's effective review model (provider, model, whether it is the platform default, which providers have an org API key), used by the CLI wizard for display.
+
+### Fixed
+- `octp onboard` no longer prints a React "Cannot update a component while rendering a different component" warning when no provider is selected.
+
+## [1.0.137] - 2026-09-05
+
+### Added
+- The pricing page carries a Product and Offer schema (free to start, usage billed at 2x provider list price), and the blog index lists its posts as structured data.
+
+## [1.0.136] - 2026-09-04
+
+### Added
+- Documentation pages (About, Pricing, Integrations, CLI, GitHub Action) now carry WebPage and breadcrumb structured data linked to the Octopus organization entity. The pricing table lists Grok 4.6 and Kimi K3 (via OpenRouter), and three docs headings are phrased as the questions people ask.
+- AI search readiness: `/llms-full.txt` (full documentation text, generated from the same corpus as Ask Octopus), an Organization schema with our public profiles on every marketing page, a Blog schema on the blog index, and explicit robots rules for ChatGPT search and Bing. `/llms.txt` now lists every supported AI vendor, the GitHub Action, CLI, MCP plugin and blog.
+
+### Fixed
+- The About page, FAQ and homepage said reviews run on "Claude and OpenAI" or "Claude, OpenAI, Gemini or Qwen"; they now name all supported vendors, including Grok and OpenRouter.
+
+## [1.0.135] - 2026-09-04
+
+### Added
+- GPT-6 Astra (OpenAI, released 3 September) can be chosen as the review model on Octopus Cloud or with your own OpenAI key. Listed on the pricing page at OpenAI's $10 / $50 per million tokens; the Cloud default stays Claude Opus 5.
+
+## [1.0.134] - 2026-09-04
+
+### Fixed
+- Connecting GitHub on Octopus Cloud failed for every new organization since 1.0.90 (1 August). That release added a verification step to the GitHub install that needs the GitHub App's client credentials, and production never received them. The credentials are in place; the server now refuses to start on Octopus Cloud without them, the message shown to customers no longer contains self-host setup instructions, failed connect attempts are recorded with the user and organization, and an installation held by a deleted organization is released instead of blocking a new one. Affected users can connect by clicking Install GitHub App again.
+
+## [1.0.133] - 2026-09-03
+
+### Added
+- Automatic repository discovery: new repositories in connected GitHub, GitLab and Bitbucket accounts are added without clicking Sync. GitHub repositories appear within seconds through the new `repository` webhook event; an hourly sweep (`REPO_DISCOVERY_CRON`, default `17 * * * *`, `off` to disable) covers every provider, and GitLab projects created after connecting now get synced and hooked. Organizations can opt out under Settings → Reviews. Freshly added repositories carry a "New" badge for a week and the list refreshes live. Existing GitHub Apps need the **Repository** event ticked once under "Subscribe to events".
+
+## [1.0.132] - 2026-09-03
+
+### Fixed
+- Sign-ups from `firegameplay.com`, the sixth domain used by the September sign-up farm, are refused. Operators can now block further domains without a release: set `SIGNUP_BLOCKED_DOMAINS` to a comma-separated list and they are refused at signup, subdomains included.
+
+## [1.0.131] - 2026-09-03
+
+### Added
+- Sign-ups are now capped per network: at most 5 new accounts per IP address and 15 per IPv4 /24 in any 24-hour window. Blocked attempts get a clear "try again tomorrow or contact support" message and an audit entry. Self-hosters behind a shared NAT can raise the caps with `SIGNUP_MAX_PER_IP_DAY` / `SIGNUP_MAX_PER_SUBNET_DAY` or switch the cap off with `SIGNUP_VELOCITY_CAP=off`.
+- API tokens now require an account in good standing. Accounts whose device is shared across many sign-ups, or whose organization was scored as high risk at sign-up, cannot mint tokens until the organization shows real use (a connected repository, a purchase, a paid plan or its own provider key), and tokens already minted by such organizations stop authenticating with a 403 that says why.
+
+### Changed
+- The welcome credit for accounts that signed up with a magic link (no GitHub, GitLab or Bitbucket login) is now granted when the first repository is connected, not at sign-up. Accounts that signed in with a provider are unaffected. The repositories page tells pending accounts what unlocks the credit.
+
+### Fixed
+- Sign-ups from the email domain families used by the September sign-up farm are refused as disposable addresses.
+
+## [1.0.130] - 2026-09-02
+
+### Added
+- Qwen3.8-Max now shows up everywhere the other review models do: the pricing page ($2 input / $6 output per 1M tokens at Alibaba's list price), the FAQ and getting-started docs, Ask Octopus, the sub-processor list (Alibaba Cloud, Singapore region) and the terms. A launch post explains what it costs and when to pick it over your default.
+
+## [1.0.129] - 2026-09-02
+
+### Added
+- Alibaba Cloud Model Studio as a review provider: Qwen models (starting with `qwen3.8-max-0902`, $2/$6 per 1M tokens) via the OpenAI-compatible DashScope endpoint, with per-organization BYOK, `DASHSCOPE_API_KEY` as the platform key and `DASHSCOPE_BASE_URL` to select the China endpoint. Thinking mode follows the model default and can be switched off per call.
+
+### Changed
+- New native CLI release: `octp` 0.3.0 — re-run the installer to pick it up. The binary now ships the current model catalog (Claude Fable 5 max tier; Claude Opus 4.8 replaces 4.6), and the repository wizard opens the signed GitHub App install flow.
+
+### Fixed
+- `octp update` compares against the installed version correctly. The previous binary always believed it was 0.1.0, so it kept offering an upgrade you already had.
+- The local repository index that `octp` builds no longer follows symlinks or reads files outside the repository, so a checkout cannot make the CLI read files from elsewhere on your machine.
+
+## [1.0.128] - 2026-09-02
+
+### Fixed
+- The review comment's `Last reviewed commit:` line is now written from the pull request's recorded head SHA (full 40 characters) instead of whatever the model wrote; re-reviews sometimes emitted the 7-character form, which merge gates that bind a review to an exact commit reject as malformed.
+
+## [1.0.127] - 2026-09-02
+
+### Fixed
+- The native CLI installer (`curl -fsSL https://octopus-review.ai/install.sh | bash` and the PowerShell equivalent) works again. It only looked at the 30 most recent GitHub releases when resolving the latest `octp` build, and platform releases had pushed the CLI release out of that window, so every install failed with no error message. The lookup now walks the release list, skips draft and prerelease builds correctly, fails with a clear message when something is wrong, and is checked daily in CI against the live API.
+
+## [1.0.126] - 2026-09-02
+
+### Fixed
+- Triggering a review from the CLI or the editor plugin (`octopus_review_pr`) on a pull request whose author is blocked, whose organization has reviews paused, or which is already being reviewed now returns that reason (HTTP 422 / 409) instead of "Review started".
+- Pricing docs said a 20% platform fee is applied on top of provider costs. Octopus Cloud bills usage at 2x the provider's list price; the docs and the pricing page now say so.
+
+### Changed
+- Internal helper calls (finding validation, feedback classification, blog SEO metadata) and the self-host default review model now use Claude Sonnet 5 ($2/$10) instead of Sonnet 4.6 ($3/$15). These short JSON calls run with thinking off, so Sonnet 5's adaptive-thinking default can't eat their small token budgets. Sonnet 5 and Fable 5.1 are also in the self-host catalog seed, the pricing page and the docs.
+
+## [1.0.125] - 2026-09-01
+
+### Fixed
+- Merge-time indexing now applies the same rules as a full reindex: files over 100 KB and paths listed in `.octopusignore` no longer slip into the index when a merged pull request touches them. Until now, what Octopus knew about such files depended on which indexing path had run last.
+- CLI chat (`octopus repo chat` and the `octopus_ask` MCP tool) now gives the model the relevant past review comments alongside code and knowledge. Those results were already being retrieved but never reached the answer.
+- Repository file counts ("Files: indexed / total") no longer include directories, so the total matches the number of files actually in the repository.
+
+## [1.0.124] - 2026-09-01
+
+### Changed
+- The Octopus Cloud default review model is now Claude Opus 5 (same $5/$25 price as Opus 4.8, which stays available). Organizations and repositories with an explicit model pin are unaffected. Claude Sonnet 4.6 is retired from the catalog; anything that pointed at it now uses Claude Sonnet 5 ($2/$10).
+
+## [1.0.123] - 2026-09-01
+
+### Added
+- Claude Fable 5.1 (`claude-fable-5-1`) is available as an opt-in review model at $10/$50 per 1M tokens, the same price as Fable 5. The platform default is unchanged (Opus 4.8). Listed on the pricing page and in the docs; fallback pricing added so usage never bills at $0.
+
 ## [1.0.122] - 2026-08-30
 
 ### Fixed

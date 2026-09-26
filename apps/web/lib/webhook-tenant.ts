@@ -249,7 +249,7 @@ export interface WebhookObservationLogger {
 export interface WebhookDeliveryRetentionStore {
   webhookDelivery: {
     deleteMany(args: {
-      where: { lastSeenAt: { lt: Date } };
+      where: { lastSeenAt: { lt: Date }; provider: { not: string } };
     }): Promise<{ count: number }>;
   };
 }
@@ -684,7 +684,7 @@ export async function enforceWebhookDeliveryRetention(
 
   const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
   const { count } = await store.webhookDelivery.deleteMany({
-    where: { lastSeenAt: { lt: cutoff } },
+    where: { lastSeenAt: { lt: cutoff }, provider: { not: "forgejo" } },
   });
   if (count > 0) {
     logger.info(

@@ -7,7 +7,7 @@ let orgRow: { reviewEffort: string | null } | null = null;
 let sysRow: { defaultReviewEffort: string | null } | null = null;
 let dbThrows = false;
 
-mock.module("@octopus/db", () => ({
+mock.module("@octopus/db", () => ({ Prisma: { DbNull: null },
   prisma: {
     organization: {
       findUnique: () =>

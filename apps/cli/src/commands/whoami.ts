@@ -19,6 +19,13 @@ export async function whoamiCommand(argv: string[]): Promise<number> {
     error("Not signed in. Run `octp login`.");
     return 2;
   }
+  if (creds.kind === "user") {
+    const identity = await getJson<{ user: { name: string; email: string } }>(`${creds.baseUrl}/api/cli/auth/user`, { headers: { authorization: `Bearer ${creds.token}` }, signal: AbortSignal.timeout(15_000) });
+    if (!identity.ok) { error("Session expired or unavailable. Run octp login again."); return 1; }
+    info(`${sanitizeTerminal(identity.data.user.name)} <${sanitizeTerminal(identity.data.user.email)}>`);
+    info("User session. Use octp org list or --org <slug> for an organisation.");
+    return 0;
+  }
   const res = await getJson<Me>(`${creds.baseUrl}/api/cli/me`, {
     headers: { authorization: `Bearer ${creds.token}` },
   });

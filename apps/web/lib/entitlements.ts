@@ -24,24 +24,25 @@ import { ORG_TYPE } from "@/lib/org-types";
 const IS_SELF_HOSTED = process.env.NEXT_PUBLIC_OCTOPUS_SELF_HOSTED === "true";
 
 /** CreditTransaction.type values that represent a real (paid) purchase. */
-const PURCHASE_TXN_TYPES = ["purchase", "auto_reload", "subscription"];
+export const PURCHASE_TXN_TYPES = ["purchase", "auto_reload", "subscription"];
 
 /** True when the deployment is a self-hosted install (no billing path). */
 export function isSelfHosted(): boolean {
   return IS_SELF_HOSTED;
 }
 
-type ProviderKeyFields = {
+export type ProviderKeyFields = {
   anthropicApiKey: string | null;
   openaiApiKey: string | null;
   googleApiKey: string | null;
   cohereApiKey: string | null;
   grokApiKey: string | null;
   openrouterApiKey: string | null;
+  alibabaApiKey: string | null;
   claudeCodeApiKey: string | null;
 };
 
-function hasOwnProviderKey(org: ProviderKeyFields): boolean {
+export function hasOwnProviderKey(org: ProviderKeyFields): boolean {
   return Boolean(
     org.anthropicApiKey ||
       org.openaiApiKey ||
@@ -49,6 +50,7 @@ function hasOwnProviderKey(org: ProviderKeyFields): boolean {
       org.cohereApiKey ||
       org.grokApiKey ||
       org.openrouterApiKey ||
+      org.alibabaApiKey ||
       org.claudeCodeApiKey,
   );
 }
@@ -95,6 +97,7 @@ export async function getOrgEntitlements(orgId: string): Promise<OrgEntitlements
       cohereApiKey: true,
       grokApiKey: true,
       openrouterApiKey: true,
+      alibabaApiKey: true,
       claudeCodeApiKey: true,
       liveTelemetryEnabled: true,
       allowVendorMemberVisibility: true,

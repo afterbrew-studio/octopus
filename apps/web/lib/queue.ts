@@ -1,3 +1,4 @@
+import "server-only";
 import { PgBoss } from "pg-boss";
 import type { SendOptions } from "pg-boss";
 import { prisma } from "@octopus/db";
@@ -64,6 +65,8 @@ export async function startQueue(): Promise<PgBoss> {
   const config = await loadQueueConfig();
   console.log(`[queue] Config: timeout=${config.reviewTimeoutSeconds}s, concurrency=${config.reviewConcurrency}`);
 
+  await boss.createQueue("discover-models", { retryLimit: 0, expireInSeconds: 180 });
+
   // Create queues with retry/expiry config
   await boss.createQueue("welcome-email", {
     retryLimit: 3,
@@ -96,6 +99,20 @@ export async function startQueue(): Promise<PgBoss> {
     expireInSeconds: 300,
   }).catch(() => {});
 
+  // Hourly repository discovery sweep (scheduled in instrumentation.ts).
+  // Cursor-driven via Organization.reposSyncedAt, so no retry: the next tick
+  // resumes where this one stopped.
+  await boss.createQueue("discover-repositories", {
+    retryLimit: 0,
+    expireInSeconds: 1800,
+  }).catch(() => {});
+
+  await boss.createQueue("index-repository", {
+    retryLimit: 2,
+    retryDelay: 60,
+    expireInSeconds: 1800,
+  }).catch(() => {});
+
   // Community-tier (no API key) async review pipeline.
   // Indexing can take minutes for first-touch repos, so the action enqueues
   // and polls; the worker indexes + reviews and writes the result back to
@@ -105,6 +122,11 @@ export async function startQueue(): Promise<PgBoss> {
     retryDelay: 30,
     expireInSeconds: 1800, // 30 min hard cap per attempt
   }).catch(() => {});
+
+  await boss.createQueue("cleanup-forgejo-connector", {
+    retryLimit: 1,
+    expireInSeconds: 60,
+  });
 
   // Daily audit-log retention (scheduled in instrumentation.ts, worked in
   // queue-workers.ts). pg-boss v12 requires the queue to exist before
@@ -155,6 +177,14 @@ export async function startQueue(): Promise<PgBoss> {
     retryDelay: 30,
     expireInSeconds: 300,
   }).catch(() => {});
+
+  // Conversion delivery has its own durable leases and backoff. The next cron
+  // recovers sweep-level failures without involving billing or review jobs.
+  await boss.createQueue("marketing-contexts", { retryLimit: 0, expireInSeconds: 300 });
+  await boss.createQueue("marketing-conversions", {
+    retryLimit: 0,
+    expireInSeconds: 300,
+  });
 
   // Admin-triggered Ollama model downloads (self-hosted). Long expiry — a
   // large model is many GB. No auto-retry: runOllamaPull records failures in

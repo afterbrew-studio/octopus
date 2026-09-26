@@ -1,3 +1,4 @@
+import { del } from "../lib/api.js";
 import { loadCredentials, clearCredentials } from "../lib/credentials.js";
 import { hasFlag } from "../lib/args.js";
 import { success, error, info, sanitizeTerminal } from "../lib/output.js";
@@ -14,8 +15,15 @@ export async function logoutCommand(argv: string[]): Promise<number> {
     return 0;
   }
   try {
+    if (creds.kind === "user") {
+      const revoked = await del(`${creds.baseUrl}/api/cli/auth/user`, creds.token, { timeoutMs: 15_000 });
+      if (!revoked.ok && revoked.status !== 401) {
+        error("Could not revoke the CLI session. Check connectivity and retry logout.");
+        return 1;
+      }
+    }
     await clearCredentials();
-    success(`Signed out of ${sanitizeTerminal(creds.orgName)}.`);
+    success(creds.kind === "user" ? "Signed out. CLI session revoked." : `Signed out of ${sanitizeTerminal(creds.orgName)}.`);
     return 0;
   } catch (e) {
     // clearCredentials re-throws non-ENOENT — the token is still on disk.

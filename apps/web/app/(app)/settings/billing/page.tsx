@@ -70,7 +70,7 @@ export default async function BillingPage() {
     }),
     getOrgMonthlySpend(org.id),
     org.stripeCustomerId
-      ? getCustomerPaymentMethods(org.stripeCustomerId)
+      ? getCustomerPaymentMethods(org.stripeCustomerId, { throwOnError: true }).catch(() => null)
       : Promise.resolve([]),
   ]);
   const { end: monthlyPeriodEnd } = getUtcMonthBounds();
@@ -111,7 +111,8 @@ export default async function BillingPage() {
       totalTransactions={totalTransactions}
       monthlySpend={monthlySpend}
       monthlyResetLabel={formatBillingResetLabel(monthlyPeriodEnd)}
-      paymentMethods={paymentMethods}
+      paymentMethods={paymentMethods ?? []}
+      paymentMethodsLoaded={paymentMethods !== null}
     />
   );
 }

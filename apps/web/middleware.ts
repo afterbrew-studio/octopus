@@ -18,12 +18,16 @@ const publicPrefixes = [
   "/api/github",
   "/api/bitbucket/webhook",
   "/api/gitlab/webhook",
+  "/api/forgejo/webhook/",
+  "/api/forgejo/connector/",
   "/api/pubby",
   "/api/version",
   "/api/invitations",
   "/api/slack/commands",
   "/api/stripe",
   "/api/cli",
+  // This endpoint validates API tokens or sessions in its own handler.
+  "/api/review-attempts/",
   "/api/agent",
   "/api/presence",
   "/api/admin",
@@ -38,7 +42,7 @@ const publicPrefixes = [
   "/api/health",
   "/api/ready",
 ];
-const publicExact = ["/"];
+const publicExact = ["/", "/api/marketing/visit"];
 
 // Public content/marketing + feed paths. Anonymous visitors and crawlers must
 // never be bounced to /login here; paths that aren't built yet then fall
@@ -100,5 +104,5 @@ export function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|.*\\..*).*)"],
+  matcher: ["/((?!api/forgejo/connector/result/?$|_next/static|_next/image|favicon.ico|.*\\..*).*)"],
 };

@@ -1,6 +1,8 @@
 "use client";
 
 import { Fragment, useState, useTransition, useEffect } from "react";
+import { useRouter } from "next/navigation";
+import { getRepositoryConnectionRecovery } from "@/lib/repository-connection-recovery";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -10,6 +12,8 @@ import {
 import {
   IconBrandGithub,
   IconBrandBitbucket,
+  IconBrandGitlab,
+  IconGitFork,
   IconGitBranch,
   IconExternalLink,
   IconDatabaseImport,
@@ -29,10 +33,13 @@ import {
 } from "@tabler/icons-react";
 import { indexRepository, cancelIndexing } from "@/app/(app)/actions";
 import { IndexingLogs } from "@/components/indexing-logs";
+import { applyReviewRequested, applyReviewStatus, type ReviewStatusEvent } from "@/lib/review-status-state";
 import { getPubbyClient } from "@/lib/pubby-client";
 
 type PullRequestItem = {
   id: string;
+  headSha?: string | null;
+  reviewRequestVersion?: number;
   number: number;
   title: string;
   url: string;
@@ -46,6 +53,7 @@ type Repo = {
   name: string;
   fullName: string;
   provider: string;
+  repoUrl?: string;
   defaultBranch: string;
   isActive: boolean;
   indexStatus: string;
@@ -62,7 +70,7 @@ type Repo = {
 
 const providerConfig: Record<
   string,
-  { icon: React.ComponentType<{ className?: string }>; repoUrl: (fullName: string) => string }
+  { icon: React.ComponentType<{ className?: string }>; repoUrl?: (fullName: string) => string }
 > = {
   github: {
     icon: IconBrandGithub,
@@ -72,6 +80,8 @@ const providerConfig: Record<
     icon: IconBrandBitbucket,
     repoUrl: (fullName) => `https://bitbucket.org/${fullName}`,
   },
+  gitlab: { icon: IconBrandGitlab },
+  forgejo: { icon: IconGitFork },
 };
 
 function formatDuration(ms: number): string {
@@ -102,134 +112,83 @@ function IndexBadge({
   status,
   repoId,
   orgId,
-  indexedAt: _indexedAt,
-  needsAccess,
-  onIndexStart,
+  provider,
+  canManageRepos,
+  onIndexAccepted,
 }: {
   status: string;
   repoId: string;
   orgId: string;
-  indexedAt: string | null;
-  needsAccess: boolean;
-  onIndexStart: () => void;
+  provider: string;
+  canManageRepos: boolean;
+  onIndexAccepted: () => void;
 }) {
+  const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [cancelPending, startCancelTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
+  const recovery = getRepositoryConnectionRecovery(provider, orgId, "/dashboard");
 
-  const handleIndex = async () => {
+  const handleIndex = () => {
     setError(null);
-    onIndexStart();
     startTransition(async () => {
-      const result = await indexRepository(repoId);
-      if (result.error) {
-        setError(result.error);
+      try {
+        const result = await indexRepository(repoId);
+        if (result.error) setError(result.error);
+        else onIndexAccepted();
+      } catch {
+        setError("Could not confirm indexing started. Refresh the repository status before trying again.");
       }
+      router.refresh();
     });
   };
 
   const handleCancel = () => {
+    setError(null);
     startCancelTransition(async () => {
-      await cancelIndexing(repoId);
+      try {
+        const result = await cancelIndexing(repoId);
+        if (result.error) setError(result.error);
+      } catch {
+        setError("Could not confirm cancellation. Refresh the repository status before trying again.");
+      }
+      router.refresh();
     });
   };
 
-  if (status === "indexing" || (pending && !error)) {
-    return (
-      <div className="flex items-center gap-1.5">
-        <Badge variant="secondary">
-          <IconLoader2 className="mr-1 size-3 animate-spin" />
-          Indexing…
-        </Badge>
-        <Button
-          size="sm"
-          variant="ghost"
-          className="h-6 px-2 text-xs text-destructive hover:text-destructive"
-          onClick={handleCancel}
-          disabled={cancelPending}
-        >
-          {cancelPending ? (
-            <IconLoader2 className="mr-1 size-3 animate-spin" />
-          ) : (
-            <IconX className="mr-1 size-3" />
-          )}
-          Cancel
-        </Button>
-      </div>
-    );
-  }
-
-  if (status === "indexed") {
-    return (
-      <div className="flex items-center gap-1.5">
-        <Badge variant="default" className="bg-emerald-600">
-          <IconCircleCheck className="mr-1 size-3" />
-          Indexed
-        </Badge>
-        <Button
-          size="sm"
-          variant="ghost"
-          className="h-6 px-2 text-xs"
-          onClick={handleIndex}
-        >
-          <IconRefresh className="mr-1 size-3" />
-          Re-index
-        </Button>
-        {error && (
-          <span className="text-xs text-destructive">{error}</span>
-        )}
-      </div>
-    );
-  }
-
-  if (status === "failed") {
-    return (
-      <div className="flex items-center gap-1.5">
-        <Badge variant="destructive">
-          <IconAlertTriangle className="mr-1 size-3" />
-          Failed
-        </Badge>
-        {needsAccess ? (
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-6 px-2 text-xs"
-            asChild
-          >
-            <a
-              href={`/api/github/install?orgId=${encodeURIComponent(orgId)}&returnTo=${encodeURIComponent("/dashboard")}`}
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              <IconExternalLink className="mr-1 size-3" />
-              Grant Access
-            </a>
-          </Button>
-        ) : (
-          <Button
-            size="sm"
-            variant="ghost"
-            className="h-6 px-2 text-xs"
-            onClick={handleIndex}
-          >
-            Retry
-          </Button>
-        )}
-      </div>
-    );
-  }
-
-  // pending status
   return (
-    <Button
-      size="sm"
-      variant="cta"
-      className="h-7 text-xs"
-      onClick={handleIndex}
-    >
-      <IconDatabaseImport className="mr-1 size-3" />
-      Create Index
-    </Button>
+    <div className="space-y-1.5">
+      <div className="flex flex-wrap items-center gap-1.5">
+        {status === "indexing" ? (
+          <>
+            <Badge variant="secondary"><IconLoader2 className="mr-1 size-3 animate-spin" />Indexing…</Badge>
+            <Button size="sm" variant="ghost" className="h-6 px-2 text-xs text-destructive hover:text-destructive"
+              onClick={handleCancel} disabled={cancelPending || !canManageRepos}>
+              {cancelPending ? <IconLoader2 className="mr-1 size-3 animate-spin" /> : <IconX className="mr-1 size-3" />}
+              {cancelPending ? "Cancelling…" : "Cancel"}
+            </Button>
+          </>
+        ) : (
+          <>
+            {status === "indexed" && <Badge variant="default" className="bg-emerald-600"><IconCircleCheck className="mr-1 size-3" />Indexed</Badge>}
+            {status === "stale" && <Badge variant="secondary"><IconRefresh className="mr-1 size-3" />Stale</Badge>}
+            {status === "failed" && <Badge variant="destructive"><IconAlertTriangle className="mr-1 size-3" />Failed</Badge>}
+            <Button size="sm" variant={status === "pending" ? "cta" : "ghost"} className="h-7 px-2 text-xs"
+              onClick={handleIndex} disabled={pending || !canManageRepos}>
+              {pending ? <IconLoader2 className="mr-1 size-3 animate-spin" /> : <IconDatabaseImport className="mr-1 size-3" />}
+              {pending ? "Starting…" : status === "indexed" || status === "stale" ? "Re-index" : status === "failed" ? "Retry indexing" : "Index now"}
+            </Button>
+          </>
+        )}
+      </div>
+      {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
+      {status === "failed" && (
+        <a href={recovery.href} className="inline-flex items-center gap-1 text-xs text-muted-foreground underline underline-offset-2">
+          <IconExternalLink className="size-3" />{recovery.label}
+        </a>
+      )}
+      {!canManageRepos && <p className="text-xs text-muted-foreground">An owner or admin can start or cancel indexing.</p>}
+    </div>
   );
 }
 
@@ -372,18 +331,25 @@ function PullRequestList({ pullRequests }: { pullRequests: PullRequestItem[] }) 
 export function RepoTable({
   repos,
   orgId,
+  canManageRepos,
 }: {
   repos: Repo[];
   orgId: string;
+  canManageRepos: boolean;
 }) {
+  const router = useRouter();
   const [expandedRepo, setExpandedRepo] = useState<string | null>(null);
   const [statuses, setStatuses] = useState<Record<string, string>>(() =>
     Object.fromEntries(repos.map((r) => [r.id, r.indexStatus])),
   );
-  const [accessErrors, setAccessErrors] = useState<Record<string, boolean>>({});
   const [pullRequests, setPullRequests] = useState<Record<string, PullRequestItem[]>>(() =>
     Object.fromEntries(repos.map((r) => [r.id, r.pullRequests])),
   );
+
+  useEffect(() => {
+    setStatuses(Object.fromEntries(repos.map((repo) => [repo.id, repo.indexStatus])));
+    setPullRequests(Object.fromEntries(repos.map((repo) => [repo.id, repo.pullRequests])));
+  }, [repos]);
 
   // Listen to real-time status updates
   useEffect(() => {
@@ -394,9 +360,7 @@ export function RepoTable({
       const data = raw as { repoId: string; status: string; needsAccess?: boolean };
       const resolvedStatus = data.status === "cancelled" ? "pending" : data.status;
       setStatuses((prev) => ({ ...prev, [data.repoId]: resolvedStatus }));
-      if (data.needsAccess) {
-        setAccessErrors((prev) => ({ ...prev, [data.repoId]: true }));
-      }
+      router.refresh();
     };
 
     const handleReviewRequested = (raw: unknown) => {
@@ -404,30 +368,12 @@ export function RepoTable({
         repoId: string;
         pullRequest: PullRequestItem;
       };
-      setPullRequests((prev) => {
-        const existing = prev[data.repoId] ?? [];
-        const filtered = existing.filter((pr) => pr.number !== data.pullRequest.number);
-        return { ...prev, [data.repoId]: [data.pullRequest, ...filtered] };
-      });
+      setPullRequests(prev => applyReviewRequested(prev, data));
     };
 
     const handleReviewStatus = (raw: unknown) => {
-      const data = raw as {
-        repoId: string;
-        pullRequestId: string;
-        number: number;
-        status: string;
-        step: string;
-      };
-      setPullRequests((prev) => {
-        const existing = prev[data.repoId] ?? [];
-        return {
-          ...prev,
-          [data.repoId]: existing.map((pr) =>
-            pr.number === data.number ? { ...pr, status: data.status } : pr,
-          ),
-        };
-      });
+      const data = raw as ReviewStatusEvent;
+      setPullRequests(prev => applyReviewStatus(prev, data));
     };
 
     channel.bind("index-status", handleStatus);
@@ -439,11 +385,9 @@ export function RepoTable({
       channel.unbind("review-requested", handleReviewRequested);
       channel.unbind("review-status", handleReviewStatus);
     };
-  }, [orgId]);
+  }, [orgId, router]);
 
-  const handleIndexStart = (repoId: string) => {
-    setStatuses((prev) => ({ ...prev, [repoId]: "indexing" }));
-    setAccessErrors((prev) => ({ ...prev, [repoId]: false }));
+  const handleIndexAccepted = (repoId: string) => {
     setExpandedRepo(repoId);
   };
 
@@ -457,7 +401,7 @@ export function RepoTable({
         <CardContent className="flex flex-col items-center justify-center py-12 text-center">
           <IconGitBranch className="text-muted-foreground mb-3 size-10" />
           <p className="text-muted-foreground text-sm">
-            No repositories yet — connect GitHub to get started.
+            No repositories yet — connect a code provider in Settings → Integrations.
           </p>
         </CardContent>
       </Card>
@@ -481,7 +425,7 @@ export function RepoTable({
             {repos.map((repo) => {
               const provider = providerConfig[repo.provider];
               const ProviderIcon = provider?.icon ?? IconGitBranch;
-              const repoUrl = provider?.repoUrl(repo.fullName);
+              const repoUrl = repo.repoUrl ?? provider?.repoUrl?.(repo.fullName);
               const status = statuses[repo.id] ?? repo.indexStatus;
               const repoPrs = pullRequests[repo.id] ?? [];
               const isExpanded = expandedRepo === repo.id;
@@ -537,9 +481,9 @@ export function RepoTable({
                         status={status}
                         repoId={repo.id}
                         orgId={orgId}
-                        indexedAt={repo.indexedAt}
-                        needsAccess={accessErrors[repo.id] ?? false}
-                        onIndexStart={() => handleIndexStart(repo.id)}
+                        provider={repo.provider}
+                        canManageRepos={canManageRepos}
+                        onIndexAccepted={() => handleIndexAccepted(repo.id)}
                       />
                     </td>
                     <td className="w-10 px-2 py-3">
@@ -570,6 +514,7 @@ export function RepoTable({
                             repoId={repo.id}
                             orgId={orgId}
                             initialStatus={status}
+                            provider={repo.provider}
                           />
                         )}
                         <PullRequestList pullRequests={repoPrs} />
@@ -588,7 +533,7 @@ export function RepoTable({
         {repos.map((repo) => {
           const provider = providerConfig[repo.provider];
           const ProviderIcon = provider?.icon ?? IconGitBranch;
-          const repoUrl = provider?.repoUrl(repo.fullName);
+          const repoUrl = repo.repoUrl ?? provider?.repoUrl?.(repo.fullName);
           const status = statuses[repo.id] ?? repo.indexStatus;
           const repoPrs = pullRequests[repo.id] ?? [];
           const isExpanded = expandedRepo === repo.id;
@@ -653,16 +598,16 @@ export function RepoTable({
                     <span className="text-muted-foreground/60">({repo.defaultBranch})</span>
                   </span>
                 )}
-                <span onClick={(e) => e.stopPropagation()}>
+                <div onClick={(e) => e.stopPropagation()}>
                   <IndexBadge
                     status={status}
                     repoId={repo.id}
                     orgId={orgId}
-                    indexedAt={repo.indexedAt}
-                    needsAccess={accessErrors[repo.id] ?? false}
-                    onIndexStart={() => handleIndexStart(repo.id)}
+                    provider={repo.provider}
+                    canManageRepos={canManageRepos}
+                    onIndexAccepted={() => handleIndexAccepted(repo.id)}
                   />
-                </span>
+                </div>
               </div>
               {isExpanded && (
                 <div onClick={(e) => e.stopPropagation()}>
@@ -672,6 +617,7 @@ export function RepoTable({
                       repoId={repo.id}
                       orgId={orgId}
                       initialStatus={status}
+                      provider={repo.provider}
                     />
                   )}
                   <PullRequestList pullRequests={repoPrs} />

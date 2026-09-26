@@ -1,20 +1,19 @@
 # Default owners for everything
-* @redoh
+* @cemoso
 
 # Web application
-/apps/web/ @redoh
+/apps/web/ @cemoso
 
 # Database schema and migrations
-/packages/db/ @redoh
+/packages/db/ @cemoso
 
 # Infrastructure and CI
-/.github/ @redoh
+/.github/ @cemoso
 
 # Review engine
-/apps/web/lib/reviewer.ts @redoh @cemoso
-/apps/web/lib/review-core.ts @redoh @cemoso
-/apps/web/lib/review-dedup.ts @redoh @cemoso
+/apps/web/lib/reviewer.ts @cemoso
+/apps/web/lib/review-core.ts @cemoso
+/apps/web/lib/review-dedup.ts @cemoso
 
 # Tests
-/apps/web/lib/__tests__/ @redoh @cemoso @johanfleming
-
+/apps/web/lib/__tests__/ @cemoso @johanfleming

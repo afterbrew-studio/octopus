@@ -7,21 +7,19 @@ import { LandingDesktopNav } from "@/components/landing-desktop-nav";
 import { FaqList } from "@/components/FaqList";
 import { Section, SectionHeader } from "@/components/landing-section";
 import {
-  IconSparkles,
   IconBug,
   IconShieldCheck,
   IconMessageCircle,
   IconBolt,
   IconTerminal2,
   IconPlugConnected,
-  IconKey,
   IconArrowRight,
 } from "@tabler/icons-react";
 
 export const metadata: Metadata = {
-  title: "Octopus in your editor — code review for Cursor & Claude Code",
+  title: "Octopus in your editor — code review for AI coding agents",
   description:
-    "Building with AI? Octopus reviews the code your AI writes for real bugs and security issues, right inside Cursor and Claude Code, and explains what it finds in plain English.",
+    "Building with AI? Octopus reviews the code your AI writes for real bugs and security issues, from your coding agent, and explains what it finds in plain English.",
   alternates: {
     canonical: "https://octopus-review.ai/editor",
   },
@@ -61,21 +59,21 @@ const benefits = [
 const steps = [
   {
     n: "1",
-    title: "Add the plugin",
+    title: "Choose your setup",
     description:
-      "Install Octopus in Cursor or Claude Code. Both take a moment, and the steps are right below.",
+      "Use the Octopus CLI and a skill with your coding agent, or follow the separate Claude Code plugin guide.",
   },
   {
     n: "2",
     title: "Connect your account",
     description:
-      "Paste a free token from your Octopus settings when the plugin asks. That is the whole setup.",
+      "For the CLI, run octp login in your agent’s execution environment. For the Claude plugin, configure its organization API token. Check the connection before reviewing.",
   },
   {
     n: "3",
     title: "Just ask",
     description:
-      "Say “review my changes” or ask a question about your code. Octopus takes it from there.",
+      "Choose the changes or pull request you want reviewed, then ask your agent to use Octopus and show the findings.",
   },
 ];
 
@@ -104,7 +102,7 @@ const faqs = [
   },
   {
     q: "Which editors does it work with?",
-    a: "Cursor and Claude Code today, plus any editor that supports the same kind of plugin. More are on the way.",
+    a: "Claude Code, Codex, OpenCode, Hermes Agent, OpenClaw, and Cursor can use the Octopus CLI and shared skill through their terminal tools. Setup depends on where the agent runs.",
   },
   {
     q: "Is it free to try?",
@@ -112,7 +110,7 @@ const faqs = [
   },
   {
     q: "Does my code get sent anywhere?",
-    a: "Octopus only reviews the specific changes you ask it to, and uses them to give you feedback. Our security and privacy docs explain exactly how your code is handled.",
+    a: "Selected diffs and review context are sent to your configured Octopus server and AI services. Reviews use Octopus credits or your provider budget. See the setup, security, and privacy guides for details.",
   },
   {
     q: "How is this different from the AI already in my editor?",
@@ -146,13 +144,13 @@ export default async function EditorPage() {
         <div className="mx-auto max-w-4xl text-center">
           <div className="animate-fade-in mb-6 inline-flex items-center gap-2 rounded-full border border-teal-500/20 bg-teal-500/10 px-4 py-1.5 text-sm text-teal-400">
             <IconPlugConnected className="size-4" />
-            Editor plugin
+            AI coding agents
           </div>
           <h1 className="animate-fade-in text-4xl font-bold tracking-tight text-white sm:text-5xl md:text-6xl">
             Octopus, right inside your editor
           </h1>
           <p className="animate-fade-in mx-auto mt-4 max-w-2xl text-lg text-[#666] [animation-delay:100ms]">
-            Building with AI in Cursor or Claude Code? Octopus reads the code
+            Building with an AI coding agent? Octopus reads the code
             your AI writes, finds the real bugs and security holes, and explains
             them in plain English, before any of it goes live.
           </p>
@@ -250,54 +248,27 @@ export default async function EditorPage() {
         <SectionHeader
           label="Get started"
           title="Add Octopus to your editor"
-          description="Pick your editor. Setup takes about a minute, and you only do it once."
+          description="Choose the guide for your agent and check the connection before your first review."
         />
         <div className="mt-10 grid gap-4 sm:grid-cols-2">
-          {/* Claude Code */}
           <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-6">
             <div className="flex items-center gap-2">
               <IconTerminal2 className="size-5 text-teal-400" />
-              <h3 className="text-base font-semibold text-white">Claude Code</h3>
+              <h3 className="text-base font-semibold text-white">CLI and skill setup</h3>
             </div>
-            <p className="mt-2 text-sm text-[#888]">
-              Run these two commands inside Claude Code:
-            </p>
-            <div className="mt-3 space-y-2">
-              <code className="block overflow-x-auto rounded-lg border border-white/[0.06] bg-[#0c0c0c] px-3 py-2 font-mono text-xs text-[#ccc]">
-                /plugin marketplace add octopusreview/octopus-plugin
-              </code>
-              <code className="block overflow-x-auto rounded-lg border border-white/[0.06] bg-[#0c0c0c] px-3 py-2 font-mono text-xs text-[#ccc]">
-                /plugin install octopus-review
-              </code>
-            </div>
+            <p className="mt-2 text-sm leading-relaxed text-[#aaa]">Step-by-step instructions for Claude Code, Codex, OpenCode, Hermes Agent, OpenClaw, and Cursor. Install the CLI where your agent runs, check your login, then add the shared skill.</p>
+            <a href="/docs/cli/ai-agents" className="mt-4 inline-flex min-h-11 items-center gap-2 text-sm font-medium text-teal-300 underline underline-offset-4">Choose your coding agent <IconArrowRight aria-hidden="true" className="size-4" /></a>
           </div>
-          {/* Cursor */}
           <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-6">
             <div className="flex items-center gap-2">
-              <IconSparkles className="size-5 text-teal-400" />
-              <h3 className="text-base font-semibold text-white">Cursor</h3>
+              <IconPlugConnected className="size-5 text-teal-400" />
+              <h3 className="text-base font-semibold text-white">Claude Code plugin</h3>
             </div>
-            <p className="mt-2 text-sm text-[#888]">
-              Open Cursor&apos;s plugin marketplace, search for{" "}
-              <span className="text-[#ccc]">Octopus Code Review</span>, and click
-              Install.
-            </p>
+            <p className="mt-2 text-sm leading-relaxed text-[#aaa]">Read the current plugin setup, marketplace name, token configuration, and verification steps. Plugin installation and a working authenticated connection are separate checks.</p>
+            <a href="/docs/cli/claude-code-integration" className="mt-4 inline-flex min-h-11 items-center gap-2 text-sm font-medium text-teal-300 underline underline-offset-4">Open the Claude Code guide <IconArrowRight aria-hidden="true" className="size-4" /></a>
           </div>
         </div>
-        <div className="mt-4 flex items-start gap-3 rounded-xl border border-white/[0.06] bg-white/[0.02] p-5">
-          <IconKey className="mt-0.5 size-5 shrink-0 text-teal-400" />
-          <p className="text-sm text-[#888]">
-            You&apos;ll need a free token. Create one in your{" "}
-            <a
-              href="/settings/api-tokens"
-              className="text-teal-400 underline decoration-teal-400/30 underline-offset-2 transition-colors hover:text-teal-300 hover:decoration-teal-300"
-            >
-              Octopus settings
-            </a>{" "}
-            under API Tokens, then paste it when the plugin asks. New accounts
-            start with free credits.
-          </p>
-        </div>
+        <p className="mt-4 text-sm leading-relaxed text-[#aaa]">A coding-agent subscription does not include Octopus reviews. New Octopus accounts receive free credits; reviews use those credits or your configured provider budget.</p>
       </Section>
 
       {/* FAQ */}

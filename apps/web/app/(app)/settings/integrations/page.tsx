@@ -1,44 +1,25 @@
+import "server-only";
 import { headers, cookies } from "next/headers";
+import { ForgejoIntegrationCard } from "./forgejo-integration-card";
+import { hasOrgPermission } from "@/lib/org-permissions";
+import { GITHUB_INSTALL_ERROR_CODES, type GitHubInstallErrorCode } from "@/lib/github-install-errors";
 import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
 import { prisma } from "@octopus/db";
 import { GitHubIntegrationCard } from "./github-integration-card";
 import { SlackIntegrationCard } from "./slack-integration-card";
 import { BitbucketIntegrationCard } from "./bitbucket-integration-card";
-import { BitbucketDebugBanner } from "./bitbucket-debug-banner";
 import { GitlabIntegrationCard } from "./gitlab-integration-card";
 import { LinearIntegrationCard } from "./linear-integration-card";
 import { JiraIntegrationCard } from "./jira-integration-card";
 import { IntegrationOAuthErrorBanner } from "./integration-oauth-error-banner";
 import { getGithubAppConfig } from "@/lib/github-app-config";
 import { isSelfHosted } from "@/lib/self-hosted";
+import { parseIntegrationSetupStatus } from "@/lib/integration-setup";
 
-const ALLOWED_GITHUB_ERRORS = [
-  "installation_already_bound",
-  "invalid_installation_id",
-  "missing_state",
-  "invalid_state_bad_signature",
-  "invalid_state_expired",
-  "invalid_state_malformed",
-  "replay_detected",
-  "state_store_unavailable",
-  "session_required",
-  "state_user_mismatch",
-  "state_browser_mismatch",
-  "github_app_not_configured",
-  "github_verification_not_configured",
-  "github_authorization_denied",
-  "github_authorization_failed",
-  "installation_not_accessible",
-  "not_a_member",
-  "manifest_forbidden",
-  "manifest_already_configured",
-  "manifest_bad_org",
-  "manifest_expired",
-  "manifest_failed",
-] as const;
+const ALLOWED_GITHUB_ERRORS = GITHUB_INSTALL_ERROR_CODES;
 
-type GitHubErrorCode = (typeof ALLOWED_GITHUB_ERRORS)[number];
+type GitHubErrorCode = GitHubInstallErrorCode;
 
 export default async function IntegrationsPage({
   searchParams,
@@ -46,8 +27,6 @@ export default async function IntegrationsPage({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const params = await searchParams;
-  const bbDebug = typeof params.bb_debug === "string" ? params.bb_debug : null;
-  const glDebug = typeof params.gl_debug === "string" ? params.gl_debug : null;
   const rawError = typeof params.error === "string" ? params.error : null;
   const githubError: GitHubErrorCode | null =
     rawError && (ALLOWED_GITHUB_ERRORS as readonly string[]).includes(rawError)
@@ -66,13 +45,15 @@ export default async function IntegrationsPage({
       userId: session.user.id,
       ...(currentOrgId ? { organizationId: currentOrgId } : {}),
       deletedAt: null,
+      organization: { deletedAt: null, bannedAt: null },
     },
-    select: { organizationId: true },
+    select: { organizationId: true, role: true },
   });
 
   if (!member) redirect("/dashboard");
 
   const orgId = member.organizationId;
+  const canManage = hasOrgPermission(member, "integrations:manage");
 
   const [
     slackIntegration,
@@ -82,6 +63,7 @@ export default async function IntegrationsPage({
     ,
     linearIntegration,
     jiraIntegration,
+    forgejoIntegration,
   ] = await Promise.all([
     prisma.slackIntegration.findUnique({
       where: { organizationId: orgId },
@@ -99,6 +81,7 @@ export default async function IntegrationsPage({
       select: {
         workspaceName: true,
         workspaceSlug: true,
+        setupStatus: true,
       },
     }),
     prisma.gitlabIntegration.findUnique({
@@ -107,19 +90,20 @@ export default async function IntegrationsPage({
         namespaceName: true,
         namespacePath: true,
         gitlabHost: true,
+        setupStatus: true,
       },
     }),
     prisma.organization
       .findUnique({
         where: { id: orgId },
-        select: { githubInstallationId: true },
+        select: { githubInstallationId: true, githubSetupStatus: true },
       })
       .then(async (org) => {
         if (!org?.githubInstallationId) return null;
         const repoCount = await prisma.repository.count({
           where: { organizationId: orgId, provider: "github", isActive: true },
         });
-        return { repoCount };
+        return { repoCount, setupStatus: parseIntegrationSetupStatus(org.githubSetupStatus) };
       }),
     prisma.collabIntegration.findUnique({
       where: { organizationId: orgId },
@@ -135,6 +119,10 @@ export default async function IntegrationsPage({
     prisma.jiraIntegration
       .findUnique({ where: { organizationId: orgId }, select: { siteName: true } })
       .catch(() => null),
+    prisma.forgejoIntegration.findUnique({
+      where: { organizationId: orgId },
+      select: { id: true, forgejoHost: true, username: true, connectorTokenHash: true, connectorLastSeenAt: true, connectorError: true, setupStatus: true, ...(canManage ? { webhookSecret: true } : {}) },
+    }),
   ]);
 
   // DB-first so the card flips to "Install" after a manifest-created app whose
@@ -143,21 +131,30 @@ export default async function IntegrationsPage({
   const selfHosted = isSelfHosted();
 
   return (
-    <div className="space-y-6">
+    <div key={orgId} className="space-y-6">
       <IntegrationOAuthErrorBanner error={rawError} />
-      {bbDebug && <BitbucketDebugBanner debugJson={bbDebug} />}
-      {glDebug && <BitbucketDebugBanner debugJson={glDebug} title="GitLab Connect Debug" />}
       <GitHubIntegrationCard
         data={githubData}
         appSlug={appSlug}
         isSelfHosted={selfHosted}
         error={githubError}
+        canManage={canManage}
       />
-      <BitbucketIntegrationCard data={bitbucketIntegration} />
+      <BitbucketIntegrationCard data={bitbucketIntegration ? { ...bitbucketIntegration, setupStatus: parseIntegrationSetupStatus(bitbucketIntegration.setupStatus) } : null} canManage={canManage} />
       <GitlabIntegrationCard
-        data={gitlabIntegration}
+        data={gitlabIntegration ? { ...gitlabIntegration, setupStatus: parseIntegrationSetupStatus(gitlabIntegration.setupStatus) } : null}
         redirectUri={process.env.GITLAB_REDIRECT_URI ?? null}
+        canManage={canManage}
       />
+      <ForgejoIntegrationCard data={forgejoIntegration ? {
+        id: forgejoIntegration.id, forgejoHost: forgejoIntegration.forgejoHost,
+        username: forgejoIntegration.username,
+        ...(canManage ? { webhookSecret: forgejoIntegration.webhookSecret } : {}),
+        connectionMode: forgejoIntegration.connectorTokenHash ? "connector" : "direct",
+        connectorLastSeenAt: forgejoIntegration.connectorLastSeenAt?.toISOString() ?? null,
+        connectorError: forgejoIntegration.connectorError,
+        setupStatus: parseIntegrationSetupStatus(forgejoIntegration.setupStatus),
+      } : null} canManage={canManage} selfHosted={selfHosted} appUrl={process.env.BETTER_AUTH_URL ?? null} />
       <SlackIntegrationCard data={slackIntegration} />
       <LinearIntegrationCard data={linearIntegration} />
       <JiraIntegrationCard data={jiraIntegration} />

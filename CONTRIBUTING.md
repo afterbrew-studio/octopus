@@ -71,6 +71,7 @@ Before submitting a PR, make sure everything passes:
 ```bash
 bun run lint          # ESLint
 bun run typecheck     # TypeScript type checking
+bun test              # Test suite (no root test script)
 bun run build         # Full build
 ```
 

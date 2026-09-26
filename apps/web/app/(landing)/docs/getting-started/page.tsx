@@ -23,7 +23,7 @@ import {
 export const metadata = {
   title: "Getting Started | Octopus Docs",
   description:
-    "Connect your repo in two minutes and get AI code reviews on every pull request. Step-by-step setup guide for GitHub, GitLab, and Bitbucket, with examples.",
+    "Connect your repository and get AI code reviews on pull requests. Step-by-step setup guide for GitHub, GitLab, Bitbucket, and Forgejo, with examples.",
   alternates: {
     canonical: "https://octopus-review.ai/docs/getting-started",
   },
@@ -68,7 +68,7 @@ export default function GettingStartedPage() {
           <FeatureCard
             icon={<IconPlugConnected className="size-4" />}
             title="Works With Your Tools"
-            description="GitHub, GitLab, Bitbucket, Slack, Linear, Jira. Fits into your existing workflow."
+            description="GitHub, GitLab, Bitbucket, Forgejo, Slack, Linear, Jira. Fits into your existing workflow."
           />
         </div>
       </Section>
@@ -88,9 +88,9 @@ export default function GettingStartedPage() {
             icon={<IconCloud className="size-5" />}
             eyebrow="Cloud · Free to start"
             title="Hosted for you"
-            description="Sign in, install the GitHub App, and Octopus reviews every pull request automatically. No servers to run, no maintenance."
+            description="Sign in, connect your code host, and set up pull request reviews. Octopus runs the review service for you."
             links={[
-              { href: "/login", label: "Install the GitHub App" },
+              { href: "/login", label: "Connect your repository" },
               { href: "/docs/pricing", label: "View pricing" },
             ]}
           />
@@ -107,40 +107,65 @@ export default function GettingStartedPage() {
       {/* Step 1: Connect */}
       <Section title="1. Connect Your Repository">
         <Paragraph>
-          Start by connecting your GitHub, GitLab, or Bitbucket account from the
-          dashboard. Octopus installs as a GitHub App, or connects to GitLab and
-          Bitbucket via OAuth, to receive webhook events from your repositories.
+          Start by connecting your GitHub, GitLab, Bitbucket, or Forgejo account from the
+          dashboard. Use the GitHub App, GitLab or Bitbucket OAuth, or a Forgejo
+          personal access token. For Forgejo, add the signed webhook shown in
+          Settings to each repository. See the{" "}
+          <Link href="/docs/integrations#forgejo" className="text-white underline">
+            Forgejo setup guide
+          </Link>.
         </Paragraph>
-        <div className="mb-4 grid gap-3 sm:grid-cols-3">
+        <div className="mb-4 grid gap-3 sm:grid-cols-2">
           <ProviderCard
             icon={<IconBrandGithub className="size-5" />}
             name="GitHub"
-            description="Install the GitHub App, select repositories, and you're ready to go."
+            description="Install the GitHub App and select repositories."
           />
           <ProviderCard
             icon={<IconBrandGitlab className="size-5" />}
             name="GitLab"
-            description="Connect via OAuth (gitlab.com or self-managed); Octopus reviews every merge request."
+            description="Connect via OAuth on gitlab.com or a self-managed instance."
           />
           <ProviderCard
             icon={<IconBrandBitbucket className="size-5" />}
             name="Bitbucket"
             description="Connect via OAuth and Octopus automatically manages webhooks."
           />
+          <ProviderCard
+            icon={<IconServer className="size-5" />}
+            name="Forgejo"
+            description="Choose Cloud with public HTTPS, Cloud with a local connector for private LAN/VPN access, or self-hosted Octopus with direct access."
+          />
         </div>
         <Paragraph>
-          Once connected, Octopus indexes your codebase. It chunks your code,
-          creates embeddings, and builds a searchable representation of your
-          entire project. This is what makes reviews context-aware.
+          In the dashboard&apos;s first-review guide, choose a repository and confirm
+          its readiness. Check repository sync and webhook setup in Settings →
+          Integrations; authorization alone does not confirm event delivery. See the{" "}
+          <Link href="/docs/integrations#setup-checks" className="text-white underline">
+            setup checks and recovery instructions
+          </Link>.
         </Paragraph>
       </Section>
 
       {/* Step 2: First review */}
       <Section title="2. Your First Review">
         <Paragraph>
-          Open a pull request on any connected repository. Octopus automatically
-          picks it up via webhook, analyzes the diff against your full codebase,
-          and posts its findings as inline review comments within minutes.
+          Confirm Auto Review is enabled for the selected repository, then open a
+          non-draft pull request or update an existing one. Connecting alone does
+          not trigger reviews of already-open PRs. Follow progress in Review Logs.
+        </Paragraph>
+        <Paragraph>
+          Indexing and analysis run automatically when a review starts; manual
+          preparation is optional. Permitted users can change Auto Review during
+          preparation, and indexing preserves that saved setting. Preparation
+          progress and errors appear in the repository panel and dashboard guide.
+        </Paragraph>
+        <Paragraph>
+          The first-review milestone completes after successful final publication,
+          not merely after preparation or saving a report. It remains complete if
+          a later rerun fails. Older reviews without a publication receipt do not
+          complete this milestone. Completion confirms the review workflow finished;
+          consult the report for coverage, and check optional notifications separately.
         </Paragraph>
         <div className="mb-4 rounded-lg border border-white/[0.06] bg-white/[0.02] p-4">
           <h4 className="mb-3 text-sm font-medium text-white">
@@ -152,7 +177,7 @@ export default function GettingStartedPage() {
                 1
               </span>
               <span>
-                Webhook event arrives from GitHub/Bitbucket
+                Your code host sends a pull request webhook
               </span>
             </li>
             <li className="flex items-start gap-2">
@@ -230,11 +255,11 @@ export default function GettingStartedPage() {
       {/* Step 4: CLI */}
       <Section title="4. Use the CLI as an AI-Powered Dev Tool">
         <Paragraph>
-          The Octopus CLI is more than a command-line interface. It gives AI
-          coding tools like Claude Code, Cursor, and Copilot direct access to
-          your codebase context. Use it to review PRs, index repos, chat with
-          your code, and manage your knowledge base from the terminal or from
-          inside any AI-powered editor.
+          Coding agents can use the Octopus CLI through their terminal tools.
+          Follow the <Link href="/docs/cli/ai-agents" className="text-cyan-400 underline underline-offset-4">AI coding agents guide</Link> for
+          Claude Code, Codex, OpenCode, Hermes Agent, OpenClaw, and Cursor.
+          Install and authenticate the CLI in the environment where your agent
+          executes commands, then check the connection before requesting a review.
         </Paragraph>
         <div className="mb-4 space-y-2">
           <CommandRow
@@ -287,7 +312,7 @@ export default function GettingStartedPage() {
         <div className="mb-4 space-y-2">
           <SettingRow
             title="AI Provider"
-            description="Choose between Claude and OpenAI, or bring your own API keys."
+            description="Choose between Claude, OpenAI, Google Gemini, and Qwen, or bring your own API keys."
           />
           <SettingRow
             title="Knowledge Base"
@@ -315,7 +340,7 @@ export default function GettingStartedPage() {
             href="/docs/integrations"
             icon={<IconPlugConnected className="size-4" />}
             title="Integrations"
-            description="Connect GitHub, GitLab, Bitbucket, Slack, Linear, and Jira"
+            description="Connect GitHub, GitLab, Bitbucket, Forgejo, Slack, Linear, and Jira"
           />
           <NextStepCard
             href="/docs/cli"

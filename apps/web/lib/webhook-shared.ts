@@ -1,10 +1,15 @@
-import { prisma } from "@octopus/db";
+import "server-only";
+import { prisma, type Prisma } from "@octopus/db";
+import { admitReviewRequest, type ReviewRequestRejection } from "@/lib/review-request-admission";
+import { createReviewAttemptComment } from "@/lib/review-attempt";
+import { publishReviewSummary } from "@/lib/review-summary-comment";
 import { pubby } from "@/lib/pubby";
 import { enqueue } from "@/lib/queue";
 import { eventBus } from "@/lib/events";
 import * as github from "@/lib/github";
 import * as bitbucket from "@/lib/bitbucket";
 import * as gitlab from "@/lib/gitlab";
+import * as forgejo from "@/lib/forgejo";
 import { mayStartReview, reviewRefusalMessage, type ReviewSource } from "@/lib/review-start-policy";
 // The same helpers reviewer.ts uses, so the snapshot cannot drift from the
 // merge the worker would otherwise have performed itself.
@@ -15,7 +20,7 @@ import { mergeReviewConfigs, parseReviewConfig } from "@/lib/review-helpers";
  * GitHub only — Bitbucket and GitLab have no equivalent checks API in this integration.
  */
 async function postSkippedCheckRun(
-  provider: "github" | "bitbucket" | "gitlab",
+  provider: "github" | "bitbucket" | "gitlab" | "forgejo",
   installationId: number | undefined,
   repoFullName: string,
   headSha: string,
@@ -36,10 +41,15 @@ async function postSkippedCheckRun(
 }
 
 /**
- * Shared flow: upsert PR -> post placeholder comment -> notify dashboard -> start review.
- * Works for GitHub, Bitbucket, and GitLab.
+ * Forgejo webhooks use the outcome to retry transient admission failures.
+ * User-facing triggers (CLI / MCP) use it to explain why nothing ran.
  */
-export async function startReviewFlow(params: {
+export type StartReviewResult =
+  | { started: true; pullRequestId: string }
+  | ReviewRequestRejection
+  | { started: false; reason: "org_paused" | "author_blocked" | "source_not_allowed"; message: string };
+
+type StartReviewParams = {
   /** Who is asking. Required: a default would let a new call site start reviews silently. */
   source: ReviewSource;
   /** The dispatcher's id for this request, so a paid review is attributable to one ask. */
@@ -50,10 +60,10 @@ export async function startReviewFlow(params: {
    * model a paid review was asked to use and not merely which one it ended up on.
    */
   modelOverride?: string;
-  provider: "github" | "bitbucket" | "gitlab";
+  provider: "github" | "bitbucket" | "gitlab" | "forgejo";
   // GitHub-specific
   installationId?: number;
-  // Bitbucket / GitLab-specific
+  // Bitbucket / GitLab / Forgejo-specific
   organizationId?: string;
   // Common
   repoFullName: string;
@@ -63,10 +73,17 @@ export async function startReviewFlow(params: {
   prTitle: string;
   prUrl: string;
   prAuthor: string;
-  headSha: string;
+  headSha: string | null;
+  automatic?: boolean;
   triggerCommentId: number;
   triggerCommentBody: string;
-}) {
+};
+
+/**
+ * Shared flow: admit the current head -> post placeholder comment -> notify dashboard -> start review.
+ * Forgejo queues within the admission transaction; its worker posts the placeholder.
+ */
+export async function startReviewFlow(params: StartReviewParams, forgejoTransaction?: Prisma.TransactionClient): Promise<StartReviewResult> {
   // Before every side effect -- no upsert, placeholder comment, check run,
   // dashboard notification or enqueue happens for a refused caller, which is what
   // "side-effect-free" means in P-0007 C2.
@@ -74,16 +91,21 @@ export async function startReviewFlow(params: {
   // Returns rather than throws: none of the six webhook routes catches, so a throw
   // is a 500 and the provider retries the delivery. See review-start-policy.ts.
   if (!mayStartReview(params.source)) {
-    console.log(
-      "[webhook] " +
-        reviewRefusalMessage(
-          params.source,
-          `${params.provider} pr #${params.prNumber} on ${params.repoFullName}`,
-        ),
+    const message = reviewRefusalMessage(
+      params.source,
+      `${params.provider} pr #${params.prNumber} on ${params.repoFullName}`,
     );
-    return;
+    console.log(`[webhook] ${message}`);
+    return { started: false, reason: "source_not_allowed", message };
   }
 
+  if (forgejoTransaction && params.provider !== "forgejo") throw new Error("Transactional webhook admission requires Forgejo");
+  return params.provider === "forgejo"
+    ? forgejo.runWithForgejoRepository(params.repoId, () => startReviewFlowInternal(params, forgejoTransaction))
+    : startReviewFlowInternal(params, forgejoTransaction);
+}
+
+async function startReviewFlowInternal(params: StartReviewParams, forgejoTransaction?: Prisma.TransactionClient): Promise<StartReviewResult> {
   const {
     provider,
     installationId,
@@ -96,8 +118,6 @@ export async function startReviewFlow(params: {
     prUrl,
     prAuthor,
     headSha,
-    triggerCommentId,
-    triggerCommentBody,
   } = params;
 
   const [owner, repoName] = repoFullName.split("/");
@@ -116,32 +136,7 @@ export async function startReviewFlow(params: {
 
   if (org?.reviewsPaused) {
     console.log(`[webhook] Reviews paused for org ${orgId}, skipping PR #${prNumber}`);
-    return;
-  }
-
-  // Check existing PR status to prevent duplicate reviews (cheap indexed lookup first)
-  const existingPr = await prisma.pullRequest.findUnique({
-    where: {
-      repositoryId_number: { repositoryId: repoId, number: prNumber },
-    },
-    select: { id: true, status: true, headSha: true, updatedAt: true },
-  });
-
-  if (existingPr && (existingPr.status === "reviewing" || existingPr.status === "pending")) {
-    const isStuck = Date.now() - existingPr.updatedAt.getTime() > stuckReviewMs();
-
-    if (isStuck) {
-      console.log(`[webhook] Review for PR #${prNumber} stuck for >3min, marking as failed and restarting`);
-      await prisma.pullRequest.update({
-        where: { id: existingPr.id },
-        data: { status: "failed", errorMessage: "Review timed out after 3 minutes" },
-      });
-    } else if (existingPr.headSha === headSha) {
-      console.log(`[webhook] Review already in progress/queued for PR #${prNumber} (same SHA), skipping`);
-      return;
-    } else {
-      console.log(`[webhook] New SHA detected for PR #${prNumber}, restarting review`);
-    }
+    return { started: false, reason: "org_paused", message: "Reviews are paused for this organization" };
   }
 
   // Check if PR author is blocked from triggering reviews
@@ -154,77 +149,55 @@ export async function startReviewFlow(params: {
     );
     if (isBlocked) {
       console.log(`[webhook] PR author "${prAuthor}" is blocked for org ${orgId}, skipping PR #${prNumber}`);
-      await postSkippedCheckRun(provider, installationId, repoFullName, headSha, `PR author "${prAuthor}" is in the blocked list`);
-      return;
+      await postSkippedCheckRun(provider, installationId, repoFullName, headSha || "", `PR author "${prAuthor}" is in the blocked list`);
+      return { started: false, reason: "author_blocked", message: `PR author "${prAuthor}" is in the blocked list` };
     }
   }
 
-  // Upsert PullRequest record
-  console.log(`[webhook] Upserting PullRequest — repo: ${repoId}, PR #${prNumber}, status: pending`);
-  const pr = await prisma.pullRequest.upsert({
-    where: {
-      repositoryId_number: { repositoryId: repoId, number: prNumber },
-    },
-    create: {
-      number: prNumber,
-      title: prTitle,
-      url: prUrl,
-      author: prAuthor,
-      headSha: headSha || null,
-      status: "pending",
-      triggerCommentId,
-      triggerCommentBody,
-      repositoryId: repoId,
-    },
-    update: {
-      title: prTitle,
-      url: prUrl,
-      author: prAuthor,
-      headSha: headSha || null,
-      status: "pending",
-      triggerCommentId,
-      triggerCommentBody,
-      reviewBody: null,
-      errorMessage: null,
-    },
-  });
-  console.log(`[webhook] PullRequest upserted — id: ${pr.id}, number: ${pr.number}`);
+  // The run is created as part of admission's OWN atomic write (a short
+  // transaction of its own, or Forgejo's already-open ambient one) -- not a
+  // separate step after admission returns. A crash, or an ambiguous
+  // `reviewRun.create` failure, between two separate writes would otherwise
+  // leave a `pending` row with no run and no job that nothing recovers: the
+  // pending-row reaper (`reap-stuck-reviews.ts`) deliberately skips a row
+  // with no run to address. `freezeReviewRun` is called back by admission
+  // with the write client and the DEFINITIVE identity it settled on -- not
+  // this closure's own `params.headSha`, which may be empty/null input that
+  // admission resolves to the authoritative head itself.
+  const admission = await admitReviewRequest(params, forgejoTransaction, (write, pullRequestId, headSha, reviewRequestVersion) =>
+    freezeReviewRun(write, pullRequestId, headSha, reviewRequestVersion, params));
+  if (!admission.started) return admission;
+  const pr = admission.pullRequest;
+  const reviewRun = admission.reviewRun;
+  console.log(`[webhook] PullRequest admitted — id: ${pr.id}, number: ${pr.number}`);
 
-  const existingCommentId = pr.reviewCommentId ? Number(pr.reviewCommentId) : null;
-  const placeholderBody =
-    "> 🐙 **Octopus Review** is analyzing this pull request...\n>\n> This comment will be updated with the full review once complete.";
+  if (forgejoTransaction) {
+    const jobId = await enqueue("process-review", { pullRequestId: pr.id, reviewRunId: reviewRun.id }, {
+      db: { executeSql: async (sql, values) => ({ rows: await forgejoTransaction.$queryRawUnsafe<unknown[]>(sql, ...(values ?? [])) }) },
+    });
+    if (!jobId) throw new Error("Forgejo review could not be queued");
+    return { started: true, pullRequestId: pr.id };
+  }
 
-  // Post or update placeholder comment
+  const placeholderBody = `> 🐙 **Octopus Review** is queued for head \`${pr.headSha || "unknown"}\`. This summary will update when the review finishes.`;
   try {
-    if (existingCommentId) {
-      console.log(`[webhook] Updating existing placeholder comment — commentId: ${existingCommentId}`);
-      if (provider === "github" && installationId) {
-        await github.updatePullRequestComment(installationId, owner, repoName, existingCommentId, placeholderBody);
-      } else if (provider === "bitbucket" && organizationId) {
-        await bitbucket.updatePullRequestComment(organizationId, owner, repoName, prNumber, existingCommentId, placeholderBody);
-      } else if (provider === "gitlab" && organizationId) {
-        await gitlab.updatePullRequestComment(organizationId, repoFullName, prNumber, existingCommentId, placeholderBody);
+    if (provider === "github" && installationId) {
+      await publishReviewSummary({ pullRequestId: pr.id, headSha: pr.headSha, reviewRequestVersion: pr.reviewRequestVersion,
+        installationId, owner, repo: repoName, prNumber, body: placeholderBody });
+    } else await createReviewAttemptComment(pr.id, pr.headSha, pr.reviewRequestVersion, async () => {
+      if (provider === "bitbucket" && organizationId) {
+        return bitbucket.createPullRequestComment(organizationId, owner, repoName, prNumber, placeholderBody);
       }
-    } else {
-      console.log(`[webhook] Posting new placeholder comment to PR #${prNumber}`);
-      let newCommentId: number;
-      if (provider === "github" && installationId) {
-        newCommentId = await github.createPullRequestComment(installationId, owner, repoName, prNumber, placeholderBody);
-      } else if (provider === "bitbucket" && organizationId) {
-        newCommentId = await bitbucket.createPullRequestComment(organizationId, owner, repoName, prNumber, placeholderBody);
-      } else if (provider === "gitlab" && organizationId) {
-        newCommentId = await gitlab.createPullRequestComment(organizationId, repoFullName, prNumber, placeholderBody);
-      } else {
-        throw new Error("Invalid provider configuration");
+      if (provider === "gitlab" && organizationId) {
+        return gitlab.createPullRequestComment(organizationId, repoFullName, prNumber, placeholderBody);
       }
-      console.log(`[webhook] Placeholder comment posted — commentId: ${newCommentId}`);
-      await prisma.pullRequest.update({
-        where: { id: pr.id },
-        data: { reviewCommentId: newCommentId },
-      });
-    }
+      if (provider === "forgejo" && organizationId) {
+        return forgejo.createPullRequestComment(organizationId, repoFullName, prNumber, placeholderBody);
+      }
+      throw new Error("Invalid provider configuration");
+    });
   } catch (err) {
-    console.error("[webhook] Failed to post/update placeholder comment:", err);
+    console.error("[webhook] Failed to post placeholder comment:", err);
   }
 
   // Notify real-time dashboard
@@ -239,6 +212,9 @@ export async function startReviewFlow(params: {
         url: pr.url,
         author: pr.author,
         status: pr.status,
+        headSha: pr.headSha,
+        reviewRequestVersion: pr.reviewRequestVersion,
+        createdAt: pr.createdAt.toISOString(),
       },
     })
     .catch((err) => console.error("[webhook] Pubby trigger failed:", err));
@@ -252,21 +228,72 @@ export async function startReviewFlow(params: {
     prUrl,
   });
 
-  // Freeze the attempt BEFORE enqueueing.
-  //
-  // `processReview` merges its configuration from three mutable sources at
-  // execution time -- system, organization and repository -- so a change to any of
-  // them between enqueue and execution silently changes the review that runs. What
-  // executed would not be what was approved, and the record of it would be
-  // unreliable in exactly the case anyone would want to audit.
-  //
-  // Snapshotting here and addressing the attempt id downstream is rayf P-0007 C3.
-  // The merge order must match the one in reviewer.ts; `mergeReviewConfigs` is
-  // shared so the two cannot drift apart silently.
+  // Enqueue review job — pg-boss persists it in DB, survives container restarts.
+  // The run id travels with it so the worker reads the frozen decision rather
+  // than re-resolving live configuration.
+  try {
+    await enqueue("process-review", { pullRequestId: pr.id, reviewRunId: reviewRun.id });
+  } catch (error) {
+    // Release only this admission. A provider retry must not be suppressed as
+    // already in progress when the durable queue never accepted the job.
+    if (provider === "forgejo") await prisma.pullRequest.updateMany({
+      where: { id: pr.id, headSha: pr.headSha, reviewRequestVersion: pr.reviewRequestVersion, status: "pending" },
+      data: { status: "failed", errorMessage: "Review could not be queued. Retry the request." },
+    });
+    throw error;
+  }
+  return { started: true, pullRequestId: pr.id };
+}
+
+/**
+ * Called back by `admitReviewRequest` with the SAME write client it used for
+ * the pull request's own create/update -- a short transaction of admission's
+ * own, or Forgejo's already-open ambient one -- so the run it creates commits
+ * (or rolls back) atomically with that write. Never called after admission
+ * returns: a run-less `pending` row is exactly what that separation used to
+ * risk, from a crash or an ambiguous `reviewRun.create` failure between two
+ * writes that neither the pending-row reaper nor a retry could recover.
+ *
+ * `pullRequestId`/`headSha`/`reviewRequestVersion` are the DEFINITIVE
+ * identity admission settled on, not the caller's tentative input: admission
+ * accepts an empty/null input head and resolves the authoritative one itself,
+ * and increments the version on every accepted request.
+ *
+ * `processReview` merges its configuration from three mutable sources at
+ * execution time -- system, organization and repository -- so a change to any of
+ * them between enqueue and execution silently changes the review that runs. What
+ * executed would not be what was approved, and the record of it would be
+ * unreliable in exactly the case anyone would want to audit.
+ *
+ * Snapshotting here and addressing the run id downstream is rayf P-0007 C3.
+ * The merge order must match the one in reviewer.ts; `mergeReviewConfigs` is
+ * shared so the two cannot drift apart silently.
+ *
+ * Throws rather than falling back to live configuration on failure, matching
+ * every other step of admission: none of the six webhook routes catches, so a
+ * throw here is a 500 and the provider retries the delivery, and it rolls
+ * back the same atomic write the pull request's own create/update is part
+ * of -- there is nothing left to compensate afterward.
+ */
+export async function freezeReviewRun(
+  client: Prisma.TransactionClient,
+  pullRequestId: string,
+  headSha: string,
+  reviewRequestVersion: number,
+  params: {
+    source: StartReviewParams["source"];
+    correlationId?: string;
+    modelOverride?: string;
+    provider: string;
+    orgId: string;
+    repoId: string;
+    prNumber: number;
+  },
+): Promise<{ id: string }> {
   const [sysRow, orgRow, repoRow] = await Promise.all([
-    prisma.systemConfig.findUnique({ where: { id: "singleton" }, select: { defaultReviewConfig: true } }),
-    prisma.organization.findUnique({ where: { id: orgId }, select: { defaultReviewConfig: true } }),
-    prisma.repository.findUnique({ where: { id: repoId }, select: { reviewConfig: true } }),
+    client.systemConfig.findUnique({ where: { id: "singleton" }, select: { defaultReviewConfig: true } }),
+    client.organization.findUnique({ where: { id: params.orgId }, select: { defaultReviewConfig: true } }),
+    client.repository.findUnique({ where: { id: params.repoId }, select: { reviewConfig: true } }),
   ]);
   // Only the `label` caller resolves a model: it is the only event carrying the
   // label that was just added. A push, an `@octopus` mention and the stuck-review
@@ -274,10 +301,10 @@ export async function startReviewFlow(params: {
   // and a `complexity:strong` change gets its strong reviewer once and the mid
   // tier for the rest of its life - the declaration buying nothing.
   //
-  // Carried forward from the last attempt rather than re-read here, because
+  // Carried forward from the last run rather than re-read here, because
   // `octopus.json` is read from the DEFAULT branch so a pull request cannot pick
   // its own reviewer. Re-deriving at this point would have to trust the event.
-  const inheritedModel = params.modelOverride ?? (await lastResolvedModel(pr.id));
+  const inheritedModel = params.modelOverride ?? (await lastResolvedModel(pullRequestId, client));
   const configSnapshot = mergeReviewConfigs(
     sysRow ? parseReviewConfig(sysRow.defaultReviewConfig) : {},
     parseReviewConfig(orgRow?.defaultReviewConfig),
@@ -286,49 +313,45 @@ export async function startReviewFlow(params: {
   );
   if (!params.modelOverride && inheritedModel) {
     console.log(
-      `[webhook] PR #${prNumber} inherits model ${inheritedModel} from its last attempt (source: ${params.source})`,
+      `[webhook] PR #${params.prNumber} inherits model ${inheritedModel} from its last run (source: ${params.source})`,
     );
   }
 
-  const attempt = await prisma.reviewAttempt.create({
+  return client.reviewRun.create({
     data: {
-      pullRequestId: pr.id,
+      pullRequestId,
       source: params.source,
       correlationId: params.correlationId ?? null,
-      headSha: headSha || null,
-      provider,
+      headSha,
+      reviewRequestVersion,
+      provider: params.provider,
       configSnapshot: configSnapshot as object,
       state: "pending",
     },
     select: { id: true },
   });
-
-  // Enqueue review job — pg-boss persists it in DB, survives container restarts.
-  // The attempt id travels with it so the worker reads the frozen decision rather
-  // than re-resolving live configuration.
-  await enqueue("process-review", { pullRequestId: pr.id, attemptId: attempt.id });
 }
 
 /**
- * The model the most recent attempt on this pull request was asked to use.
+ * The model the most recent run on this pull request was asked to use.
  *
- * Undefined when no attempt ever recorded one, which is the ordinary case for a
+ * Undefined when no run ever recorded one, which is the ordinary case for a
  * repository that does not key models on labels: the caller falls through to the
  * deployment default exactly as before.
  */
-async function lastResolvedModel(pullRequestId: string): Promise<string | undefined> {
+async function lastResolvedModel(pullRequestId: string, client: Pick<Prisma.TransactionClient, "reviewRun"> = prisma): Promise<string | undefined> {
   // Soft: inheriting a model is a routing improvement, not a correctness gate.
   // A read that fails here must not stop the review from starting - the cost of
   // losing it is the deployment default, the cost of throwing is no review.
   let previous: { configSnapshot: unknown } | null = null;
   try {
-    previous = await prisma.reviewAttempt.findFirst({
+    previous = await client.reviewRun.findFirst({
       where: { pullRequestId },
       orderBy: { createdAt: "desc" },
       select: { configSnapshot: true },
     });
   } catch (err) {
-    console.warn("[webhook] could not read the last attempt's model:", err);
+    console.warn("[webhook] could not read the last run's model:", err);
     return undefined;
   }
   const snapshot = previous?.configSnapshot;
@@ -337,23 +360,7 @@ async function lastResolvedModel(pullRequestId: string): Promise<string | undefi
   return typeof model === "string" && model.trim() !== "" ? model : undefined;
 }
 
-/**
- * When a review in flight is presumed dead.
- *
- * Must exceed the model call's own ceiling. At three minutes it did not: a
- * legitimate strong-tier review runs longer than that, so the watchdog declared
- * it stuck and started another while the first was still going - which is how
- * one review became four attempts on rayf #646. A watchdog shorter than the
- * work it supervises does not detect stalls, it manufactures them.
- *
- * Derived from `GATEWAY_TIMEOUT_MS` so the two cannot drift apart: once the call
- * has exceeded its own timeout it has already failed, and only then is there
- * nothing left to wait for.
- */
-export function stuckReviewMs(): number {
-  const explicit = Number(process.env.STUCK_REVIEW_MS ?? NaN);
-  if (Number.isFinite(explicit) && explicit > 0) return explicit;
-  const gateway = Number(process.env.GATEWAY_TIMEOUT_MS ?? 150_000);
-  const base = Number.isFinite(gateway) && gateway > 0 ? gateway : 150_000;
-  return base + 120_000;
-}
+// Re-exported so existing importers (including its own test) keep one home for
+// this name; the value now lives in review-request-admission.ts, which also
+// needs it and cannot import it back from here without a cycle.
+export { stuckReviewMs } from "@/lib/review-request-admission";
