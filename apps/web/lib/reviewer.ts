@@ -1388,6 +1388,18 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
           reason: err.meta.reason,
         });
         await updateCurrentReview(pr.id, pr.headSha, pr.reviewRequestVersion, { status: "queued", updatedAt: new Date() });
+        // Marks this run, not just the pull request, as a genuine large-review
+        // handoff: `review-request-admission.ts` reads it back to tell this
+        // 30+ minute internal-cli wait apart from a pull request that merely
+        // has status "queued" for a few seconds (a low-balance or
+        // repository-preparation deferral), which must stay on the short
+        // stuck-review window instead.
+        if (reviewRunId) {
+          await prisma.reviewRun.updateMany({
+            where: { id: reviewRunId, terminalAt: null },
+            data: { state: "queued" },
+          });
+        }
         return;
       }
       throw err;

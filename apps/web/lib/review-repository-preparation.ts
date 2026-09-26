@@ -67,9 +67,17 @@ export async function ensureRepositoryAnalysis(
 }
 
 export async function deferReviewForRepository(pullRequestId: string, headSha?: string | null, reviewRequestVersion?: number, reviewRunId?: string): Promise<void> {
-  // "queued" is reserved for an active large-review job and cannot be claimed
-  // again until its stale timeout. A prerequisite retry must be claimable now.
-  const changed = await prisma.pullRequest.updateMany({ where: { id: pullRequestId, ...(headSha !== undefined ? { headSha } : {}), ...(reviewRequestVersion !== undefined ? { reviewRequestVersion } : {}) }, data: { status: "pending" } });
+  // Must be "queued", not "pending": `attemptOutcomeForStatus` treats "pending"
+  // as an early exit and finalizes the frozen run as cancelled the moment this
+  // function returns, so a later success could never overwrite that terminal
+  // state. "queued" is its non-terminal case, matching the low-balance
+  // deferral in `reviewer.ts`, which re-enqueues the same run the same way.
+  //
+  // This does not reuse the large-review "queued" claim window: that window is
+  // keyed off the run's own `state` (set to "queued" only at the large-review
+  // handoff), not off the pull request's `status`, so a prerequisite retry
+  // stays claimable on the short window.
+  const changed = await prisma.pullRequest.updateMany({ where: { id: pullRequestId, ...(headSha !== undefined ? { headSha } : {}), ...(reviewRequestVersion !== undefined ? { reviewRequestVersion } : {}) }, data: { status: "queued" } });
   if (!changed.count) return;
   // The retry re-executes under the SAME frozen run, not live configuration --
   // dropping this here would let a label-selected model silently change on

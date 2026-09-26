@@ -7,6 +7,9 @@ const scenario = process.argv[3];
 type Row = Record<string, unknown> & {
   id: string; headSha: string | null; reviewRequestVersion: number; status: string;
   updatedAt: Date; createdAt: Date; reviewBody: string | null;
+  // The latest ReviewRun's own `state`, as `review-request-admission.ts` reads
+  // it back through the `attempts` relation. Undefined means no run exists.
+  runState?: string;
 };
 const completed = (headSha = B, version = 2): Row => ({
   id: "pr", repositoryId: "repo", number: 1, title: "Title", author: "author", url: "https://example.test/pr/1",
@@ -23,6 +26,7 @@ let duringHeadRead: (() => Promise<void>) | undefined;
 let beforeWrite: (() => Promise<void>) | undefined;
 let headFailure = false;
 let queueFailure = false;
+let freezeFailure = false;
 const org = { id: "org", githubInstallationId: 456 };
 const repository = { id: "repo", organizationId: "org", organization: org, provider, fullName: "owner/repo", installationId: 123 as number | null, isActive: true };
 function matches(where: Record<string, unknown>) {
@@ -45,7 +49,11 @@ mock.module("@octopus/db", () => ({
     systemConfig: { findUnique: async () => ({ blockedAuthors: [] }) },
     repository: { findFirst: async () => repository, findUnique: async () => repository },
     pullRequest: {
-      findUnique: async () => current ? { ...structuredClone(current), repository } : null,
+      findUnique: async () => {
+        if (!current) return null;
+        const { runState, ...row } = structuredClone(current);
+        return { ...row, repository, attempts: runState !== undefined ? [{ state: runState }] : [] };
+      },
       create: async ({ data }: { data: Record<string, unknown> }) => {
         const callback = beforeWrite; beforeWrite = undefined; await callback?.();
         if (current) throw Object.assign(new Error("unique repository/PR"), { code: "P2002" });
@@ -68,7 +76,10 @@ mock.module("@octopus/db", () => ({
     // Config-freeze (rayf P-0007 C3): startReviewFlow creates a ReviewRun before
     // enqueueing. Not under test here, so a minimal no-op pass-through.
     reviewRun: {
-      create: async () => ({ id: "run" }),
+      create: async () => {
+        if (freezeFailure) throw new Error("Config read unavailable");
+        return { id: "run" };
+      },
       findFirst: async () => null,
     },
   },
@@ -200,11 +211,24 @@ if (scenario === "enqueue_retry") {
   // would exceed the generic gateway-derived stuck window (~4.5 minutes) but
   // is well within a large review's own (30-minute) timeout, so a manual
   // trigger must NOT reset it out from under the worker still running it.
-  current = { ...completed(), status: "queued", updatedAt: new Date(Date.now() - 10 * 60 * 1000) };
+  // Marked by the run's own state, not just the pull request's -- that is
+  // what tells this apart from the low-balance case below.
+  current = { ...completed(), status: "queued", runState: "queued", updatedAt: new Date(Date.now() - 10 * 60 * 1000) };
   const result = await startReviewFlow({ ...params, headSha: B });
   assert.equal(result.started, false);
   if (!result.started) assert.equal(result.reason, "already_in_progress");
   assert.equal(writes, 0);
+} else if (scenario === "queued_low_balance_reclaimed") {
+  // A low-balance (or repository-preparation) deferral also parks the pull
+  // request at "queued" for a few seconds, but never marks the run itself
+  // "queued" -- only a genuine large-review handoff does. Ten minutes on
+  // this kind of "queued" row is well past the short, gateway-derived stuck
+  // window, so a manual trigger MUST reclaim it rather than waiting out the
+  // large-review timeout meant for a different producer of "queued".
+  current = { ...completed(), status: "queued", runState: "running", updatedAt: new Date(Date.now() - 10 * 60 * 1000) };
+  const result = await startReviewFlow({ ...params, headSha: B });
+  assert.equal(result.started, true);
+  assert.equal(writes, 1);
 } else if (scenario === "initial") {
   current = null;
   assert.equal((await startReviewFlow({ ...params, headSha: B })).started, true);
@@ -256,6 +280,18 @@ if (scenario === "enqueue_retry") {
   // An admin-triggered retry must run on a frozen decision too, not on
   // whatever is configured now. rayf P-0007 C3.
   assert.equal(lastEnqueued?.reviewRunId, "run", "the admin retry must carry a frozen run into the queue");
+} else if (scenario === "retry_freeze_failure") {
+  // A freeze failure must fail the admission, not silently enqueue a review
+  // running on live configuration nobody approved.
+  const { POST } = await import("../../../app/api/admin/reviews/[id]/retry/route");
+  const { NextRequest } = await import("next/server");
+  process.env.ADMIN_API_SECRET = "fixture-admin-secret";
+  freezeFailure = true;
+  await assert.rejects(() => POST(new NextRequest("https://example.test/api/admin/reviews/pr/retry", {
+    method: "POST", headers: { authorization: "Bearer fixture-admin-secret" },
+  }), { params: Promise.resolve({ id: "pr" }) }), /Config read unavailable/);
+  freezeFailure = false;
+  assert.equal(enqueued, 0, "a freeze failure must never fall through to an unfrozen enqueue");
 } else if (scenario === "retry" || scenario === "retry_race") {
   const { POST } = await import("../../../app/api/admin/reviews/[id]/retry/route");
   const { NextRequest } = await import("next/server");

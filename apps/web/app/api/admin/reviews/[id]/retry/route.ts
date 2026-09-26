@@ -104,7 +104,7 @@ export async function POST(
     prNumber: pr.number,
   });
 
-  await enqueue("process-review", reviewRun ? { pullRequestId: pr.id, reviewRunId: reviewRun.id } : { pullRequestId: pr.id });
+  await enqueue("process-review", { pullRequestId: pr.id, reviewRunId: reviewRun.id });
 
   return NextResponse.json({ message: "Review retry enqueued", pullRequestId: pr.id });
 }

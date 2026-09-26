@@ -75,7 +75,10 @@ mock.module("@/lib/pubby", () => ({ pubby: { trigger: async (_channel: string, e
 mock.module("@/lib/events", () => ({ eventBus: { emit: () => {} } }));
 mock.module("@/lib/queue", () => ({
   enqueueAfter: async (...args: unknown[]) => {
-    assert.equal(prStatus, "pending", "deferred reviews must be claimable by the retry worker");
+    // "queued", not "pending": `attemptOutcomeForStatus` treats "queued" as
+    // non-terminal, so a retry that lands here cannot have already finalized
+    // the run its payload carries. See `deferReviewForRepository`.
+    assert.equal(prStatus, "queued", "deferred reviews must leave the run non-terminal, not finalize it early");
     queued.push(args);
     return queueFailure ? null : "job-1";
   },

@@ -78,20 +78,30 @@ export async function admitReviewRequest(params: ReviewRequestParams, client: Pr
 async function admitReviewRequestInternal(params: ReviewRequestParams, client: Prisma.TransactionClient): Promise<AdmissionResult> {
   const automatic = params.provider === "forgejo" && params.automatic === true;
   const where = { repositoryId_number: { repositoryId: params.repoId, number: params.prNumber } };
-  // A "queued" row is a large-review handoff to internal-cli (clone + claude-cli),
-  // which legitimately runs far longer than an in-process review -- the generic,
+  // A "queued" pull request whose latest run is ALSO marked "queued" is a
+  // large-review handoff to internal-cli (clone + claude-cli), which
+  // legitimately runs far longer than an in-process review -- the generic,
   // gateway-derived `stuckReviewMs()` window (~4.5 minutes by default) is sized
   // for THAT case, not for a large review's `largeReviewTimeoutSeconds` (30
   // minutes by default). Applying it to "queued" too would let a manual retry
   // "reset" a large review that is still legitimately running and let a second
   // worker claim it out from under the first.
+  //
+  // "queued" is not exclusive to large reviews, though: a low-balance or
+  // repository-preparation deferral also parks the pull request at "queued"
+  // for a few seconds while the same run waits to re-enqueue. Those never mark
+  // the run itself "queued" (see `reviewer.ts`'s large-review handoff), so
+  // they fall through to the short window below instead.
   const queuedStuckMs = computeStaleReclaimMs((await loadQueueConfig()).largeReviewTimeoutSeconds);
   for (let attempt = 0; attempt < 3; attempt++) {
     // Capture the DB state before the remote read. A competing request that
     // wins while that read is in flight must force a fresh provider read.
     const existing = await client.pullRequest.findUnique({
       where,
-      select: { id: true, status: true, headSha: true, reviewRequestVersion: true, updatedAt: true },
+      select: {
+        id: true, status: true, headSha: true, reviewRequestVersion: true, updatedAt: true,
+        attempts: { orderBy: { createdAt: "desc" }, take: 1, select: { state: true } },
+      },
     });
     const headSha = await currentProviderHead(params);
     if (!headSha) {
@@ -104,9 +114,10 @@ async function admitReviewRequestInternal(params: ReviewRequestParams, client: P
       || await client.reviewAttempt.findFirst({ where: { pullRequestId: existing.id, headSha }, select: { id: true } }))) {
       return { started: false, reason: "already_reviewed", message: `PR #${params.prNumber} has already been reviewed at this head` };
     }
+    const isGenuineLargeReviewQueue = !!existing && existing.status === "queued" && existing.attempts[0]?.state === "queued";
     if (existing && existing.headSha === headSha
       && ["reviewing", "pending", "queued"].includes(existing.status)
-      && (automatic || Date.now() - existing.updatedAt.getTime() <= (existing.status === "queued" ? queuedStuckMs : stuckReviewMs()))) {
+      && (automatic || Date.now() - existing.updatedAt.getTime() <= (isGenuineLargeReviewQueue ? queuedStuckMs : stuckReviewMs()))) {
       return { started: false, reason: "already_in_progress", message: `Review already in progress for PR #${params.prNumber}` };
     }
 

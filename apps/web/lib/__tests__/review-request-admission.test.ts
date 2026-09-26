@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 const scenarios = {
   enqueue_retry: "scopes enqueue-failure recovery to Forgejo",
   retry_org_installation: "uses the organization GitHub installation for a legacy administrative retry",
+  retry_freeze_failure: "fails an administrative retry rather than enqueueing it unfrozen",
   cli_org_installation: "uses the organization GitHub installation for a legacy CLI review",
   delayed: "rejects a delayed A request after B completed without clearing its report",
   fetch_race: "refreshes provider state when B is admitted during the A head fetch",
@@ -14,6 +15,7 @@ const scenarios = {
   initial: "admits the first provider-confirmed request with version one",
   stuck_retry: "restarts a stuck current-head review with one guarded mutation",
   large_review_not_stuck: "does not reset a live large review under its own longer timeout",
+  queued_low_balance_reclaimed: "reclaims a low-balance queued deferral under the short window, unlike a genuine large review",
   retry_race: "preserves B when it wins during an administrative retry head fetch",
   cli_race: "rejects a CLI head superseded between its initial lookup and admission",
   same_head: "allows completed same-head re-requests and suppresses active duplicates",

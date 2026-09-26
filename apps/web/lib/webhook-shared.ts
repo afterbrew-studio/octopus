@@ -163,10 +163,10 @@ async function startReviewFlowInternal(params: StartReviewParams, forgejoTransac
   // transactional early return below used to enqueue with no run at all, so
   // every Forgejo review ran on live configuration. See the fuller rationale
   // further down, where the non-Forgejo path used to do this alone.
-  const reviewRun = await freezeReviewRun(pr.id, headSha, params);
+  const reviewRun = await freezeReviewRun(pr.id, headSha, forgejoTransaction ? { ...params, client: forgejoTransaction } : params);
 
   if (forgejoTransaction) {
-    const jobId = await enqueue("process-review", reviewRun ? { pullRequestId: pr.id, reviewRunId: reviewRun.id } : { pullRequestId: pr.id }, {
+    const jobId = await enqueue("process-review", { pullRequestId: pr.id, reviewRunId: reviewRun.id }, {
       db: { executeSql: async (sql, values) => ({ rows: await forgejoTransaction.$queryRawUnsafe<unknown[]>(sql, ...(values ?? [])) }) },
     });
     if (!jobId) throw new Error("Forgejo review could not be queued");
@@ -226,7 +226,7 @@ async function startReviewFlowInternal(params: StartReviewParams, forgejoTransac
   // The run id travels with it so the worker reads the frozen decision rather
   // than re-resolving live configuration.
   try {
-    await enqueue("process-review", reviewRun ? { pullRequestId: pr.id, reviewRunId: reviewRun.id } : { pullRequestId: pr.id });
+    await enqueue("process-review", { pullRequestId: pr.id, reviewRunId: reviewRun.id });
   } catch (error) {
     // Release only this admission. A provider retry must not be suppressed as
     // already in progress when the durable queue never accepted the job.
@@ -255,9 +255,11 @@ async function startReviewFlowInternal(params: StartReviewParams, forgejoTransac
  * The merge order must match the one in reviewer.ts; `mergeReviewConfigs` is
  * shared so the two cannot drift apart silently.
  *
- * Best-effort: a failure here falls back to the pre-freeze behaviour (the
- * worker resolves live configuration) rather than failing the whole request --
- * the admission it follows already committed the pull request.
+ * Throws rather than falling back to live configuration on failure, matching
+ * every other step of admission: none of the six webhook routes catches, so a
+ * throw here is a 500 and the provider retries the delivery. Swallowing it
+ * would enqueue a review nobody approved -- which is exactly what freezing
+ * exists to prevent -- to save a retry the provider already does for free.
  */
 export async function freezeReviewRun(pullRequestId: string, headSha: string | null, params: {
   source: StartReviewParams["source"];
@@ -267,51 +269,53 @@ export async function freezeReviewRun(pullRequestId: string, headSha: string | n
   orgId: string;
   repoId: string;
   prNumber: number;
-}): Promise<{ id: string } | undefined> {
-  try {
-    const [sysRow, orgRow, repoRow] = await Promise.all([
-      prisma.systemConfig.findUnique({ where: { id: "singleton" }, select: { defaultReviewConfig: true } }),
-      prisma.organization.findUnique({ where: { id: params.orgId }, select: { defaultReviewConfig: true } }),
-      prisma.repository.findUnique({ where: { id: params.repoId }, select: { reviewConfig: true } }),
-    ]);
-    // Only the `label` caller resolves a model: it is the only event carrying the
-    // label that was just added. A push, an `@octopus` mention and the stuck-review
-    // restart above all pass none, so the review drops to the deployment default
-    // and a `complexity:strong` change gets its strong reviewer once and the mid
-    // tier for the rest of its life - the declaration buying nothing.
-    //
-    // Carried forward from the last run rather than re-read here, because
-    // `octopus.json` is read from the DEFAULT branch so a pull request cannot pick
-    // its own reviewer. Re-deriving at this point would have to trust the event.
-    const inheritedModel = params.modelOverride ?? (await lastResolvedModel(pullRequestId));
-    const configSnapshot = mergeReviewConfigs(
-      sysRow ? parseReviewConfig(sysRow.defaultReviewConfig) : {},
-      parseReviewConfig(orgRow?.defaultReviewConfig),
-      parseReviewConfig(repoRow?.reviewConfig),
-      inheritedModel ? { modelOverride: inheritedModel } : {},
+  // The pull request row this run's foreign key points at may exist only
+  // inside an open transaction on another connection (Forgejo's admission is
+  // transactional). Reading/writing through the global `prisma` client in
+  // that case blocks on -- or, if the transaction later rolls back, orphans a
+  // pending run against -- a row the global connection cannot yet see.
+  client?: Pick<Prisma.TransactionClient, "systemConfig" | "organization" | "repository" | "reviewRun">;
+}): Promise<{ id: string }> {
+  const client = params.client ?? prisma;
+  const [sysRow, orgRow, repoRow] = await Promise.all([
+    client.systemConfig.findUnique({ where: { id: "singleton" }, select: { defaultReviewConfig: true } }),
+    client.organization.findUnique({ where: { id: params.orgId }, select: { defaultReviewConfig: true } }),
+    client.repository.findUnique({ where: { id: params.repoId }, select: { reviewConfig: true } }),
+  ]);
+  // Only the `label` caller resolves a model: it is the only event carrying the
+  // label that was just added. A push, an `@octopus` mention and the stuck-review
+  // restart above all pass none, so the review drops to the deployment default
+  // and a `complexity:strong` change gets its strong reviewer once and the mid
+  // tier for the rest of its life - the declaration buying nothing.
+  //
+  // Carried forward from the last run rather than re-read here, because
+  // `octopus.json` is read from the DEFAULT branch so a pull request cannot pick
+  // its own reviewer. Re-deriving at this point would have to trust the event.
+  const inheritedModel = params.modelOverride ?? (await lastResolvedModel(pullRequestId, client));
+  const configSnapshot = mergeReviewConfigs(
+    sysRow ? parseReviewConfig(sysRow.defaultReviewConfig) : {},
+    parseReviewConfig(orgRow?.defaultReviewConfig),
+    parseReviewConfig(repoRow?.reviewConfig),
+    inheritedModel ? { modelOverride: inheritedModel } : {},
+  );
+  if (!params.modelOverride && inheritedModel) {
+    console.log(
+      `[webhook] PR #${params.prNumber} inherits model ${inheritedModel} from its last run (source: ${params.source})`,
     );
-    if (!params.modelOverride && inheritedModel) {
-      console.log(
-        `[webhook] PR #${params.prNumber} inherits model ${inheritedModel} from its last run (source: ${params.source})`,
-      );
-    }
-
-    return await prisma.reviewRun.create({
-      data: {
-        pullRequestId,
-        source: params.source,
-        correlationId: params.correlationId ?? null,
-        headSha: headSha || null,
-        provider: params.provider,
-        configSnapshot: configSnapshot as object,
-        state: "pending",
-      },
-      select: { id: true },
-    });
-  } catch (err) {
-    console.error(`[webhook] Could not freeze a run for PR #${params.prNumber}; falling back to live configuration:`, err);
-    return undefined;
   }
+
+  return client.reviewRun.create({
+    data: {
+      pullRequestId,
+      source: params.source,
+      correlationId: params.correlationId ?? null,
+      headSha: headSha || null,
+      provider: params.provider,
+      configSnapshot: configSnapshot as object,
+      state: "pending",
+    },
+    select: { id: true },
+  });
 }
 
 /**
@@ -321,13 +325,13 @@ export async function freezeReviewRun(pullRequestId: string, headSha: string | n
  * repository that does not key models on labels: the caller falls through to the
  * deployment default exactly as before.
  */
-async function lastResolvedModel(pullRequestId: string): Promise<string | undefined> {
+async function lastResolvedModel(pullRequestId: string, client: Pick<Prisma.TransactionClient, "reviewRun"> = prisma): Promise<string | undefined> {
   // Soft: inheriting a model is a routing improvement, not a correctness gate.
   // A read that fails here must not stop the review from starting - the cost of
   // losing it is the deployment default, the cost of throwing is no review.
   let previous: { configSnapshot: unknown } | null = null;
   try {
-    previous = await prisma.reviewRun.findFirst({
+    previous = await client.reviewRun.findFirst({
       where: { pullRequestId },
       orderBy: { createdAt: "desc" },
       select: { configSnapshot: true },

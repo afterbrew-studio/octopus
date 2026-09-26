@@ -486,7 +486,10 @@ model ReviewRun {
   provider      String
   /// The merged review configuration AS IT WAS at enqueue. The whole point.
   configSnapshot Json
-  /// pending | running | succeeded | failed | cancelled
+  /// pending | running | queued | succeeded | failed | cancelled
+  /// "queued" is set only for a genuine large-review handoff to internal-cli,
+  /// so its long stuck-review window is never applied to a run that is merely
+  /// waiting a few seconds on capacity or a repository-preparation retry.
   state         String   @default("pending")
   /// Set once, when the run reaches a terminal state. A second write is a bug.
   terminalAt    DateTime?

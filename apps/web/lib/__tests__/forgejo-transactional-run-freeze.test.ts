@@ -8,5 +8,5 @@ it("freezes a run on the Forgejo transactional admission path before enqueueing"
     process.exited, new Response(process.stdout).text(), new Response(process.stderr).text(),
   ]);
   expect({ exit, stderr }).toEqual({ exit: 0, stderr: "" });
-  expect(stdout).toContain("PASS Forgejo transactional path freezes a run before enqueueing");
+  expect(stdout).toContain("PASS Forgejo transactional path freezes a run through its own transaction client");
 });
