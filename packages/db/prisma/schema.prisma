@@ -32,10 +32,12 @@ model User {
   // Signup abuse signals. signupIp is captured at the first session and drives
   // Sybil velocity scoring; welcomeGrantedAt stamps the one-time welcome bonus
   // so it can't be re-farmed (leak-proof — survives org soft- OR hard-delete).
+  marketingVisitId String? // Server-stamped at creation; never client-writable.
   signupIp         String?
   welcomeGrantedAt DateTime?
 
   @@index([signupIp])
+  @@index([createdAt, id])
 
   emailSends EmailSend[]
   devices    UserDevice[]
@@ -50,6 +52,7 @@ model User {
   deletedKnowledgeDocs  KnowledgeDocument[] @relation("DeletedKnowledgeDocs")
   knowledgeAuditLogs    KnowledgeAuditLog[]
   createdApiTokens      OrgApiToken[] @relation("CreatedApiTokens")
+  cliUserTokens         CliUserToken[]
   packageAnalyses       PackageAnalysis[]
   safePackageRequests   SafePackageRequest[]
   packageDeepDives      PackageDeepDive[]
@@ -110,6 +113,8 @@ model Organization {
   avatarUrl            String?
   // Signed webhook tenant authority; one GitHub installation maps to one org.
   githubInstallationId Int?     @unique
+  // Last observed repository sync; null means setup has not been checked.
+  githubSetupStatus Json?
   needsPermissionGrant Boolean  @default(false)
   openaiApiKey         String?
   anthropicApiKey      String?
@@ -117,6 +122,7 @@ model Organization {
   googleApiKey         String?
   grokApiKey           String?
   openrouterApiKey     String?
+  alibabaApiKey        String?
   // Custom Ollama base URL — overrides OLLAMA_SERVER_URL env when set. Used
   // for self-hosted Octopus instances pointing at a non-default Ollama host
   // (a different container, a different machine on the LAN, etc.).
@@ -156,6 +162,11 @@ model Organization {
   // latency for that saving, and only the operator knows which they want.
   reviewOnlyWhenCiPasses  Boolean  @default(false)
   reviewsPaused           Boolean  @default(false)
+  // Automatic repository discovery (hourly sweep + GitHub repository events).
+  // Off = new repositories are added only through the manual Sync button.
+  autoDiscoverRepos       Boolean  @default(true)
+  // Cursor for the discover-repositories sweep: least-recently-synced org first.
+  reposSyncedAt           DateTime?
   // Live telemetry (real-time presence + activity). Opt-in, paid-only.
   // liveTelemetryEnabled: org owner surfaces members'/agents' live presence +
   // activity to the org's own admins. allowVendorMemberVisibility: a SEPARATE
@@ -203,6 +214,7 @@ model Organization {
   collabIntegration     CollabIntegration?
   bitbucketIntegration  BitbucketIntegration?
   gitlabIntegration     GitlabIntegration?
+  forgejoIntegration    ForgejoIntegration?
   linearIntegration     LinearIntegration?
   jiraIntegration       JiraIntegration?
   aiUsages           AiUsage[]
@@ -307,6 +319,8 @@ model Repository {
   isActive      Boolean  @default(true)
   autoReview    Boolean  @default(true)
   installationId Int?
+  // GitLab project-hook setup evidence, separate from OAuth and delivery.
+  webhookSetupStatus Json?
   indexStatus    String   @default("pending") // pending | indexing | indexed | failed
   indexedAt      DateTime?
   indexedFiles   Int      @default(0)
@@ -417,9 +431,13 @@ model PullRequest {
   triggerCommentId   BigInt?
   triggerCommentBody String?
   headSha            String?
+  reviewRequestVersion Int     @default(0)
   reviewCommentId    BigInt?
   reviewBody         String?
+  reviewCoverage     Json?
   errorMessage       String?
+  // First successfully published review; preserved when later requests run or fail.
+  firstReviewCompletedAt DateTime?
   mergedAt           DateTime?
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
@@ -428,14 +446,15 @@ model PullRequest {
   repository   Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
 
   reviewIssues ReviewIssue[]
-  attempts     ReviewAttempt[]
+  attempts     ReviewRun[]
+  reviewAttempts ReviewAttempt[]
 
   @@unique([repositoryId, number])
   @@index([repositoryId, status])
   @@map("pull_requests")
 }
 
-/// One review attempt, frozen at the moment it was enqueued.
+/// One review run, frozen at the moment it was enqueued.
 ///
 /// `processReview` resolves its configuration by merging three MUTABLE sources at
 /// execution time -- system, organization and repository. A change to any of them
@@ -443,26 +462,33 @@ model PullRequest {
 /// executed is not what was approved and the record of it is unreliable.
 ///
 /// This row is the snapshot. It is written before the job is enqueued and never
-/// updated except to advance `state`, so the worker and the reaper can address an
-/// attempt id and get back exactly what was decided, not what is currently
+/// updated except to advance `state`, so the worker and the reaper can address a
+/// run id and get back exactly what was decided, not what is currently
 /// configured. See rayf P-0007 C3 and ADR-0056.
-model ReviewAttempt {
+///
+/// Named `ReviewRun` rather than `ReviewAttempt` because upstream independently
+/// introduced its own `ReviewAttempt` (the immutable review-result record below)
+/// mapped to the same `review_attempts` table name; this model was renamed to
+/// `review_runs` on merge to resolve the collision without touching either
+/// side's already-applied migration history. See
+/// `20260828000000_rename_review_attempts_to_review_runs`.
+model ReviewRun {
   id            String   @id @default(cuid())
-  /// Ties this attempt to the dispatching side, so a paid review is attributable
+  /// Ties this run to the dispatching side, so a paid review is attributable
   /// to one request rather than inferred from timing.
   correlationId String?
   /// What started it. Only `adapter` may, but the value is recorded rather than
   /// assumed so a refusal that somehow got through is visible afterwards.
   source        String
-  /// The exact commit reviewed. An attempt against a head that has moved is a
-  /// different attempt, not a continuation of this one.
+  /// The exact commit reviewed. A run against a head that has moved is a
+  /// different run, not a continuation of this one.
   headSha       String?
   provider      String
   /// The merged review configuration AS IT WAS at enqueue. The whole point.
   configSnapshot Json
   /// pending | running | succeeded | failed | cancelled
   state         String   @default("pending")
-  /// Set once, when the attempt reaches a terminal state. A second write is a bug.
+  /// Set once, when the run reaches a terminal state. A second write is a bug.
   terminalAt    DateTime?
   terminalDetail String?
   createdAt     DateTime @default(now())
@@ -472,7 +498,37 @@ model ReviewAttempt {
 
   @@index([pullRequestId, createdAt])
   @@index([state])
+  @@map("review_runs")
+}
+
+// Append-only final results. A new attempt never overwrites prior evidence.
+model ReviewAttempt {
+  id            String   @id
+  pullRequestId String
+  pullRequest   PullRequest @relation(fields: [pullRequestId], references: [id], onDelete: Cascade)
+  headSha       String?
+  baseSha       String?
+  coverage      Json
+  reviewBody    String
+  createdAt     DateTime @default(now())
+
+  delivery ReviewAttemptDelivery?
+
+  @@index([pullRequestId, createdAt])
   @@map("review_attempts")
+}
+
+// Mutable delivery progress is separate from the immutable assessment result.
+model ReviewAttemptDelivery {
+  attemptId        String @id
+  attempt          ReviewAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  mainCommentId    BigInt?
+  summaryPublished Boolean @default(false)
+  completedAt      DateTime?
+  leaseToken       String?
+  leaseUntil       DateTime?
+
+  @@map("review_attempt_deliveries")
 }
 
 model ReviewIssue {
@@ -666,6 +722,7 @@ model BitbucketIntegration {
   scopes         String?
   webhookUuid    String?
   webhookSecret  String?
+  setupStatus    Json?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
@@ -692,6 +749,7 @@ model GitlabIntegration {
   tokenExpiresAt DateTime
   scopes         String?
   webhookSecret  String?
+  setupStatus    Json?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
@@ -700,6 +758,44 @@ model GitlabIntegration {
 
   @@index([webhookSecret])
   @@map("gitlab_integrations")
+}
+
+model ForgejoIntegration {
+  id             String   @id @default(cuid())
+  forgejoHost    String
+  username       String
+  accessTokenEnc String?
+  connectorTokenHash String? @unique
+  connectorLastSeenAt DateTime?
+  connectorError String?
+  webhookSecret String
+  setupStatus Json?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organizationId String       @unique
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  connectorRequests ForgejoConnectorRequest[]
+
+  @@map("forgejo_integrations")
+}
+
+model ForgejoConnectorRequest {
+  id String @id @default(cuid())
+  integrationId String
+  integration ForgejoIntegration @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+  method String
+  requestEnc String
+  responseEnc String?
+  leaseToken String?
+  leaseExpiresAt DateTime?
+  status String @default("queued")
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([integrationId, status, createdAt])
+  @@index([expiresAt])
+  @@map("forgejo_connector_requests")
 }
 
 model CollabIntegration {
@@ -871,6 +967,35 @@ model CreditTransaction {
   @@map("credit_transactions")
 }
 
+// Backend-only business-event delivery. The source remains the account/Stripe
+// ledger; this table never grants credits or initiates processor operations.
+model MarketingConversion {
+  id              String    @id @default(cuid())
+  sourceId        String
+  environment     String
+  originKey       String
+  kind            String
+  reference       String
+  organizationId  String?
+  sourceCreatedAt DateTime
+  payload         String?   @db.Text
+  status          String    @default("pending")
+  attempts        Int       @default(0)
+  nextAttemptAt   DateTime  @default(now())
+  leaseId         String?
+  leaseUntil      DateTime?
+  receiptId       String?
+  httpStatus      Int?
+  errorCode       String?
+  deliveredAt     DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@unique([sourceId, originKey])
+  @@index([sourceId, status, nextAttemptAt])
+  @@map("marketing_conversions")
+}
+
 model AutoReloadConfig {
   id              String   @id @default(cuid())
   enabled         Boolean  @default(false)
@@ -933,15 +1058,35 @@ model OrgApiToken {
   createdById    String
   createdBy      User @relation("CreatedApiTokens", fields: [createdById], references: [id], onDelete: Cascade)
 
+  cliUserTokenId String?
+  cliUserToken   CliUserToken? @relation(fields: [cliUserTokenId], references: [id], onDelete: Cascade)
+
   localAgents    LocalAgent[]
+
+  @@unique([cliUserTokenId, organizationId])
 
   @@index([tokenHash])
   @@map("org_api_tokens")
 }
 
+model CliUserToken {
+  id         String   @id @default(cuid())
+  tokenHash  String   @unique
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt  DateTime
+  deletedAt  DateTime?
+  createdAt  DateTime @default(now())
+  orgTokens  OrgApiToken[]
+
+  @@index([userId])
+  @@map("cli_user_tokens")
+}
+
 model CliAuthSession {
   id         String   @id @default(cuid())
   deviceCode String   @unique
+  scope      String   @default("organization")
   status     String   @default("pending") // pending | approved | expired
   token      String?  // raw token, cleared after CLI polls it
   orgId      String?
@@ -999,6 +1144,7 @@ model SystemConfig {
   blockedAuthors      Json @default("[]") // string[] of globally blocked PR author usernames
   queueConfig         Json @default("{}") // { reviewTimeoutSeconds, reviewConcurrency }
   announcements       Json @default("[]") // landing-page announcement bar entries (see lib/announcements types)
+  modelDiscovery      Json?    // last scheduled provider catalog check; no automatic activation
   latestRelease       Json?    // cached latest GitHub release for the self-hosted Updates page (see lib/releases.ts)
   blogAudioVoiceId    String?  // selected ElevenLabs voice id for blog read-aloud (see lib/elevenlabs.ts)
   // Self-hosted GitHub App created via the App Manifest flow (see lib/github-app-config.ts).
@@ -1591,4 +1737,39 @@ model CommunityReviewJob {
   @@index([status, createdAt])
   @@index([expiresAt])
   @@map("community_review_jobs")
+}
+
+// A nullable snapshot is deliberate: a later retry must not upgrade absent consent.
+model MarketingPaymentAttribution {
+  id               String   @id
+  sourceId         String
+  environment      String
+  trackingId       String
+  organizationId   String
+  visitorId        String?
+  createdAt        DateTime @default(now())
+  paymentReference String?
+  completedAt      DateTime?
+  nextAttemptAt    DateTime @default(now())
+
+  @@unique([sourceId, paymentReference])
+  @@index([sourceId, trackingId, completedAt, nextAttemptAt], map: "marketing_payment_attributions_pending_idx")
+  @@map("marketing_payment_attributions")
+}
+
+// Bounded retained evidence; never a cash event or upstream completeness assertion.
+model MarketingCashObservation {
+  id          String                     @id
+  sourceId    String
+  environment String
+  kind        String
+  parentId    String?
+  parent      MarketingCashObservation?  @relation("CashObservationParents", fields: [parentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  children    MarketingCashObservation[] @relation("CashObservationParents")
+  digest      String                     @unique
+  body        String                     @db.Text
+  createdAt   DateTime                   @default(now())
+
+  @@index([sourceId, createdAt], map: "marketing_cash_observations_source_idx")
+  @@map("marketing_cash_observations")
 }

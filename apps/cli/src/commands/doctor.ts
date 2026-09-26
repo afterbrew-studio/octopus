@@ -40,7 +40,7 @@ export async function doctorCommand(_argv: string[]): Promise<number> {
   if (config.model) line("ok", "model", config.model);
   else line("warn", "model", "not chosen");
   if (config.selfHostedBaseUrl) line("ok", "self-hosted base URL", config.selfHostedBaseUrl);
-  else line("skip", "self-hosted base URL", "using hosted (octopus-review.ai)");
+  else line("skip", "self-hosted base URL", "using Cloud (Octopus hosted, octopus-review.ai)");
 
   // ── Credentials ────────────────────────────────────────────────────────────
   console.log("\nAuth:");
@@ -65,8 +65,8 @@ export async function doctorCommand(_argv: string[]): Promise<number> {
       `${sanitizeTerminal(creds.orgName)} (${sanitizeTerminal(creds.orgSlug)}) on ${sanitizeTerminal(creds.baseUrl)}`,
     );
 
-    // Live token check — hits /api/cli/me with the saved bearer.
-    const res = await getJson(`${creds.baseUrl}/api/cli/me`, {
+    // Check the endpoint for the credential's scope without sending user secrets to org APIs.
+    const res = await getJson(`${creds.baseUrl}${creds.kind === "user" ? "/api/cli/auth/user" : "/api/cli/me"}`, {
       headers: { authorization: `Bearer ${creds.token}` },
     });
     if (res.ok) line("ok", "token", "accepted by server");

@@ -1,9 +1,11 @@
+import "server-only";
 import { prisma } from "@octopus/db";
 import { calcCost, getModelPricing } from "./cost";
 import { deductCredits } from "./credits";
 
 type LogAiUsageParams = {
-  provider: "anthropic" | "openai" | "google" | "cohere" | "grok" | "openrouter" | "ollama" | "local" | "acp" | "opencode" | "claude-code" | "mock" | "mock-fail";
+  usedOwnKey?: boolean;
+  provider: "anthropic" | "openai" | "google" | "cohere" | "grok" | "openrouter" | "alibaba" | "ollama" | "local" | "acp" | "opencode" | "claude-code" | "mock" | "mock-fail";
   model: string;
   operation: string;
   inputTokens: number;
@@ -25,6 +27,7 @@ export async function logAiUsage(params: LogAiUsageParams): Promise<void> {
         googleApiKey: true,
         grokApiKey: true,
         openrouterApiKey: true,
+        alibabaApiKey: true,
         claudeCodeApiKey: true,
         claudeCodeAuthMode: true,
       },
@@ -35,13 +38,14 @@ export async function logAiUsage(params: LogAiUsageParams): Promise<void> {
       return;
     }
 
-    const hasOwnKey =
+    const hasOwnKey = params.usedOwnKey ?? (
       (params.provider === "anthropic" && !!org.anthropicApiKey) ||
       (params.provider === "openai" && !!org.openaiApiKey) ||
       (params.provider === "google" && !!org.googleApiKey) ||
       (params.provider === "cohere" && !!org.cohereApiKey) ||
       (params.provider === "grok" && !!org.grokApiKey) ||
       (params.provider === "openrouter" && !!org.openrouterApiKey) ||
+      (params.provider === "alibaba" && !!org.alibabaApiKey) ||
       // Claude Code: api-key mode bills against the org key; subscription mode
       // shells out to the local `claude` CLI (the user's own auth) — own-key.
       (params.provider === "claude-code" &&
@@ -54,7 +58,7 @@ export async function logAiUsage(params: LogAiUsageParams): Promise<void> {
       params.provider === "opencode" ||
       // Test doubles — zero cost.
       params.provider === "mock" ||
-      params.provider === "mock-fail";
+      params.provider === "mock-fail");
 
     // Compute the platform charge up front (needed for both the deduction and
     // the cost snapshot). Own-key usage is never charged.

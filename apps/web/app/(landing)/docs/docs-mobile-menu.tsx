@@ -45,6 +45,7 @@ const sections: MenuSection[] = [
     items: [
       { href: "/docs/skills", label: "Skills" },
       { href: "/docs/cli", label: "CLI" },
+      { href: "/docs/cli/ai-agents", label: "AI Coding Agents" },
       {
         href: "/docs/cli/claude-code-integration",
         label: "Claude Code Integration",

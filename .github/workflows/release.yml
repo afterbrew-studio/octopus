@@ -85,8 +85,8 @@ jobs:
         run: |
           REF_NAME=${GITHUB_REF#refs/tags/}
           SEMVER=${REF_NAME#v}
-          echo "semver=$SEMVER" >> $GITHUB_OUTPUT
-          echo "image_name=ghcr.io/${GITHUB_REPOSITORY,,}" >> $GITHUB_OUTPUT
+          echo "semver=$SEMVER" >> "$GITHUB_OUTPUT"
+          echo "image_name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
 
       - name: Build + push image (self-host distribution)
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
@@ -148,8 +148,8 @@ jobs:
         run: |
           REF_NAME=${GITHUB_REF#refs/tags/}
           SEMVER=${REF_NAME#v}
-          echo "semver=$SEMVER" >> $GITHUB_OUTPUT
-          echo "image_name=ghcr.io/${GITHUB_REPOSITORY,,}" >> $GITHUB_OUTPUT
+          echo "semver=$SEMVER" >> "$GITHUB_OUTPUT"
+          echo "image_name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
 
       - name: Build + push image (hosted deploy variant)
         if: ${{ vars.NEXT_PUBLIC_PUBBY_KEY != '' && vars.NEXT_PUBLIC_GITHUB_APP_SLUG != '' }}
@@ -181,16 +181,51 @@ jobs:
           cache-from: type=gha,scope=prod
           cache-to: type=gha,mode=max,scope=prod
 
-  # ── GitHub Release (once, after both images are pushed) ────────────────────
+  # Standalone connector image, versioned in the existing PUBLIC distribution
+  # package. Its dedicated tag never moves the self-host app tags or latest alias.
+  forgejo-connector:
+    needs: [verify-changelog]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_PAT }}
+      - name: Derive connector tags
+        id: tags
+        run: |
+          SEMVER=${GITHUB_REF#refs/tags/v}
+          echo "semver=$SEMVER" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}-selfhost" >> "$GITHUB_OUTPUT"
+      - name: Build and push connector
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: packages/forgejo-connector/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ steps.tags.outputs.image }}:forgejo-connector-${{ steps.tags.outputs.semver }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.tags.outputs.semver }}
+          cache-from: type=gha,scope=forgejo-connector
+          cache-to: type=gha,mode=max,scope=forgejo-connector
+
+  # ── GitHub Release (once, after all images are pushed) ────────────────────
   release:
-    needs: [selfhost, prod]
+    needs: [selfhost, prod, forgejo-connector]
     runs-on: ubuntu-latest
     steps:
       - name: Derive semver
         id: tags
         run: |
           REF_NAME=${GITHUB_REF#refs/tags/}
-          echo "semver=${REF_NAME#v}" >> $GITHUB_OUTPUT
+          echo "semver=${REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
@@ -198,6 +233,11 @@ jobs:
           generate_release_notes: true
           name: ${{ steps.tags.outputs.semver }}
           body: |
+            Octopus Cloud can now connect to private LAN/VPN Forgejo through a local
+            connector. Choose your setup at https://octopus-review.ai/docs/integrations#forgejo.
+            The standalone connector image is
+            `ghcr.io/octopusreview/octopus-selfhost:forgejo-connector-${{ steps.tags.outputs.semver }}`.
+
             To upgrade a self-hosted instance, pull the new public image and
             apply migrations (the runtime image ships no migrations, so run them
             from a checkout of this tag):

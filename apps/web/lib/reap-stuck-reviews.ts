@@ -103,7 +103,7 @@ export async function reapStuckReviews(
       // knows: the worker that would have finalised it is gone. The terminalAt
       // guard keeps the "written once" property under a race with a late worker.
       if (attemptId) {
-        await prisma.reviewAttempt.updateMany({
+        await prisma.reviewRun.updateMany({
           where: { id: attemptId, terminalAt: null },
           data: {
             state: "failed",

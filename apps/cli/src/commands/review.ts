@@ -4,9 +4,8 @@ import { loadCredentials, type Credentials } from "../lib/credentials.js";
 import { loadConfig } from "../lib/config.js";
 import { getJson, postJson } from "../lib/api.js";
 import { ensureRepoIndexed } from "../lib/local-index.js";
-import { parsePrArg, prTerms, localizeMessage } from "../lib/pr-url.js";
+import { parsePrArg, prTerms, localizeMessage, reviewPrArgument } from "../lib/pr-url.js";
 import { resolveRepo } from "../lib/repo-resolver.js";
-import { positionals } from "../lib/args.js";
 import { sanitizeTerminal } from "../lib/output.js";
 
 /**
@@ -90,7 +89,7 @@ export async function reviewCommand(argv: string[]): Promise<number> {
   // server-side review of an existing PR (posted as comments) — distinct from
   // the local working-tree diff review below. A positional arg (one that isn't
   // a flag value) signals PR intent.
-  const prArg = flagValue(argv, "--pr") ?? positionals(argv, ["--since", "--format", "--pr"])[0];
+  const prArg = reviewPrArgument(argv);
   if (prArg) {
     return await reviewPr(creds, prArg);
   }

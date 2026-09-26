@@ -1,3 +1,4 @@
+import "server-only";
 import { authenticateApiToken } from "@/lib/api-auth";
 import { prisma } from "@octopus/db";
 import { runIndexingInBackground } from "@/lib/indexing-runner";
@@ -8,6 +9,7 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const result = await authenticateApiToken(request);
+  if (result instanceof Response) return result; // account-standing hold (403), pass through
   if (!result) {
     return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
@@ -15,7 +17,7 @@ export async function POST(
   const { id } = await params;
 
   const repo = await prisma.repository.findFirst({
-    where: { id, organizationId: result.org.id, isActive: true },
+    where: { id, organizationId: result.org.id, isActive: true, dismissedAt: null },
   });
 
   if (!repo) {
@@ -38,10 +40,13 @@ export async function POST(
   // same shape as a web-triggered one. A fresh AbortController + a no-op log
   // sink are fine here: the CLI polls status rather than subscribing to the
   // pubby channel (its events simply have no listener).
-  await prisma.repository.update({
-    where: { id: repo.id },
+  const claim = await prisma.repository.updateMany({
+    where: { id: repo.id, organizationId: result.org.id, isActive: true, dismissedAt: null, indexStatus: repo.indexStatus, indexedAt: repo.indexedAt },
     data: { indexStatus: "indexing" },
   });
+  if (!claim.count) {
+    return Response.json({ error: "Repository state changed or work is already in progress" }, { status: 409 });
+  }
 
   runIndexingInBackground(
     repo.id,

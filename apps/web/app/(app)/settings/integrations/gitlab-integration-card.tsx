@@ -14,11 +14,14 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { IconBrandGitlab, IconArrowRight, IconCopy, IconCheck } from "@tabler/icons-react";
 import { disconnectGitlab, startGitlabOAuth } from "./actions";
+import { IntegrationSetupPanel } from "./integration-setup-panel";
+import type { IntegrationSetupStatus } from "@/lib/integration-setup";
 
 type GitlabData = {
   namespaceName: string;
   namespacePath: string;
   gitlabHost: string;
+  setupStatus?: IntegrationSetupStatus;
 } | null;
 
 const DEFAULT_HOST = "https://gitlab.com";
@@ -27,13 +30,16 @@ const REQUIRED_SCOPES = "api read_api read_user read_repository write_repository
 export function GitlabIntegrationCard({
   data,
   redirectUri,
+  canManage,
 }: {
   data: GitlabData;
   redirectUri: string | null;
+  canManage: boolean;
 }) {
   const [isPending, startTransition] = useTransition();
   const [host, setHost] = useState(DEFAULT_HOST);
   const [copied, setCopied] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const isSelfHosted =
     host.trim() !== "" && host.replace(/\/+$/, "") !== DEFAULT_HOST;
@@ -61,13 +67,13 @@ export function GitlabIntegrationCard({
 
   if (!data) {
     return (
-      <Card>
+      <Card id="gitlab" className="min-w-0 scroll-mt-6">
         <CardHeader>
-          <div className="flex items-center gap-3">
-            <div className="flex size-10 items-center justify-center">
+          <div className="flex min-w-0 items-center gap-3">
+            <div className="flex size-10 shrink-0 items-center justify-center">
               <IconBrandGitlab className="size-6 text-[#FC6D26]" />
             </div>
-            <div>
+            <div className="min-w-0">
               <CardTitle className="text-base">GitLab</CardTitle>
               <CardDescription>
                 Connect your GitLab group or self-hosted instance for code reviews.
@@ -81,10 +87,12 @@ export function GitlabIntegrationCard({
             <ol className="text-sm text-muted-foreground space-y-1.5 list-decimal list-inside mb-5">
               <li>Enter your GitLab host and group/user namespace</li>
               <li>Self-hosted instances: register an OAuth application on your GitLab and paste its credentials below</li>
-              <li>Authorize Octopus on GitLab — projects sync automatically</li>
+              <li>Authorize Octopus on GitLab, then check repository sync and webhook setup here</li>
             </ol>
 
             <form action={startGitlabOAuth} className="space-y-3">
+              {!canManage && <p className="text-muted-foreground text-sm">An organization owner or admin can connect GitLab.</p>}
+              <fieldset disabled={!canManage} className="space-y-3">
               <div className="space-y-1.5">
                 <Label htmlFor="gl-host">GitLab host</Label>
                 <Input
@@ -168,15 +176,16 @@ export function GitlabIntegrationCard({
                 </div>
               )}
 
-              <Button className="w-full" size="lg" type="submit">
+              <Button className="w-full" size="lg" type="submit" disabled={!canManage}>
                 <IconBrandGitlab className="mr-2 size-4" />
                 Connect GitLab
                 <IconArrowRight className="ml-2 size-4" />
               </Button>
 
               <p className="text-muted-foreground text-center text-xs">
-                Secure access only - we never store your code.
+                Octopus accesses repository content for indexing and posts review comments.
               </p>
+              </fieldset>
             </form>
           </div>
         </CardContent>
@@ -185,16 +194,16 @@ export function GitlabIntegrationCard({
   }
 
   return (
-    <Card>
+    <Card id="gitlab" className="min-w-0 scroll-mt-6">
       <CardHeader>
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <div className="flex size-10 items-center justify-center">
               <IconBrandGitlab className="size-6 text-[#FC6D26]" />
             </div>
             <div>
               <CardTitle className="text-base">GitLab</CardTitle>
-              <CardDescription>
+              <CardDescription className="break-all">
                 Connected to <span className="font-medium">{data.namespaceName}</span>
                 {" "}
                 <span className="text-muted-foreground">({data.namespacePath})</span>
@@ -205,25 +214,31 @@ export function GitlabIntegrationCard({
             </div>
           </div>
           <Badge variant="secondary" className="text-green-700 bg-green-100">
-            Connected
+            Access authorized
           </Badge>
         </div>
       </CardHeader>
-      <CardContent>
-        <div className="border-t pt-4">
+      <CardContent className="space-y-4">
+        <IntegrationSetupPanel provider="gitlab" setupStatus={data.setupStatus} canManage={canManage} />
+        {canManage && <div className="border-t pt-4">
           <Button
             variant="destructive"
             size="sm"
             disabled={isPending}
             onClick={() => {
-              startTransition(() => {
-                disconnectGitlab();
+              setError(null);
+              startTransition(async () => {
+                try {
+                  const result = await disconnectGitlab();
+                  if (result?.error) setError(result.error);
+                } catch { setError("GitLab could not be disconnected. Try again in a moment."); }
               });
             }}
           >
             Disconnect GitLab
           </Button>
-        </div>
+        </div>}
+        {error && <p role="alert" className="text-destructive text-sm">{error}</p>}
       </CardContent>
     </Card>
   );

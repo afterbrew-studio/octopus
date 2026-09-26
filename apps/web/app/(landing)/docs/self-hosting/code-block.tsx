@@ -11,35 +11,47 @@ export function CodeBlock({
   title?: string;
 }) {
   const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState(false);
 
   const copy = useCallback(async () => {
-    await navigator.clipboard.writeText(children);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    setCopyError(false);
+    try {
+      await navigator.clipboard.writeText(children);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setCopied(false);
+      setCopyError(true);
+    }
   }, [children]);
 
   return (
-    <div className="group relative mb-4 overflow-hidden rounded-lg border border-white/[0.06]">
-      {title && (
-        <div className="border-b border-white/[0.06] bg-white/[0.02] px-4 py-1.5 text-xs text-[#666]">
-          {title}
-        </div>
-      )}
-      <div className="relative">
-        <pre className="overflow-x-auto bg-[#161616] px-4 py-3">
-          <code className="text-sm text-[#ccc]">{children}</code>
-        </pre>
+    <div className="mb-4 min-w-0 overflow-hidden rounded-lg border border-white/10">
+      <div className="flex items-center justify-between gap-3 border-b border-white/10 bg-white/[0.02] px-4 py-2">
+        <span className="min-w-0 text-xs text-[#bbb]">{title ?? "Code"}</span>
         <button
+          type="button"
           onClick={copy}
-          className="absolute right-2 top-2 flex items-center gap-1 rounded-md bg-white/[0.06] px-2 py-1 text-xs text-[#666] transition-opacity hover:bg-white/[0.1] hover:text-white md:opacity-0 md:group-hover:opacity-100"
+          aria-label={`Copy ${title ?? "code"}`}
+          className="flex min-h-9 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-xs text-[#ccc] transition-colors hover:bg-white/[0.1] hover:text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-400"
         >
           {copied ? (
-            <IconCheck className="size-3.5 text-green-400" />
+            <IconCheck aria-hidden="true" className="size-3.5 text-green-400" />
           ) : (
-            <IconCopy className="size-3.5" />
+            <IconCopy aria-hidden="true" className="size-3.5" />
           )}
+          {copied ? "Copied" : "Copy"}
         </button>
       </div>
+      <pre tabIndex={0} aria-label={title ?? "Code"} className="overflow-x-auto bg-[#161616] px-4 py-3 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-cyan-400">
+        <code className="text-sm text-[#ccc]">{children}</code>
+      </pre>
+      <span className="sr-only" role="status">{copied ? `${title ?? "Code"} copied to clipboard.` : ""}</span>
+      {copyError && (
+        <p role="alert" className="border-t border-white/10 px-4 py-3 text-sm text-[#ccc]">
+          Couldn&apos;t copy automatically. Select the code above and copy it manually.
+        </p>
+      )}
     </div>
   );
 }

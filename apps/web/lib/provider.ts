@@ -1,3 +1,4 @@
+import "server-only";
 import { prisma } from "@octopus/db";
 import * as github from "@/lib/github";
 import * as bitbucket from "@/lib/bitbucket";
@@ -245,7 +246,7 @@ class GitlabProviderClient implements ProviderClient {
 
 /**
  * Create a provider client for a given repository.
- * Resolves the correct provider (GitHub, Bitbucket, GitLab) and returns a unified interface.
+ * Supports GitHub, Bitbucket and GitLab; Forgejo callers use forgejo.ts directly.
  */
 export async function getProviderClient(repoId: string): Promise<ProviderClient> {
   const repo = await prisma.repository.findUniqueOrThrow({
@@ -269,6 +270,8 @@ export async function getProviderClient(repoId: string): Promise<ProviderClient>
   if (repo.provider === "gitlab") {
     return new GitlabProviderClient(repo.organizationId, repo.fullName);
   }
+
+  if (repo.provider !== "github") throw new Error(`Unsupported repository provider: ${repo.provider}`);
 
   // Default: GitHub
   const installationId = repo.installationId ?? repo.organization.githubInstallationId;

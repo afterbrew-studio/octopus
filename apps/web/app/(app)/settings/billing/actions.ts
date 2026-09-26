@@ -1,5 +1,8 @@
 "use server";
 
+import "server-only";
+import { beginMarketingPayment } from "@/lib/marketing-capture";
+
 import { headers, cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
@@ -67,7 +70,9 @@ export async function purchaseCredits(
   // repeat purchase after the window lands in a new bucket → a new charge.
   const bucket = Math.floor(Date.now() / 30_000);
   const idempotencyKey = `purchase-${result.orgId}-${amount}-${bucket}`;
-  const charge = await chargeCreditsOffSession(result.orgId, amount, idempotencyKey);
+  const marketingCookie = (await headers()).get("cookie");
+  const attributionId = await beginMarketingPayment(result.orgId, idempotencyKey, marketingCookie);
+  const charge = await chargeCreditsOffSession(result.orgId, amount, idempotencyKey, attributionId);
   if (charge.status === "succeeded") {
     revalidatePath("/settings/billing");
     return { success: true };
@@ -87,6 +92,7 @@ export async function purchaseCredits(
     result.orgId,
     amount,
     `${process.env.BETTER_AUTH_URL || "http://localhost:3000"}/settings/billing`,
+    marketingCookie,
   );
 
   return { url };
@@ -209,10 +215,13 @@ export async function subscribeToPlan(
     // (which saves the card for renewals). The idempotency key is stable for
     // the calendar day, so a double-clicked subscribe can't charge twice.
     const day = new Date().toISOString().slice(0, 10);
+    const marketingCookie = (await headers()).get("cookie");
+    const attributionId = await beginMarketingPayment(result.orgId, `sub-start-${result.orgId}-${tier}-${day}`, marketingCookie);
     const chargeRef = await chargeSubscription(
       result.orgId,
       tier,
       `sub-start-${result.orgId}-${tier}-${day}`,
+      attributionId,
     );
     if (chargeRef) {
       await grantSubscriptionPeriod(result.orgId, tier, chargeRef, addOneMonth(new Date()));
@@ -227,6 +236,7 @@ export async function subscribeToPlan(
       plan.name,
       plan.priceUsd,
       `${process.env.BETTER_AUTH_URL || "http://localhost:3000"}/settings/billing`,
+      marketingCookie,
     );
     return { url };
   } catch (err) {

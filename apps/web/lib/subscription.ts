@@ -1,3 +1,5 @@
+import "server-only";
+import { bindMarketingPayment } from "./marketing-capture";
 import { prisma } from "@octopus/db";
 import { addCredits } from "@/lib/credits";
 import { getStripe, getOffSessionPaymentMethodId } from "@/lib/stripe";
@@ -98,6 +100,7 @@ export async function chargeSubscription(
   orgId: string,
   tier: PaidPlanTier,
   idempotencyKey: string,
+  marketingAttributionId: string | null = null,
 ): Promise<string | null> {
   const org = await prisma.organization.findUnique({
     where: { id: orgId },
@@ -123,6 +126,7 @@ export async function chargeSubscription(
       { idempotencyKey },
     );
     if (paymentIntent.status !== "succeeded") return null;
+    await bindMarketingPayment(marketingAttributionId, paymentIntent.id, paymentIntent);
     return paymentIntent.id;
   } catch (err) {
     console.error(`[subscription] Charge failed for org ${orgId} (${tier}):`, err);

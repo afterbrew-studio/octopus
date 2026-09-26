@@ -1,0 +1,128 @@
+/**
+ * Shared schema.org entities for the marketing site. One Organization entity
+ * (with sameAs profiles) is emitted site-wide from the landing layout and
+ * referenced by @id from page-level schemas, so search engines and LLM
+ * crawlers resolve "Octopus" to one entity and its public profiles.
+ */
+export const SITE_URL = "https://octopus-review.ai";
+export const ORGANIZATION_ID = `${SITE_URL}/#organization`;
+
+export const SOCIAL_PROFILES = [
+  "https://github.com/octopusreview",
+  "https://x.com/octopus_review",
+  "https://www.linkedin.com/company/octopus-review",
+  "https://www.reddit.com/r/octopusreview/",
+  "https://www.youtube.com/@OctopusReview",
+  "https://bsky.app/profile/octopus-review.ai",
+] as const;
+
+export const AI_VENDORS_SENTENCE =
+  "Anthropic Claude, OpenAI GPT, Google Gemini, xAI Grok, Alibaba Qwen, or any model on OpenRouter";
+
+/** Organization without @context, for embedding as publisher/author. */
+export const ORGANIZATION_ENTITY = {
+  "@type": "Organization",
+  "@id": ORGANIZATION_ID,
+  name: "Octopus",
+  alternateName: "Octopus Review",
+  url: SITE_URL,
+  logo: {
+    "@type": "ImageObject",
+    url: `${SITE_URL}/logo.svg`,
+  },
+  description:
+    "Octopus is an AI code review service that reviews every pull request on GitHub, GitLab, Bitbucket and Forgejo with full-repository context and posts severity-rated findings inline.",
+  sameAs: [...SOCIAL_PROFILES],
+} as const;
+
+export const ORGANIZATION_JSON_LD = {
+  "@context": "https://schema.org",
+  ...ORGANIZATION_ENTITY,
+} as const;
+
+/**
+ * WebPage + BreadcrumbList for a documentation page, tied to the Organization
+ * entity by @id. `path` is the route ("/docs/pricing"), `crumb` the label shown
+ * in the docs breadcrumb.
+ */
+export function docsPageJsonLd(input: {
+  title: string;
+  description: string;
+  path: string;
+  crumb: string;
+}) {
+  const url = `${SITE_URL}${input.path}`;
+  return {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "WebPage",
+        "@id": url,
+        url,
+        name: input.title,
+        description: input.description,
+        isPartOf: { "@type": "WebSite", "@id": `${SITE_URL}/#website`, url: SITE_URL, name: "Octopus" },
+        publisher: { "@id": ORGANIZATION_ID },
+        inLanguage: "en",
+      },
+      {
+        "@type": "BreadcrumbList",
+        itemListElement: [
+          { "@type": "ListItem", position: 1, name: "Docs", item: `${SITE_URL}/docs/getting-started` },
+          { "@type": "ListItem", position: 2, name: input.crumb, item: url },
+        ],
+      },
+    ],
+  };
+}
+
+/**
+ * Product + Offer for /docs/pricing. Octopus has no per-seat plan: signup is
+ * free with starter credits and usage is billed at 2x provider list price, so
+ * the Offer is price 0 with the usage terms in its description.
+ */
+export function pricingProductJsonLd() {
+  const url = `${SITE_URL}/docs/pricing`;
+  return {
+    "@context": "https://schema.org",
+    "@type": "Product",
+    "@id": `${SITE_URL}/#product`,
+    name: "Octopus AI Code Review",
+    description:
+      "AI code review for pull requests on GitHub, GitLab, Bitbucket and Forgejo. Usage-based: free credits on signup, then AI usage billed at 2x the provider's list price. No per-seat fee. Bring your own API keys to pay providers directly.",
+    brand: { "@id": ORGANIZATION_ID },
+    url,
+    category: "Developer Tools",
+    offers: {
+      "@type": "Offer",
+      url,
+      price: "0",
+      priceCurrency: "USD",
+      availability: "https://schema.org/InStock",
+      description:
+        "Free to start with starter credits. Reviews are billed per token at 2x the AI provider's list price; with your own API keys the model call is free.",
+      seller: { "@id": ORGANIZATION_ID },
+    },
+  };
+}
+
+/** Blog index ItemList: the posts shown on the page, in order. */
+export function blogItemListJsonLd(posts: Array<{ slug: string; title: string; publishedAt: Date | null }>) {
+  return {
+    "@type": "ItemList",
+    itemListOrder: "https://schema.org/ItemListOrderDescending",
+    numberOfItems: posts.length,
+    itemListElement: posts.map((post, index) => ({
+      "@type": "ListItem",
+      position: index + 1,
+      url: `${SITE_URL}/blog/${post.slug}`,
+      name: post.title,
+      ...(post.publishedAt ? { datePublished: post.publishedAt.toISOString() } : {}),
+    })),
+  };
+}
+
+/** JSON for a <script type="application/ld+json"> body; closes no script tag early. */
+export function jsonLd(value: unknown): string {
+  return JSON.stringify(value).replace(/<\/script>/gi, "<\\/script>");
+}

@@ -713,12 +713,14 @@ async function main() {
     // Anthropic
     // Claude 5 frontier model; top opt-in "max" tier. sortOrder -1 pins it above
     // the 0-indexed list without a duplicate order value.
+    { modelId: "claude-fable-5-1", displayName: "Claude Fable 5.1", provider: "anthropic", category: "llm", inputPrice: 10, outputPrice: 50, sortOrder: -2 },
     { modelId: "claude-fable-5", displayName: "Claude Fable 5", provider: "anthropic", category: "llm", inputPrice: 10, outputPrice: 50, sortOrder: -1 },
     // Opus 5 uses Anthropic's published undated API id ("claude-opus-5"); no dated
     // canonical id was published, and inventing one would fail the API call + the
     // exact-key pricing lookup in cost.ts. Premium tier — not the platform default.
     { modelId: "claude-opus-5", displayName: "Claude Opus 5", provider: "anthropic", category: "llm", inputPrice: 5, outputPrice: 25, sortOrder: 0 },
     { modelId: "claude-opus-4-8", displayName: "Claude Opus 4.8", provider: "anthropic", category: "llm", inputPrice: 5, outputPrice: 25, sortOrder: 1 },
+    { modelId: "claude-sonnet-5", displayName: "Claude Sonnet 5", provider: "anthropic", category: "llm", inputPrice: 2, outputPrice: 10, sortOrder: 2 },
     { modelId: "claude-sonnet-4-6-20250619", displayName: "Claude Sonnet 4.6", provider: "anthropic", category: "llm", inputPrice: 3, outputPrice: 15, sortOrder: 2 },
     { modelId: "claude-sonnet-4-20250514", displayName: "Claude Sonnet 4", provider: "anthropic", category: "llm", inputPrice: 3, outputPrice: 15, sortOrder: 3 },
     { modelId: "claude-opus-4-20250514", displayName: "Claude Opus 4", provider: "anthropic", category: "llm", inputPrice: 15, outputPrice: 75, sortOrder: 4 },
@@ -735,6 +737,8 @@ async function main() {
     // OpenRouter — the "openrouter/…"-namespaced id forces OpenRouter routing.
     // Price is an estimate (~$0.10/$0.15 per 1M in/out for Hermes 3 8B).
     { modelId: "openrouter/nousresearch/hermes-3-llama-3.1-8b", displayName: "Nous Hermes 3 8B (OpenRouter)", provider: "openrouter", category: "llm", inputPrice: 0.1, outputPrice: 0.15, sortOrder: 10 },
+    // Alibaba Cloud Model Studio — "qwen3.8-max"-prefixed ids route to DashScope.
+    { modelId: "qwen3.8-max-0902", displayName: "Qwen3.8-Max-0902", provider: "alibaba", category: "llm", inputPrice: 2, outputPrice: 6, sortOrder: 11 },
     // Ollama (local — runs on the operator's own machine, zero cost)
     { modelId: "ollama:qwen2.5-coder:32b", displayName: "Qwen 2.5 Coder 32B (Ollama)", provider: "ollama", category: "llm", inputPrice: 0, outputPrice: 0, sortOrder: 20 },
     { modelId: "ollama:llama3.3", displayName: "Llama 3.3 (Ollama)", provider: "ollama", category: "llm", inputPrice: 0, outputPrice: 0, sortOrder: 21 },

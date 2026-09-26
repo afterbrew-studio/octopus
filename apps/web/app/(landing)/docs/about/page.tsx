@@ -6,6 +6,7 @@ import {
   IconEye,
   IconRocket,
 } from "@tabler/icons-react";
+import { docsPageJsonLd, jsonLd } from "@/lib/structured-data";
 import { GetInTouchModal } from "@/components/get-in-touch-modal";
 import { TrackedAnchor } from "@/components/tracked-link";
 
@@ -21,6 +22,19 @@ export const metadata = {
 export default function AboutPage() {
   return (
     <article className="max-w-3xl">
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{
+          __html: jsonLd(
+            docsPageJsonLd({
+              title: metadata.title,
+              description: metadata.description,
+              path: "/docs/about",
+              crumb: "About",
+            }),
+          ),
+        }}
+      />
       <div className="mb-8">
         <div className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.2em] text-[#555]">
           <IconInfoCircle className="size-4" />
@@ -71,7 +85,7 @@ export default function AboutPage() {
           <ValueCard
             icon={<IconCode className="size-4" />}
             title="No Vendor Lock-in"
-            description="Self-host on your own infrastructure. Your code never has to leave your servers. Switch providers or fork the project at any time."
+            description="Self-host Octopus and choose your AI services. Local services can keep code processing on your infrastructure; external providers receive the code needed for their work."
           />
           <ValueCard
             icon={<IconHeart className="size-4" />}
@@ -87,7 +101,7 @@ export default function AboutPage() {
       </Section>
 
       {/* Tech Stack */}
-      <Section title="Built With">
+      <Section title="What is Octopus built with?">
         <Paragraph>
           Octopus is built on modern, battle-tested technologies:
         </Paragraph>
@@ -95,7 +109,7 @@ export default function AboutPage() {
           <TechCard name="Next.js" detail="App Router, React 19" />
           <TechCard name="Prisma" detail="PostgreSQL ORM" />
           <TechCard name="Qdrant" detail="Vector search" />
-          <TechCard name="Claude & OpenAI" detail="AI review engine" />
+          <TechCard name="Claude, GPT, Gemini, Grok, Qwen" detail="AI review models, plus OpenRouter" />
           <TechCard name="Tailwind CSS" detail="Styling" />
           <TechCard name="TypeScript" detail="End-to-end type safety" />
         </div>
@@ -113,7 +127,7 @@ export default function AboutPage() {
           horizon:
         </Paragraph>
         <ul className="mb-4 space-y-2">
-          <VisionItem text="Deeper integration with more Git providers beyond GitHub, GitLab, and Bitbucket" />
+          <VisionItem text="Deeper integration with more Git providers beyond GitHub, GitLab, Bitbucket, and Forgejo" />
           <VisionItem text="Smarter review engine that learns from your team's feedback over time" />
           <VisionItem text="Expanded CLI capabilities for CI/CD pipeline integration" />
           <VisionItem text="Plugin system for custom review rules and checks" />

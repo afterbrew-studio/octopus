@@ -1,6 +1,8 @@
 import "server-only";
+import { observeAiRequest, completionEvidence } from "./request-evidence";
 import OpenAI from "openai";
 import type { Provider, AiCreateParams, AiResponse } from "./index";
+import { stripLoneSurrogates } from "./sanitize";
 
 let platformClient: OpenAI | null = null;
 
@@ -22,10 +24,10 @@ async function callOpenAIResponses(
   client: OpenAI,
   params: AiCreateParams,
 ): Promise<AiResponse> {
-  const response = await client.responses.create({
+  const response = await client.responses.create(observeAiRequest(params, "openai", {
     model: params.model,
-    instructions: params.system,
-    input: params.messages.map((m) => ({ role: m.role, content: m.content })),
+    instructions: params.system === undefined ? undefined : stripLoneSurrogates(params.system),
+    input: params.messages.map((m) => ({ role: m.role, content: stripLoneSurrogates(m.content) })),
     max_output_tokens: params.maxTokens,
     ...(params.responseSchema
       ? {
@@ -39,7 +41,7 @@ async function callOpenAIResponses(
           },
         }
       : {}),
-  });
+  }));
 
   const text = response.output_text ?? "";
   // Surface non-text or truncated responses as errors instead of silently
@@ -54,6 +56,7 @@ async function callOpenAIResponses(
 
   return {
     text,
+    completion: completionEvidence(response.status, ["completed"]),
     provider: "openai",
     model: params.model,
     usage: {
@@ -77,13 +80,13 @@ export const openaiProvider: Provider = {
 
     const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [];
     if (params.system) {
-      messages.push({ role: "system", content: params.system });
+      messages.push({ role: "system", content: stripLoneSurrogates(params.system) });
     }
     for (const m of params.messages) {
-      messages.push({ role: m.role, content: m.content });
+      messages.push({ role: m.role, content: stripLoneSurrogates(m.content) });
     }
 
-    const response = await client.chat.completions.create({
+    const response = await client.chat.completions.create(observeAiRequest(params, "openai", {
       model: params.model,
       max_completion_tokens: params.maxTokens,
       messages,
@@ -99,12 +102,13 @@ export const openaiProvider: Provider = {
             },
           }
         : {}),
-    });
+    }));
 
     const text = response.choices[0]?.message?.content ?? "";
 
     return {
       text,
+      completion: completionEvidence(response.choices[0]?.finish_reason, ["stop"]),
       provider: "openai",
       model: params.model,
       usage: {

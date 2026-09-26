@@ -91,10 +91,10 @@ async function jsonRequest<T>(url: string, init: RequestInit): Promise<ApiResult
   return { ok: true, data: parsed as T };
 }
 
-export async function del<T>(url: string, bearerToken?: string): Promise<ApiResult<T>> {
+export async function del<T>(url: string, bearerToken?: string, options: PostJsonOptions = {}): Promise<ApiResult<T>> {
   const headers: Record<string, string> = { "user-agent": USER_AGENT };
   if (bearerToken) headers.authorization = `Bearer ${bearerToken}`;
-  return await jsonRequest<T>(url, { method: "DELETE", headers });
+  return await jsonRequest<T>(url, { method: "DELETE", headers, ...(options.timeoutMs ? { signal: AbortSignal.timeout(options.timeoutMs) } : {}) });
 }
 
 export type StreamResult = { ok: true } | { ok: false; status: number; error: string };

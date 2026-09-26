@@ -1,173 +1,84 @@
 <p align="center">
-  <img width="157" height="58" alt="image" src="https://github.com/user-attachments/assets/1b786c2d-7910-4f07-8868-6403166ffa6f" />
-</p>
-
-<p align="center">
-  <a href="https://github.com/octopusreview/octopus/actions/workflows/ci.yml"><img src="https://github.com/octopusreview/octopus/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
-  <a href="https://github.com/octopusreview/octopus/actions/workflows/dependabot/dependabot-updates"><img src="https://github.com/octopusreview/octopus/actions/workflows/dependabot/dependabot-updates/badge.svg" alt="Dependabot Updates" /></a>
-  <a href="https://github.com/octopusreview/octopus/actions/workflows/github-code-scanning/codeql"><img src="https://github.com/octopusreview/octopus/actions/workflows/github-code-scanning/codeql/badge.svg" alt="CodeQL" /></a>
-  <a href="LICENSE.md"><img src="https://img.shields.io/badge/License-Modified%20MIT-blue.svg" alt="License: Modified MIT" /></a>
-  <a href="https://github.com/octopusreview/octopus/discussions"><img src="https://img.shields.io/github/discussions/octopusreview/octopus" alt="GitHub Discussions" /></a>
-</p>
-
-<p align="center">
-  <a href="https://x.com/octopus_review"><img src="https://img.shields.io/badge/@octopus__review-212429?logo=x&logoColor=white" alt="X (Twitter)" /></a>
-  <a href="https://discord.gg/qyuWTXghbS"><img src="https://img.shields.io/badge/Discord-Join%20us-5865F2?logo=discord&logoColor=white" alt="Discord" /></a>
-  <a href="https://www.youtube.com/@OctopusReview"><img src="https://img.shields.io/badge/YouTube-@OctopusReview-FF0000?logo=youtube&logoColor=white" alt="YouTube" /></a>
-  <a href="https://www.linkedin.com/company/octopus-review"><img src="https://img.shields.io/badge/LinkedIn-Octopus%20Review-0A66C2?logo=linkedin&logoColor=white" alt="LinkedIn" /></a>
+  <img src="apps/web/public/octopus-logo.png" width="72" alt="Octopus" />
 </p>
 
 # Octopus
 
-AI-powered PR review tool. Multi-armed code analysis — no bug escapes.
+AI code review for your pull requests. Get a review summary, severity-ranked findings and suggested fixes in GitHub, GitLab, Bitbucket or Forgejo.
 
-Octopus analyzes pull and merge requests via GitHub, GitLab, and Bitbucket webhooks, creates code embeddings with vector search, reviews changes using Claude or OpenAI, and posts findings as inline comments with severity levels.
+**[Try Octopus Cloud](https://octopus-review.ai/login)** · **[Self-host Octopus](https://octopus-review.ai/docs/self-hosting)** · [Documentation](https://octopus-review.ai/docs)
+
+<p>
+  <a href="https://github.com/octopusreview/octopus/actions/workflows/ci.yml"><img src="https://github.com/octopusreview/octopus/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="LICENSE.md"><img src="https://img.shields.io/badge/License-Modified%20MIT-blue.svg" alt="License: Modified MIT" /></a>
+  <a href="https://github.com/octopusreview/octopus/discussions"><img src="https://img.shields.io/github/discussions/octopusreview/octopus" alt="GitHub Discussions" /></a>
+</p>
+
+[![A real Octopus inline review finding with severity, explanation and a suggested code change](docs/screenshots/pr-finding.png)](https://github.com/octopusreview/octopus/pull/744#discussion_r3775719896)
+
+*An actual inline finding from [public PR #744](https://github.com/octopusreview/octopus/pull/744#discussion_r3775719896). The [author confirmed the fix](https://github.com/octopusreview/octopus/pull/744#discussion_r3775726260). Captured 11 September 2026.*
+
+## Choose your offering
+
+| | Octopus Cloud | Octopus Self-hosted |
+| --- | --- | --- |
+| Hosting | Managed by Octopus. | Run on your own infrastructure. |
+| Setup | Sign in, connect your code host and select repositories. | Deploy with Docker Compose, then configure your code host and AI providers. |
+| Costs | Usage-based pricing; bring your own provider keys if preferred. | You cover hosting and AI provider costs. Source available under the [Modified MIT License](LICENSE.md). |
+| Start here | [Cloud quickstart](https://octopus-review.ai/docs/getting-started) · [Pricing](https://octopus-review.ai/docs/pricing) | [Self-hosting guide](https://octopus-review.ai/docs/self-hosting) |
+
+## Getting started
+
+### Octopus Cloud
+
+For GitHub projects, give your coding AI the [homepage setup prompt](https://octopus-review.ai/#agent-setup). It uses the native CLI to set up the repository in your current project; you approve sign-in and GitHub access. See the [CLI guide](https://octopus-review.ai/docs/cli) for installation and agent setup.
+
+To set up through the dashboard instead:
+
+1. [Sign in](https://octopus-review.ai/login) with Google, GitHub, Microsoft or an email magic link.
+2. Create your organization, connect GitHub, GitLab, Bitbucket or Forgejo, and choose the repositories to review.
+3. Follow the dashboard guide: confirm repository readiness, open a pull request or merge request, then wait for the first successfully published review. See the [first-review instructions](https://octopus-review.ai/docs/getting-started).
+
+Forgejo has three connection options:
+
+- [Octopus Cloud + public HTTPS](https://octopus-review.ai/docs/integrations#forgejo-cloud-public): connect directly with a personal access token.
+- [Octopus Cloud + private LAN/VPN](https://octopus-review.ai/docs/integrations#forgejo-cloud-private): run the local connector on your network. It connects outward to Octopus Cloud; Forgejo stays private.
+- [Self-hosted Octopus + private LAN/VPN](https://octopus-review.ai/docs/integrations#forgejo-self-hosted): connect directly from your own Octopus deployment with the explicit allowed origins.
+
+All three use signed repository webhooks. Octopus and your configured AI services process code for reviews, including when a local connector is used. Hosting Forgejo yourself does not keep Cloud review processing on your network.
+
+<p align="center">
+  <a href="https://octopus-review.ai/login"><img src="docs/screenshots/cloud-sign-in.png" width="440" alt="The live Octopus Cloud sign-in screen, with Google, GitHub, Microsoft and email options" /></a>
+</p>
+
+*The real Cloud sign-in screen, captured 11 September 2026. See the [getting-started guide](https://octopus-review.ai/docs/getting-started) for the remaining setup steps.*
+
+<a id="self-hosting-with-docker"></a>
+
+### Octopus Self-hosted
+
+Deploy Octopus on infrastructure you manage, with control over configuration and model providers. Follow the [self-hosting guide](https://octopus-review.ai/docs/self-hosting) for Docker Compose, environment setup and migrations, then configure your [GitHub App](https://octopus-review.ai/docs/github-app) or another [code-host integration](https://octopus-review.ai/docs/integrations).
 
 ## Features
 
-- **Automated PR & MR Reviews** — AI-powered code review with severity indicators (🔴 Critical, 🟠 Major, 🟡 Minor, 🔵 Info, 💡 Suggestion)
-- **Codebase Indexing** — Chunks and embeds your code into Qdrant for context-aware reviews
-- **Multi-Provider AI** — Claude (Anthropic), OpenAI, Google, and Cohere models per organization, with Bring Your Own Keys (BYOK)
-- **GitHub, GitLab & Bitbucket** — Native webhook integrations across all three platforms, including self-managed GitLab
-- **Knowledge Center** — Org-level knowledge plus pinned documents that are always included in every review
-- **Repo Config Files** — Honor `.octopus.md`, `AGENTS.md`, or `CLAUDE.md` as repo-scoped review rules, extracted in a sandboxed pass
-- **Label-Triggered Review** — Commit an `octopus.json` naming the labels that ask for a review; adding one to a PR starts one, independently of the auto-review setting (GitHub only; GitLab and Bitbucket have no equivalent)
-- **Slack Integration** — Ask questions about your codebase directly from Slack
-- **Linear & Jira Integration** — Create issues from review findings with one click
-- **CLI** — `@octp/cli` for local review runs, plus a Claude Code skill for terminal workflows
-- **Review Output Language** — Org-level setting for the prose language of summaries and findings (code stays in source language)
-- **Repository Graph** — Structural and semantic edges across your codebase
-- **Real-time Updates** — Live dashboard updates via WebSocket (Pubby)
-- **Usage & Cost Tracking** — Per-org token usage tracking with monthly spend limits
-- **Team Management** — Multi-org support with role-based access
-- **Free for Open Source** — Public OSS repositories get free reviews via a separate community pipeline
-
-## Tech Stack
-
-- **Runtime:** [Bun](https://bun.sh)
-- **Framework:** [Next.js 16](https://nextjs.org) (App Router, React 19)
-- **Styling:** [Tailwind CSS 4](https://tailwindcss.com) + [shadcn/ui](https://ui.shadcn.com)
-- **Database:** PostgreSQL with [Prisma](https://prisma.io)
-- **Vector Store:** [Qdrant](https://qdrant.tech)
-- **Auth:** [Better Auth](https://www.better-auth.com) (Google, GitHub OAuth, Magic Link)
-- **Monorepo:** [Turborepo](https://turbo.build)
-
-## Project Structure
-
-```
-octopus/
-├── apps/
-│   ├── web/              # Next.js web application
-│   └── cli/              # octp CLI (@octp/cli)
-├── packages/
-│   └── db/               # Prisma schema & shared DB client
-└── tools/
-    ├── tsconfig/         # Shared TypeScript configs
-    └── eslint-config/    # Shared ESLint config
-```
-
-## Getting Started
-
-### Prerequisites
-
-- [Bun](https://bun.sh) (v1.3.4+)
-- PostgreSQL
-- [Qdrant](https://qdrant.tech) instance
-- API keys for Claude (Anthropic) and/or OpenAI
-
-### Installation
-
-```bash
-# Clone the repository
-git clone https://github.com/octopusreview/octopus.git
-cd octopus
-
-# Install dependencies
-bun install
-
-# Set up environment variables
-cp .env.example .env
-# Edit .env with your configuration
-
-# Generate Prisma client
-bun run db:generate
-
-# Run database migrations
-bun run db:migrate
-
-# Start the development server
-bun run dev
-```
-
-## Commands
-
-```bash
-bun install              # Install dependencies
-bun run dev              # Start all apps (Turborepo)
-bun run build            # Build all packages
-bun run lint             # Lint all packages
-bun run typecheck        # Type-check all packages
-
-# Database
-bun run db:generate      # Generate Prisma client
-bun run db:migrate       # Run migrations (dev)
-bun run db:push          # Push schema to DB (no migration)
-bun run db:studio        # Open Prisma Studio
-```
-
-## Self-Hosting with Docker
-
-```bash
-# Clone and configure
-git clone https://github.com/octopusreview/octopus.git
-cd octopus
-cp .env.example .env
-# Edit .env with your API keys and configuration
-
-# Pull the prebuilt public image + start all services (PostgreSQL, Qdrant, Web).
-# The image bakes in email/password login for self-hosted instances — no build.
-export OCTOPUS_VERSION=latest   # or a pinned release, e.g. 1.0.27
-docker compose -f docker-compose.selfhost.yml pull
-docker compose -f docker-compose.selfhost.yml up -d
-
-# Run database migrations — from the checkout, not inside the container
-# (the runtime image ships only the compiled app, no prisma/schema)
-cd packages/db
-DATABASE_URL=postgresql://octopus:octopus@localhost:43332/octopus bunx prisma migrate deploy
-cd ../..
-```
-
-Octopus will be available at `http://localhost:43300`.
-
-Prefer to build from source? Use `docker-compose.yml` with
-`docker compose build --build-arg NEXT_PUBLIC_OCTOPUS_SELF_HOSTED=true`.
-See [docker-compose.selfhost.yml](docker-compose.selfhost.yml) (pull) and
-[docker-compose.yml](docker-compose.yml) (build) for service configuration.
-
-## How It Works
-
-1. **Webhook** — GitHub, GitLab, or Bitbucket sends a PR/MR event to Octopus. A review starts
-   automatically (when auto-review is on), when someone comments `@octopus`, or when a label
-   listed in the repo's `octopus.json` is added to the PR
-2. **Index** — Octopus clones the repo, chunks the code, and creates vector embeddings in Qdrant
-3. **Analyze** — The codebase is analyzed using AI with relevant code chunks, pinned docs, and org knowledge
-4. **Review** — The diff is reviewed by the LLM, generating findings with severity levels and category-based thresholds
-5. **Comment** — Findings are posted as inline comments on the PR/MR, with one-click Linear or Jira issue creation
-
-## Roadmap
-
-See [ROADMAP.md](ROADMAP.md) for what we're building and the [Octopus Roadmap Project board](https://github.com/orgs/octopusreview/projects) for the live, sortable view.
-
-Work flows through **Proposed → Up Next → In Progress → Shipped**. Anyone can propose an item by opening a [roadmap proposal issue](.github/ISSUE_TEMPLATE/roadmap_proposal.yml); maintainers promote it to **Up Next** once it has an owner. The [CHANGELOG](CHANGELOG.md) is the source of truth for what has actually shipped.
+- **Review where you work:** summaries, inline findings and suggested fixes in GitHub, GitLab, Bitbucket and Forgejo; [CLI reviews](https://octopus-review.ai/docs/cli) for terminal workflows.
+- **Use your team's context:** indexed repository context, knowledge documents, and repo rules in `.octopus.md`, `AGENTS.md` or `CLAUDE.md`.
+- **Trigger reviews your way:** automatically on open, on an `@octopus` comment, or on a label listed in the repo's `octopus.json` — the label trigger works independently of the auto-review setting (GitHub only).
+- **Choose your AI provider:** organization-level model settings and support for your own API keys. See [model discovery](docs/model-discovery.md) for catalog updates.
+- **Understand the result:** severity levels, category scores and explicit [review coverage](docs/review-coverage.md), including incomplete results.
 
 ## Contributing
 
-We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for local development and validation. Propose improvements in [GitHub Discussions](https://github.com/octopusreview/octopus/discussions), report bugs in [Issues](https://github.com/octopusreview/octopus/issues), or help with the [roadmap](ROADMAP.md).
+
+## Roadmap
+
+Follow [planned work](ROADMAP.md) and [shipped changes](https://octopus-review.ai/docs/changelog).
 
 ## Security
 
-Please see [SECURITY.md](SECURITY.md) for reporting vulnerabilities.
+See [SECURITY.md](SECURITY.md) to report a vulnerability privately.
 
 ## License
 
-This project is licensed under the [Modified MIT License](LICENSE.md).
+Source available under the [Modified MIT License](LICENSE.md), including its commercial attribution condition.

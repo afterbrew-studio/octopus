@@ -19,10 +19,10 @@ const findMany = mock(async (args: { where?: { status?: string } } = {}) =>
 );
 const updateMany = mock(async () => ({ count: updateCount }));
 const attemptUpdateMany = mock(async () => ({ count: 1 }));
-mock.module("@octopus/db", () => ({
+mock.module("@octopus/db", () => ({ Prisma: { DbNull: null },
   prisma: {
     pullRequest: { findMany, updateMany },
-    reviewAttempt: { updateMany: attemptUpdateMany },
+    reviewRun: { updateMany: attemptUpdateMany },
   },
 }));
 

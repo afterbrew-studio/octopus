@@ -10,7 +10,7 @@ mock.module("server-only", () => ({}));
 // we can exercise the DB-hit path; everything else falls through to prefixes.
 // getOrgKeys() looks up the org — returning null yields all-null keys, which is
 // exactly what the mock/mock-fail doubles want (they take no key).
-mock.module("@octopus/db", () => ({
+mock.module("@octopus/db", () => ({ Prisma: { DbNull: null },
   prisma: {
     availableModel: {
       findMany: () =>
@@ -50,6 +50,7 @@ describe("resolveProvider", () => {
   it("infers real providers from model-name prefixes", async () => {
     expect(await resolveProvider("claude-sonnet-4-20250514")).toBe("anthropic");
     expect(await resolveProvider("gpt-4o")).toBe("openai");
+    expect(await resolveProvider("qwen3.8-max-0902")).toBe("alibaba");
     expect(await resolveProvider("gemini-2.0-flash")).toBe("google");
     expect(await resolveProvider("claude-code:sonnet")).toBe("claude-code");
   });

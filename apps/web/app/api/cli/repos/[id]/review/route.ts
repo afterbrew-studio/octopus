@@ -1,7 +1,9 @@
+import "server-only";
 import { authenticateApiToken } from "@/lib/api-auth";
 import { prisma } from "@octopus/db";
 import * as github from "@/lib/github";
 import * as gitlab from "@/lib/gitlab";
+import * as forgejo from "@/lib/forgejo";
 import * as bitbucket from "@/lib/bitbucket";
 import { startReviewFlow } from "@/lib/webhook-shared";
 import { NextRequest } from "next/server";
@@ -11,6 +13,7 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const result = await authenticateApiToken(request);
+  if (result instanceof Response) return result; // account-standing hold (403), pass through
   if (!result) {
     return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
@@ -33,49 +36,39 @@ export async function POST(
   // Provider-aware wording: GitLab calls them "merge requests".
   const prLabel = repo.provider === "gitlab" ? "Merge request" : "Pull request";
 
-  const pr = await prisma.pullRequest.findFirst({
-    where: { repositoryId: repo.id, number: prNumber },
-  });
-
-  // In progress already: pg-boss retries and processReview's claim guard both
-  // handle duplicates, but enqueuing on top of a live review is waste.
-  if (pr?.status === "reviewing") {
-    return Response.json({ error: "Review already in progress" }, { status: 409 });
-  }
-
-  // Details are fetched from the provider whether or not the pull request is
-  // already known. The stored row's head SHA is as old as the last event that
-  // touched it, and the attempt records the commit it reviewed -- so starting
-  // from a stale one produces an attestation naming the wrong commit.
+  // Refresh provider details for both existing and newly discovered PRs.
+  // Shared admission validates that head again after taking its DB snapshot.
   const parts = repo.fullName.split("/");
   if (parts.length < 2) {
     return Response.json({ error: "Invalid repository name" }, { status: 500 });
   }
   const [owner, repoName] = parts;
-
+  const installationId = repo.installationId ?? result.org.githubInstallationId;
   try {
     let details;
     if (repo.provider === "github") {
-      if (!repo.installationId) throw new Error("Missing installation id");
-      details = await github.getPullRequestDetails(repo.installationId, owner, repoName, prNumber);
+      if (!installationId) throw new Error("Missing installation id");
+      details = await github.getPullRequestDetails(installationId, owner, repoName, prNumber);
     } else if (repo.provider === "gitlab") {
       details = await gitlab.getPullRequestDetails(result.org.id, repo.fullName, prNumber);
+    } else if (repo.provider === "forgejo") {
+      details = await forgejo.runWithForgejoRepository(repo.id, () => forgejo.getPullRequestDetails(result.org.id, repo.fullName, prNumber));
     } else if (repo.provider === "bitbucket") {
       details = await bitbucket.getPullRequestDetails(result.org.id, owner, repoName, prNumber);
     } else {
       return Response.json({ error: `${prLabel} not found` }, { status: 404 });
     }
 
-    // One path for both cases. This branch used to call `processReview` directly
+    // One path for every case. This branch used to call `processReview` directly
     // when the pull request was already known, which skipped `startReviewFlow` --
     // and with it the attempt record. Every review started that way ran on live
     // configuration and left nothing attributable behind, which is the property
     // the attempt exists to provide. rayf#122.
-    await startReviewFlow({
+    const outcome = await startReviewFlow({
       source: "adapter",
       ...(correlationId ? { correlationId: String(correlationId) } : {}),
-      provider: repo.provider as "github" | "gitlab" | "bitbucket",
-      installationId: repo.installationId ?? undefined,
+      provider: repo.provider as "github" | "gitlab" | "bitbucket" | "forgejo",
+      installationId: installationId ?? undefined,
       organizationId: result.org.id,
       repoFullName: repo.fullName,
       repoId: repo.id,
@@ -89,9 +82,15 @@ export async function POST(
       triggerCommentBody: "",
     });
 
-    return Response.json({ message: "Review started", prNumber: details.number });
+    if (!outcome.started) {
+      // Blocked author / paused org / duplicate: tell the caller instead of
+      // claiming a review started that never will.
+      const status = ["already_in_progress", "stale_head", "request_contended"].includes(outcome.reason) ? 409 : 422;
+      return Response.json({ error: outcome.message, reason: outcome.reason }, { status });
+    }
+    return Response.json({ message: "Review started", pullRequestId: outcome.pullRequestId, prNumber: details.number });
   } catch (err) {
-    console.error(`[cli] Failed to start review for ${repo.provider} ${prLabel} #${prNumber}:`, err);
+    console.error(`[cli] Failed to fetch ${repo.provider} ${prLabel} #${prNumber}:`, err);
     return Response.json({ error: `${prLabel} not found` }, { status: 404 });
   }
 }

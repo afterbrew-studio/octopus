@@ -21,6 +21,7 @@ import {
 } from "@/components/ui/select";
 import {
   IconBrandGithub,
+  IconGitFork,
   IconGitBranch,
   IconExternalLink,
   IconSearch,
@@ -111,10 +112,13 @@ type Repo = {
   name: string;
   fullName: string;
   provider: string;
+  repoUrl?: string;
   defaultBranch: string;
   isActive: boolean;
   autoReview: boolean;
   dismissedAt: string | null;
+  /** Server-decided: created in the last week (auto-discovery or first sync). */
+  isNew: boolean;
   indexStatus: string;
   indexedAt: string | null;
   indexedFiles: number;
@@ -146,6 +150,10 @@ const providerConfig: Record<
   gitlab: {
     icon: IconBrandGitlab,
     repoUrl: (fullName) => `https://gitlab.com/${fullName}`,
+  },
+  forgejo: {
+    icon: IconGitFork,
+    repoUrl: () => "",
   },
 };
 
@@ -897,6 +905,8 @@ function RepoDetail({
   orgDefaultEmbedName,
   otherOrgs = [],
   onDetailRefresh,
+  canManageRepos,
+  canConfigureReviews,
 }: {
   repo: Repo;
   analysisStatus: string;
@@ -908,15 +918,20 @@ function RepoDetail({
   orgDefaultEmbedName: string | null;
   otherOrgs?: OtherOrg[];
   onDetailRefresh: () => void;
+  canManageRepos: boolean;
+  canConfigureReviews: boolean;
 }) {
   const { openWithRepoContext } = useChat();
   const provider = providerConfig[repo.provider];
-  const repoUrl = provider?.repoUrl(repo.fullName);
+  const repoUrl = repo.repoUrl ?? provider?.repoUrl(repo.fullName);
   const [indexPending, startIndexTransition] = useTransition();
   const [cancelPending, startCancelTransition] = useTransition();
   const [autoReviewPending, startAutoReviewTransition] = useTransition();
   const [modelSavePending, startModelSaveTransition] = useTransition();
   const [autoReview, setAutoReview] = useState(repo.autoReview);
+  const [indexError, setIndexError] = useState<string | null>(null);
+  const [autoReviewError, setAutoReviewError] = useState<string | null>(null);
+  const [indexAttempt, setIndexAttempt] = useState(0);
   const [repoReviewModelId, setRepoReviewModelId] = useState(repo.reviewModelId ?? "");
   const [repoEmbedModelId, setRepoEmbedModelId] = useState(repo.embedModelId ?? "");
   const [modelSaved, setModelSaved] = useState(false);
@@ -949,8 +964,10 @@ function RepoDetail({
     );
   };
   const router = useRouter();
-  const isIndexing = repo.indexStatus === "indexing" || indexPending;
-  const canAutoReview = (repo.indexStatus === "indexed" || repo.indexStatus === "stale") && (analysisStatus === "analyzed" || analysisStatus === "completed");
+  const isIndexing = repo.indexStatus === "indexing";
+  const preparationReady = (repo.indexStatus === "indexed" || repo.indexStatus === "stale") && (analysisStatus === "analyzed" || analysisStatus === "completed");
+
+  useEffect(() => { setAutoReview(repo.autoReview); }, [repo.autoReview]);
 
   // Sync localPrs when detail data changes
   useEffect(() => {
@@ -965,21 +982,52 @@ function RepoDetail({
   };
 
   const handleIndex = () => {
+    setIndexError(null);
     startIndexTransition(async () => {
-      await indexRepository(repo.id);
+      try {
+        const result = await indexRepository(repo.id);
+        if (result.error) setIndexError(result.error);
+        else {
+          setIndexAttempt((attempt) => attempt + 1);
+          toast.success("Indexing started. Follow its progress below.");
+        }
+      } catch {
+        setIndexError("Could not confirm indexing started. Refresh the repository status before trying again.");
+      }
+      router.refresh();
     });
   };
 
   const handleCancel = () => {
+    setIndexError(null);
     startCancelTransition(async () => {
-      await cancelIndexing(repo.id);
+      try {
+        const result = await cancelIndexing(repo.id);
+        if (result.error) setIndexError(result.error);
+        else toast.success("Index cancellation requested.");
+      } catch {
+        setIndexError("Could not confirm cancellation. Refresh the repository status before trying again.");
+      }
+      router.refresh();
     });
   };
 
   const handleAutoReviewToggle = (checked: boolean) => {
+    const previous = autoReview;
+    setAutoReviewError(null);
     setAutoReview(checked);
     startAutoReviewTransition(async () => {
-      await toggleAutoReview(repo.id, checked);
+      try {
+        const result = await toggleAutoReview(repo.id, checked);
+        if (result.error) {
+          setAutoReview(previous);
+          setAutoReviewError(result.error);
+        } else toast.success(checked ? "Automatic reviews enabled." : "Automatic reviews disabled.");
+      } catch {
+        setAutoReview(previous);
+        setAutoReviewError("Could not confirm the change. Refresh the repository to check its saved setting.");
+      }
+      router.refresh();
     });
   };
 
@@ -1043,7 +1091,7 @@ function RepoDetail({
                 size="sm"
                 variant="destructive"
                 onClick={handleCancel}
-                disabled={cancelPending}
+                disabled={cancelPending || !canManageRepos}
               >
                 {cancelPending ? (
                   <>
@@ -1062,8 +1110,9 @@ function RepoDetail({
                 size="sm"
                 variant="cta"
                 onClick={handleIndex}
+                disabled={indexPending || !canManageRepos || !repo.isActive}
               >
-                {repo.indexStatus === "indexed" ? (
+                {indexPending ? "Starting…" : repo.indexStatus === "indexed" || repo.indexStatus === "stale" ? (
                   <>
                     <IconRefresh className="mr-1 size-3" />
                     Re-index
@@ -1071,32 +1120,42 @@ function RepoDetail({
                 ) : (
                   <>
                     <IconDatabaseImport className="mr-1 size-3" />
-                    Create Index
+                    {repo.indexStatus === "failed" ? "Retry indexing" : "Index now"}
                   </>
                 )}
               </Button>
             )}
           </div>
         </div>
+        {indexError && <p role="alert" className="mt-2 text-sm text-destructive">{indexError}</p>}
+        {!canManageRepos && <p className="mt-2 text-xs text-muted-foreground">An owner or admin can start or cancel indexing.</p>}
       </div>
 
       {/* Auto Review */}
-      <div className={`flex items-center justify-between rounded-md border bg-muted/30 px-4 py-3 ${!canAutoReview ? "opacity-60" : ""}`}>
+      <div className="space-y-2 rounded-md border bg-muted/30 px-4 py-3">
+        <div className="flex items-center justify-between gap-4">
         <div>
-          <div className="text-sm font-medium">Auto Review</div>
+          <Label htmlFor={`auto-review-${repo.id}`} className="text-sm font-medium">Auto Review</Label>
           <div className="text-xs text-muted-foreground">
-            {canAutoReview
-              ? repo.indexStatus === "stale"
+            {!autoReview ? "Automatic reviews are off. You can still request a review manually."
+              : !repo.isActive ? "Automatic reviews are enabled, but this repository is disconnected. Reconnect it to resume."
+              : preparationReady ? repo.indexStatus === "stale"
                 ? "Index is stale. It will be automatically re-indexed on the next PR review."
-                : "Automatically review new pull requests with AI"
-              : "Index and analyze this repository first to enable auto review"}
+                : "Automatically review new pull requests with AI."
+              : isIndexing || analysisStatus === "analyzing" ? "Automatic reviews are enabled. Repository preparation is in progress."
+              : repo.indexStatus === "failed" || analysisStatus === "failed" ? "Automatic reviews are enabled, but preparation failed. Check the logs and connection, then retry."
+              : "Automatic reviews are enabled. Octopus indexes and analyzes this repository when its first eligible pull request arrives. Index now is optional."}
           </div>
         </div>
         <Switch
-          checked={canAutoReview && autoReview}
+          id={`auto-review-${repo.id}`}
+          checked={autoReview}
           onCheckedChange={handleAutoReviewToggle}
-          disabled={autoReviewPending || !canAutoReview}
+          disabled={autoReviewPending || !canConfigureReviews}
         />
+        </div>
+        {autoReviewError && <p role="alert" className="text-sm text-destructive">{autoReviewError}</p>}
+        {!canConfigureReviews && <p className="text-xs text-muted-foreground">An owner or admin can change automatic reviews.</p>}
       </div>
 
       {/* AI Models */}
@@ -1195,9 +1254,11 @@ function RepoDetail({
       {/* Indexing Logs */}
       {(isIndexing || repo.indexStatus === "indexing" || repo.indexStatus === "failed") && (
         <IndexingLogs
+          key={`${repo.id}:${indexAttempt}`}
           repoId={repo.id}
           orgId={orgId}
-          initialStatus={isIndexing ? "indexing" : repo.indexStatus}
+          provider={repo.provider}
+          initialStatus={repo.indexStatus}
         />
       )}
 
@@ -1406,7 +1467,7 @@ function RepoDetail({
       </Dialog>
 
       {/* Transfer Repository */}
-      {otherOrgs.length > 0 && (
+      {otherOrgs.length > 0 && repo.provider !== "forgejo" && (
         <>
           <div className="rounded-md border border-orange-500/30 bg-orange-500/5 px-4 py-3">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -1689,6 +1750,14 @@ function RepoListItem({
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5">
           <span className="truncate text-sm font-medium">{repo.name}</span>
+          {repo.isNew && (
+            <Badge
+              variant="secondary"
+              className="shrink-0 border border-emerald-600/30 bg-emerald-600/10 px-1.5 py-0 text-[10px] text-emerald-600"
+            >
+              New
+            </Badge>
+          )}
           {repo.contributorCount > 0 && (
             <Badge variant="secondary" className="text-[10px] px-1.5 py-0 shrink-0">
               <IconUsers className="mr-0.5 size-3" />
@@ -1711,19 +1780,28 @@ function RepoListItem({
   );
 }
 
-function SyncButton() {
+function SyncButton({ canManageRepos }: { canManageRepos: boolean }) {
   const [isPending, startTransition] = useTransition();
+  const [error, setError] = useState<string | null>(null);
   const router = useRouter();
 
   return (
+    <div>
     <Button
       variant="outline"
       size="sm"
       className="h-7 text-xs"
-      disabled={isPending}
+      disabled={isPending || !canManageRepos}
       onClick={() =>
         startTransition(async () => {
-          await syncRepos();
+          setError(null);
+          try {
+            const result = await syncRepos();
+            if (result.error) setError(result.error);
+            else toast.success(`${result.synced} repositories synced${result.removed ? `; ${result.removed} no longer available` : ""}.`);
+          } catch {
+            setError("Could not confirm repository sync. Refresh the list before trying again.");
+          }
           router.refresh();
         })
       }
@@ -1731,6 +1809,8 @@ function SyncButton() {
       <IconRefresh className={`mr-1 size-3 ${isPending ? "animate-spin" : ""}`} />
       {isPending ? "Syncing..." : "Sync"}
     </Button>
+    {error && <p role="alert" className="mt-2 text-xs text-destructive">{error}</p>}
+    </div>
   );
 }
 
@@ -1801,6 +1881,9 @@ export function RepositoriesContent({
   totalPages = 1,
   totalCount = 0,
   bitbucketWorkspaceSlug = null,
+  welcomePending = false,
+  canManageRepos,
+  canConfigureReviews,
 }: {
   repos: Repo[];
   orgId: string;
@@ -1819,6 +1902,9 @@ export function RepositoriesContent({
   totalPages?: number;
   totalCount?: number;
   bitbucketWorkspaceSlug?: string | null;
+  welcomePending?: boolean;
+  canManageRepos: boolean;
+  canConfigureReviews: boolean;
 }) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -1980,16 +2066,28 @@ export function RepositoriesContent({
       }
     };
 
+    // Fired by lib/repo-sync.ts when the sweep or a webhook adds repositories.
+    const handleReposDiscovered = (raw: unknown) => {
+      const data = raw as { count?: number };
+      const count = data.count ?? 0;
+      if (count > 0) {
+        toast.success(`${count} new ${count === 1 ? "repository" : "repositories"} discovered`);
+      }
+      router.refresh();
+    };
+
     channel.bind("index-status", handleIndexStatus);
     channel.bind("analysis-status", handleAnalysisStatus);
     channel.bind("review-requested", handleReviewRequested);
     channel.bind("review-status", handleReviewStatus);
+    channel.bind("repos-discovered", handleReposDiscovered);
 
     return () => {
       channel.unbind("index-status", handleIndexStatus);
       channel.unbind("analysis-status", handleAnalysisStatus);
       channel.unbind("review-requested", handleReviewRequested);
       channel.unbind("review-status", handleReviewStatus);
+      channel.unbind("repos-discovered", handleReposDiscovered);
     };
   }, [orgId, router, selectedRepoId]);
 
@@ -2004,7 +2102,7 @@ export function RepositoriesContent({
         <div className="border-b p-4">
           <div className="flex items-center justify-between">
             <h1 className="text-lg font-semibold">Repositories</h1>
-            <SyncButton />
+            <SyncButton canManageRepos={canManageRepos} />
           </div>
           <div className="relative mt-3">
             <IconSearch className="absolute left-2.5 top-2.5 size-4 text-muted-foreground" />
@@ -2015,7 +2113,7 @@ export function RepositoriesContent({
               className="pl-9"
             />
           </div>
-          <div className="mt-2 flex items-center gap-2">
+          <div className="mt-2 flex flex-wrap items-center gap-2">
             <Select value={currentOwner || "all"} onValueChange={handleOwnerChange}>
               <SelectTrigger className="h-8 text-xs">
                 <SelectValue />
@@ -2065,6 +2163,9 @@ export function RepositoriesContent({
                 </a>
               </Button>
             )}
+            <Button size="sm" variant="outline" className="h-8 shrink-0 text-xs" asChild>
+              <a href="/settings/integrations#forgejo"><IconGitFork className="mr-1 size-3" />Forgejo</a>
+            </Button>
           </div>
         </div>
         <div className="flex-1 overflow-y-auto scrollbar-auto-hide">
@@ -2074,6 +2175,11 @@ export function RepositoriesContent({
               <p className="text-sm text-muted-foreground">
                 {currentSearch ? "No repositories match your search" : "No repositories yet"}
               </p>
+              {!currentSearch && welcomePending && (
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Connect GitHub, GitLab or Bitbucket to unlock your welcome credits.
+                </p>
+              )}
               {!currentSearch && (
                 <div className="mt-4 flex flex-col items-center gap-2">
                   {githubAppSlug && (
@@ -2088,7 +2194,7 @@ export function RepositoriesContent({
                     href="/settings/integrations"
                     className="text-xs text-muted-foreground underline hover:text-foreground transition-colors"
                   >
-                    Connect GitLab or Bitbucket
+                    Connect GitLab, Bitbucket or Forgejo
                   </a>
                 </div>
               )}
@@ -2202,6 +2308,8 @@ export function RepositoriesContent({
               orgDefaultEmbedName={orgDefaultEmbedName}
               otherOrgs={otherOrgs}
               onDetailRefresh={() => setDetailRefreshKey((k) => k + 1)}
+              canManageRepos={canManageRepos}
+              canConfigureReviews={canConfigureReviews}
             />
           </div>
         ) : (

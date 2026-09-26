@@ -6,15 +6,7 @@ For human-oriented setup, workflow, and PR guidelines, see [CONTRIBUTING.md](CON
 
 ## Before submitting a change
 
-Run all four locally. CI will reject if any fail.
-
-```bash
-bun install              # if dependencies haven't been installed
-bun run lint
-bun run typecheck
-bun run test
-bun run build
-```
+Follow the local validation checklist in [CONTRIBUTING.md](CONTRIBUTING.md#testing-your-changes).
 
 ## Repository layout
 

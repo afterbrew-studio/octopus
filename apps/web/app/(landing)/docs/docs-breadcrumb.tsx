@@ -4,6 +4,7 @@ import { usePathname } from "next/navigation";
 
 const pageNames: Record<string, string> = {
   "/docs/cli": "CLI",
+  "/docs/cli/ai-agents": "AI Coding Agents",
   "/docs/cli/claude-code-integration": "Claude Code Integration",
   "/docs/octopusignore": ".octopusignore",
   "/docs/github-action": "GitHub Action",
@@ -29,7 +30,7 @@ export function DocsBreadcrumb() {
   return (
     <>
       <span className="text-[#333]">/</span>
-      <span className="text-sm text-white">{pageName}</span>
+      <span className="min-w-0 truncate text-sm text-white" title={pageName}>{pageName}</span>
     </>
   );
 }

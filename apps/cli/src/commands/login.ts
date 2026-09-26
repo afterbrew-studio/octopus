@@ -59,9 +59,9 @@ export async function loginCommand(argv: string[]): Promise<number> {
         return 2;
       }
       const verified = await verifyToken(baseUrl, token);
-      identity = { token, organization: verified.organization, user: verified.user };
+      identity = { token, ...verified };
     } else {
-      identity = await runDeviceFlow(baseUrl, { onAuthorizeUrl: (url) => info(c.dim(url)) });
+      identity = await runDeviceFlow(baseUrl, { userSession: true, noOpen: hasFlag(argv, "--no-open"), onAuthorizeUrl: (url) => info(c.dim(url)) });
     }
     // Land the credentials in the active profile (which reflects --account),
     // registering + activating it so `account list` shows it and later commands
@@ -72,7 +72,7 @@ export async function loginCommand(argv: string[]): Promise<number> {
     await setActiveProfile(profileName);
     const email = identity.user.email ? ` (${sanitizeTerminal(identity.user.email)})` : "";
     success(
-      `Logged in as ${sanitizeTerminal(identity.user.name)}${email} — org: ${sanitizeTerminal(identity.organization.name)} [account: ${sanitizeTerminal(profileName)}]`,
+      `Logged in as ${sanitizeTerminal(identity.user.name)}${email}${identity.kind === "user" ? "" : ` — org: ${sanitizeTerminal(identity.organization.name)}`} [account: ${sanitizeTerminal(profileName)}]`,
     );
     return 0;
   } catch (err) {
@@ -91,8 +91,9 @@ Usage:
 Flags:
   --token <oct_...>              API token; skips the browser
                                  (exposes the token via process args (ps) and shell history; for CI prefer 'octp setup-token')
-  --api-url <url>                Server base URL (default: hosted, or your saved server)
+  --api-url <url>                Server base URL (default: Cloud (Octopus hosted), or your saved server)
   --insecure                     Allow sending the token over cleartext HTTP (not recommended)
+  --no-open                      Print the approval URL without opening a browser
   --help, -h                     This help
 `);
 }

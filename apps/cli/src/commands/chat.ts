@@ -1,7 +1,8 @@
 import { createInterface } from "node:readline";
 import { loadCredentials } from "../lib/credentials.js";
 import { streamData } from "../lib/api.js";
-import { hasFlag, flagValue, positionals } from "../lib/args.js";
+import { hasFlag, flagValue } from "../lib/args.js";
+import { chatArguments } from "../lib/command-arguments.js";
 import { resolveRepo } from "../lib/repo-resolver.js";
 import { error, info, c, sanitizeTerminal } from "../lib/output.js";
 import { renderWizard } from "../OnboardWizard.js";
@@ -50,10 +51,8 @@ export async function chatCommand(argv: string[]): Promise<number> {
 
   const printMsg = flagValue(argv, "-p") ?? flagValue(argv, "--print");
   const isPrintFlag = hasFlag(argv, "-p", "--print");
-  const isGlobal = hasFlag(argv, "-g", "--global");
+  const { global: isGlobal, repository: repoArg } = chatArguments(argv);
   const isPipeline = isPrintFlag || !process.stdin.isTTY;
-
-  const repoArg = positionals(argv, ["-p", "--print"])[0];
 
   let repoId: string | null = null;
   let label = "your organization";

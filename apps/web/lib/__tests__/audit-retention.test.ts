@@ -3,7 +3,7 @@ import { describe, it, expect, mock, beforeEach, afterEach } from "bun:test";
 // Capture the `where` passed to deleteMany so we can assert the legal-hold
 // clause. Bun's module mocks are file-scoped and auto-cleaned — no restore.
 let lastWhere: Record<string, unknown> | null = null;
-mock.module("@octopus/db", () => ({
+mock.module("@octopus/db", () => ({ Prisma: { DbNull: null },
   prisma: {
     auditLog: {
       deleteMany: async (args: { where: Record<string, unknown> }) => {

@@ -26,7 +26,7 @@ export default async function DocsLayout({
     <div className="dark min-h-screen bg-[#0c0c0c] text-[#a0a0a0]">
       {/* Top bar */}
       <header className="sticky top-0 z-40 border-b border-white/[0.06] bg-[#0c0c0c]/80 backdrop-blur-xl">
-        <div className="mx-auto flex w-full max-w-[1400px] items-center gap-4 px-6 py-3">
+        <div className="mx-auto flex w-full max-w-[1400px] items-center gap-2 px-6 py-3 sm:gap-4">
           <DocsMobileMenu />
           <TrackedLink
             href="/"
@@ -35,7 +35,7 @@ export default async function DocsLayout({
             className="flex items-center gap-2"
           >
             <Image src="/logo.svg" alt="Octopus" width={22} height={22} priority />
-            <span className="text-sm font-semibold text-white">Octopus</span>
+            <span className="hidden text-sm font-semibold text-white sm:inline">Octopus</span>
           </TrackedLink>
           <span className="text-[#333]">/</span>
           <TrackedLink

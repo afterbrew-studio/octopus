@@ -21,13 +21,14 @@ const track =
   };
 
 mock.module("@octopus/db", () => ({
+  Prisma: { DbNull: null },
   prisma: {
     pullRequest: {
       findUnique: track("prisma.pullRequest.findUnique"),
       upsert: track("prisma.pullRequest.upsert"),
       update: track("prisma.pullRequest.update"),
     },
-    reviewAttempt: { create: track("prisma.reviewAttempt.create") },
+    reviewRun: { create: track("prisma.reviewRun.create") },
     systemConfig: { findUnique: track("prisma.systemConfig.findUnique") },
     organization: { findUnique: track("prisma.organization.findUnique") },
     repository: { findUnique: track("prisma.repository.findUnique") },
@@ -37,13 +38,35 @@ mock.module("@/lib/queue", () => ({ enqueue: track("enqueue") }));
 mock.module("@/lib/pubby", () => ({ pubby: { publish: track("pubby.publish") } }));
 mock.module("@/lib/events", () => ({ eventBus: { emit: track("eventBus.emit") } }));
 mock.module("@/lib/github", () => ({
-  createComment: track("github.createComment"),
-  updateComment: track("github.updateComment"),
+  createPullRequestComment: track("github.createPullRequestComment"),
+  updatePullRequestComment: track("github.updatePullRequestComment"),
   createCheckRun: track("github.createCheckRun"),
   updateCheckRun: track("github.updateCheckRun"),
+  getInstallationToken: track("github.getInstallationToken"),
+  findPullRequestSummaryComment: track("github.findPullRequestSummaryComment"),
+  getPullRequestDetails: track("github.getPullRequestDetails"),
 }));
-mock.module("@/lib/bitbucket", () => ({}));
-mock.module("@/lib/gitlab", () => ({}));
+mock.module("@/lib/bitbucket", () => ({ getPullRequestDetails: track("bitbucket.getPullRequestDetails") }));
+mock.module("@/lib/gitlab", () => ({ getPullRequestDetails: track("gitlab.getPullRequestDetails") }));
+mock.module("@/lib/forgejo", () => ({
+  // Complete (not a subset): bun's module mocks are process-wide, and this
+  // file's mock otherwise leaks an incomplete "@/lib/forgejo" into any later
+  // file in the same run that needs an export this test never calls.
+  runWithForgejoRepository: async (_id: string, run: () => Promise<unknown>) => run(),
+  usesForgejoConnector: () => false,
+  validateForgejoConnection: track("forgejo.validateForgejoConnection"),
+  listUserRepos: track("forgejo.listUserRepos"),
+  getPullRequestDetails: track("forgejo.getPullRequestDetails"),
+  getPullRequestReviewInput: track("forgejo.getPullRequestReviewInput"),
+  createPullRequestComment: track("forgejo.createPullRequestComment"),
+  updatePullRequestComment: track("forgejo.updatePullRequestComment"),
+  createPullRequestReview: track("forgejo.createPullRequestReview"),
+  createInlineComment: track("forgejo.createInlineComment"),
+  setCommitStatus: track("forgejo.setCommitStatus"),
+  getBranchHead: track("forgejo.getBranchHead"),
+  getRepositoryTree: track("forgejo.getRepositoryTree"),
+  getFileContent: track("forgejo.getFileContent"),
+}));
 
 const { startReviewFlow } = await import("@/lib/webhook-shared");
 

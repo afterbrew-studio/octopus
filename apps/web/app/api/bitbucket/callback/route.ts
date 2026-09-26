@@ -1,10 +1,13 @@
+import "server-only";
 import crypto from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { cookies, headers } from "next/headers";
 import { prisma } from "@octopus/db";
 import { hasOrgPermission } from "@/lib/org-permissions";
 import { auth } from "@/lib/auth";
-import { listWorkspaceRepos, createWebhook } from "@/lib/bitbucket";
+import { syncOrgRepos } from "@/lib/repo-sync";
+import { withWebhookSetupLock } from "@/lib/integration-setup-lock";
+import { parseIntegrationSetupStatus } from "@/lib/integration-setup";
 import { encryptString } from "@/lib/crypto";
 import {
   integrationOAuthStateCookie,
@@ -148,110 +151,60 @@ export async function GET(request: NextRequest) {
   const workspaceData = await workspaceRes.json();
   const workspaceName = (workspaceData.name as string) || workspaceSlug;
 
-  // Generate webhook secret
-  const webhookSecret = crypto.randomBytes(32).toString("hex");
-
-  // Debug log to surface on the UI
-  const debugLog: string[] = [];
-  debugLog.push(`workspace: ${workspaceSlug} (${workspaceName})`);
-
-  // Upsert BitbucketIntegration (tokens encrypted at rest, see lib/crypto.ts)
-  const accessTokenEnc = encryptString(accessToken);
-  const refreshTokenEnc = encryptString(refreshToken);
-  await prisma.bitbucketIntegration.upsert({
-    where: { organizationId: orgId },
-    create: {
-      workspaceSlug,
-      workspaceName,
-      accessToken: accessTokenEnc,
-      refreshToken: refreshTokenEnc,
-      tokenExpiresAt,
-      scopes,
-      webhookSecret,
-      organizationId: orgId,
-    },
-    update: {
-      workspaceSlug,
-      workspaceName,
-      accessToken: accessTokenEnc,
-      refreshToken: refreshTokenEnc,
-      tokenExpiresAt,
-      scopes,
-      webhookSecret,
-    },
-  });
-  debugLog.push("integration upserted OK");
-
-  // Create workspace-level webhook (best-effort)
-  const appUrl = process.env.BETTER_AUTH_URL || "http://localhost:3000";
-  const callbackUrl = `${appUrl}/api/bitbucket/webhook`;
-  debugLog.push(`webhook target: ${callbackUrl}`);
-
+  let saved: boolean;
   try {
-    const webhookUuid = await createWebhook(orgId, workspaceSlug, callbackUrl, webhookSecret);
-    if (webhookUuid) {
-      await prisma.bitbucketIntegration.update({
+    saved = await withWebhookSetupLock(`binding:bitbucket:${orgId}`, async (tx) => {
+      const existing = await tx.bitbucketIntegration.findUnique({ where: { organizationId: orgId } });
+      if (existing && (existing.workspaceSlug !== workspaceSlug)) return false;
+      const webhookSecret = existing ? existing.webhookSecret : crypto.randomBytes(32).toString("hex");
+
+      const accessTokenEnc = encryptString(accessToken);
+      const refreshTokenEnc = encryptString(refreshToken);
+      await tx.bitbucketIntegration.upsert({
         where: { organizationId: orgId },
-        data: { webhookUuid },
-      });
-      debugLog.push(`webhook created OK (uuid: ${webhookUuid})`);
-    } else {
-      debugLog.push("webhook creation returned empty uuid");
-    }
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    debugLog.push(`webhook creation FAILED: ${msg}`);
-    console.error("[bitbucket-callback] Webhook creation failed:", err);
-  }
-
-  // Sync repos from workspace
-  try {
-    const bbRepos = await listWorkspaceRepos(orgId, workspaceSlug);
-    const dismissedBb = new Set(
-      (
-        await prisma.repository.findMany({
-          where: { organizationId: orgId, provider: "bitbucket", dismissedAt: { not: null } },
-          select: { externalId: true },
-        })
-      ).map((r) => r.externalId),
-    );
-    for (const repo of bbRepos) {
-      if (dismissedBb.has(repo.uuid)) continue;
-      await prisma.repository.upsert({
-        where: {
-          provider_externalId_organizationId: {
-            provider: "bitbucket",
-            externalId: repo.uuid,
-            organizationId: orgId,
-          },
-        },
         create: {
-          name: repo.name,
-          fullName: repo.full_name,
-          externalId: repo.uuid,
-          defaultBranch: repo.mainbranch?.name ?? "main",
-          provider: "bitbucket",
-          isActive: true,
+          workspaceSlug,
+          workspaceName,
+          accessToken: accessTokenEnc,
+          refreshToken: refreshTokenEnc,
+          tokenExpiresAt,
+          scopes,
+          webhookSecret,
           organizationId: orgId,
         },
         update: {
-          name: repo.name,
-          fullName: repo.full_name,
-          defaultBranch: repo.mainbranch?.name ?? "main",
-          isActive: true,
+          workspaceSlug,
+          workspaceName,
+          accessToken: accessTokenEnc,
+          refreshToken: refreshTokenEnc,
+          tokenExpiresAt,
+          scopes,
+          webhookSecret,
+          webhookUuid: existing?.workspaceSlug === workspaceSlug ? existing.webhookUuid : null,
+          setupStatus: parseIntegrationSetupStatus(null),
         },
       });
-    }
-    debugLog.push(`repos synced: ${bbRepos.length}`);
-    console.log(`[bitbucket-callback] Synced ${bbRepos.length} repos for workspace ${workspaceSlug}`);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    debugLog.push(`repo sync FAILED: ${msg}`);
-    console.error("[bitbucket-callback] Repo sync failed:", err);
+      if (!existing) await tx.repository.updateMany({
+        where: { organizationId: orgId, provider: "bitbucket" },
+        data: { webhookSetupStatus: { status: "unknown" }, isActive: false },
+      });
+      return true;
+    });
+  } catch {
+    return NextResponse.redirect(new URL("/settings/integrations?error=connection_busy", baseUrl));
   }
+  if (!saved) return NextResponse.redirect(new URL("/settings/integrations?error=connection_replacement", baseUrl));
 
-  const debugParam = encodeURIComponent(JSON.stringify(debugLog));
-  return NextResponse.redirect(
-    new URL(`/settings/integrations?success=bitbucket&bb_debug=${debugParam}`, baseUrl),
-  );
+  // Authorization succeeded; setup has a separate durable outcome.
+  let setupFailed = false;
+  try {
+    const result = await syncOrgRepos(orgId, { source: "manual", providers: ["bitbucket"] });
+    setupFailed = Boolean(result.error);
+  } catch {
+    setupFailed = true;
+  }
+  return NextResponse.redirect(new URL(
+    `/settings/integrations?authorized=bitbucket${setupFailed ? "&setup=attention" : ""}`,
+    baseUrl,
+  ));
 }

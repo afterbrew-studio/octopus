@@ -13,6 +13,8 @@ import {
   IconChevronRight,
   IconBrandGithub,
   IconBrandBitbucket,
+  IconBrandGitlab,
+  IconGitFork,
   IconExternalLink,
 } from "@tabler/icons-react";
 import {
@@ -96,6 +98,8 @@ function formatRelativeTime(dateStr: string): string {
 }
 
 function ProviderIcon({ provider }: { provider: string }) {
+  if (provider === "forgejo") return <IconGitFork className="size-4 text-orange-500" aria-label="Forgejo" />;
+  if (provider === "gitlab") return <IconBrandGitlab className="size-4 text-orange-500" aria-label="GitLab" />;
   if (provider === "bitbucket") {
     return <IconBrandBitbucket className="size-4 text-blue-500" />;
   }

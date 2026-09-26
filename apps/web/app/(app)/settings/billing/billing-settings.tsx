@@ -85,6 +85,7 @@ type Props = {
   monthlySpend: number;
   monthlyResetLabel: string;
   paymentMethods: PaymentMethod[];
+  paymentMethodsLoaded: boolean;
 };
 
 function formatUsd(n: number): string {
@@ -151,11 +152,14 @@ export function BillingSettings({
   monthlySpend,
   monthlyResetLabel,
   paymentMethods,
+  paymentMethodsLoaded,
 }: Props) {
   const router = useRouter();
   const [purchaseOpen, setPurchaseOpen] = useState(false);
   const [spendLimitOpen, setSpendLimitOpen] = useState(false);
   const [cardOpen, setCardOpen] = useState(false);
+  const [cardRefreshing, startCardRefresh] = useTransition();
+  const [autoReloadCardNotice, setAutoReloadCardNotice] = useState<string | null>(null);
   const [transactions, setTransactions] = useState(initialTransactions);
   const [hasMore, setHasMore] = useState(initialTransactions.length < totalTransactions);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -174,6 +178,8 @@ export function BillingSettings({
   const [autoReloadEnabled, setAutoReloadEnabled] = useState(
     autoReloadConfig?.enabled ?? false,
   );
+  const [thresholdAmount, setThresholdAmount] = useState(String(autoReloadConfig?.thresholdAmount ?? 10));
+  const [reloadAmount, setReloadAmount] = useState(String(autoReloadConfig?.reloadAmount ?? 50));
   const autoReloadActive = autoReloadConfig?.enabled ?? false;
   const autoReloadPaused = autoReloadConfig?.pausedForDurableUpgrade ?? false;
   const autoReloadStatus = getAutoReloadDisplayStatus(
@@ -266,6 +272,19 @@ export function BillingSettings({
           <form
             id="auto-reload-settings"
             action={autoReloadAction}
+            onSubmit={(event) => {
+              if (cardRefreshing) {
+                event.preventDefault();
+                return;
+              }
+              if (canManageBilling && autoReloadEnabled && paymentMethodsLoaded && paymentMethods.length === 0) {
+                event.preventDefault();
+                setAutoReloadCardNotice("Add a card, then review and save these settings. Your changes have not been saved.");
+                setCardOpen(true);
+                return;
+              }
+              setAutoReloadCardNotice(null);
+            }}
             className="scroll-mt-6 space-y-4"
           >
             <div className="flex items-center justify-between gap-4">
@@ -315,7 +334,8 @@ export function BillingSettings({
                       min={1}
                       max={1000}
                       step={1}
-                      defaultValue={autoReloadConfig?.thresholdAmount ?? 10}
+                      value={thresholdAmount}
+                      onChange={(event) => setThresholdAmount(event.target.value)}
                       disabled={!canManageBilling}
                       className="pl-7"
                     />
@@ -334,7 +354,8 @@ export function BillingSettings({
                       min={5}
                       max={1000}
                       step={1}
-                      defaultValue={autoReloadConfig?.reloadAmount ?? 50}
+                      value={reloadAmount}
+                      onChange={(event) => setReloadAmount(event.target.value)}
                       disabled={!canManageBilling}
                       className="pl-7"
                     />
@@ -343,12 +364,17 @@ export function BillingSettings({
               </div>
             )}
 
-            {autoReloadState.error && (
+            {autoReloadCardNotice && (
+              <p className="text-sm text-muted-foreground" role="status">
+                {autoReloadCardNotice}
+              </p>
+            )}
+            {autoReloadState.error && !autoReloadCardNotice && (
               <p className="text-sm text-destructive">
                 {autoReloadState.error}
               </p>
             )}
-            {autoReloadState.success && (
+            {autoReloadState.success && !autoReloadCardNotice && (
               <p className="text-sm text-green-600">Auto-reload updated.</p>
             )}
 
@@ -356,7 +382,7 @@ export function BillingSettings({
               <Button
                 type="submit"
                 size="sm"
-                disabled={autoReloadPending}
+                disabled={autoReloadPending || cardRefreshing}
               >
                 {autoReloadPending
                   ? "Saving..."
@@ -1013,7 +1039,12 @@ export function BillingSettings({
         open={cardOpen}
         onOpenChange={setCardOpen}
         publishableKey={stripePublishableKey}
-        onSaved={() => router.refresh()}
+        onSaved={() => {
+          if (autoReloadCardNotice) {
+            setAutoReloadCardNotice("Card saved. Review your settings, then select Save Auto-Reload to apply them.");
+          }
+          startCardRefresh(() => router.refresh());
+        }}
       />
     </div>
   );

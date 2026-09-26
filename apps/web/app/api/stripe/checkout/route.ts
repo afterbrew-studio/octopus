@@ -1,3 +1,4 @@
+import "server-only";
 import { NextRequest, NextResponse } from "next/server";
 import { headers } from "next/headers";
 import { auth } from "@/lib/auth";
@@ -36,7 +37,7 @@ export async function POST(req: NextRequest) {
   }
 
   const returnUrl = `${process.env.BETTER_AUTH_URL || req.nextUrl.origin}/settings/billing`;
-  const url = await createCheckoutSession(orgId, amount, returnUrl);
+  const url = await createCheckoutSession(orgId, amount, returnUrl, req.headers.get("cookie"));
 
   return NextResponse.json({ url });
 }

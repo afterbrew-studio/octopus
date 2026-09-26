@@ -9,8 +9,7 @@ For the path-resolved owner of any file, see [.github/CODEOWNERS](.github/CODEOW
 
 | Name | GitHub | Areas of ownership |
 |---|---|---|
-| Lead maintainer | [@redoh](https://github.com/redoh) | Everything (lead) — web app, database schema, review engine, infrastructure, CI |
-| Maintainer | [@cemoso](https://github.com/cemoso) (cem@weezboo.com) | Review engine, CLI, self-hosted ops |
+| Lead maintainer | [@cemoso](https://github.com/cemoso) (cem@weezboo.com) | Everything (lead) — web app, database schema, review engine, CLI, infrastructure, CI, self-hosted ops |
 
 ## Emeritus maintainers
 

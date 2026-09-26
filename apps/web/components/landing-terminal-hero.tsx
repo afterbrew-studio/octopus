@@ -2,26 +2,24 @@
 
 import { useEffect, useRef, useState } from "react";
 
-// Auto-playing, non-interactive terminal for the marketing hero. Types a
-// scripted `octp login` -> `octp review --pr 42` -> findings sequence, then
-// loops. Zero dependencies: React state + one CSS keyframe for the caret.
-// Honors prefers-reduced-motion by rendering the full transcript statically.
+// Illustrative agent transcript, not a live session or verbatim CLI output.
+// Respects reduced motion by rendering the transcript statically.
 
 type Tone = "cmd" | "out" | "dim" | "ok" | "warn" | "crit" | "info";
 type Step = { kind: "cmd" | "out"; text: string; tone?: Tone };
 
 const SCRIPT: Step[] = [
-  { kind: "cmd", text: "octp login" },
-  { kind: "out", text: "→ Opening browser to authenticate…", tone: "dim" },
-  { kind: "out", text: "✓ Signed in as cem@acme.dev", tone: "ok" },
-  { kind: "cmd", text: "octp review --pr 42" },
-  { kind: "out", text: "→ Indexing repository · 128 files", tone: "dim" },
-  { kind: "out", text: "→ Reviewing diff with whole-repo context…", tone: "dim" },
-  { kind: "out", text: "⚠ 3 findings posted to PR #42", tone: "warn" },
-  { kind: "out", text: "  ● auth.ts:88 — token compared with == (timing-unsafe)", tone: "crit" },
-  { kind: "out", text: "  ● api/users.ts:23 — N+1 query inside request loop", tone: "warn" },
-  { kind: "out", text: "  ● date.ts:5 — prefer Intl.DateTimeFormat over manual format", tone: "info" },
-  { kind: "out", text: "✓ Review complete in 47s", tone: "ok" },
+  { kind: "cmd", text: "octp onboard --agent --json" },
+  { kind: "out", text: "AI: This project uses weezboo/api on GitHub.", tone: "out" },
+  { kind: "cmd", text: "octp login --no-open" },
+  { kind: "out", text: "AI: Open the approval link to sign in.", tone: "out" },
+  { kind: "out", text: "✓ Signed in as cem@weezboo.com", tone: "ok" },
+  { kind: "cmd", text: "octp onboard --agent --json" },
+  { kind: "out", text: "AI: Approve GitHub App access using this link.", tone: "out" },
+  { kind: "out", text: "AI: Access confirmed. Continuing setup…", tone: "out" },
+  { kind: "out", text: "→ Indexing repository…", tone: "out" },
+  { kind: "out", text: "→ Analysing codebase…", tone: "out" },
+  { kind: "out", text: "✓ Indexing and analysis complete. Ready for reviews.", tone: "ok" },
 ];
 
 const TONE_CLASS: Record<Tone, string> = {
@@ -122,10 +120,10 @@ export function LandingTerminalHero({ className = "" }: { className?: string }) 
           <span className="size-3 rounded-full bg-[#febc2e]/80" />
           <span className="size-3 rounded-full bg-[#28c840]/80" />
         </div>
-        <span className="font-mono text-[11px] text-[#666]">octp · ~/acme/api</span>
+        <span className="font-mono text-[11px] text-[#666]">octp · example AI session</span>
         <span className="flex items-center gap-1.5 font-mono text-[11px] text-[#10d8be]">
           <span className="size-1.5 rounded-full bg-[#10d8be]" />
-          ready
+          example
         </span>
       </div>
       {/* body */}

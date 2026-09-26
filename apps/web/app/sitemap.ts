@@ -33,6 +33,7 @@ const STATIC_PAGES: MetadataRoute.Sitemap = [
   { url: `${SITE_URL}/docs/integrations`, changeFrequency: "monthly", priority: 0.8 },
   { url: `${SITE_URL}/docs/cli`, changeFrequency: "monthly", priority: 0.7 },
   { url: `${SITE_URL}/docs/cli/claude-code-integration`, changeFrequency: "monthly", priority: 0.7 },
+  { url: `${SITE_URL}/docs/cli/ai-agents`, changeFrequency: "monthly", priority: 0.7 },
   { url: `${SITE_URL}/docs/self-hosting`, changeFrequency: "monthly", priority: 0.7 },
   { url: `${SITE_URL}/docs/skills`, changeFrequency: "monthly", priority: 0.7 },
   { url: `${SITE_URL}/docs/glossary`, changeFrequency: "monthly", priority: 0.6 },

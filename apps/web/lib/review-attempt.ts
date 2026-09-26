@@ -1,4 +1,10 @@
+import "server-only";
 import type { ReviewConfig } from "@/lib/review-helpers";
+import { isReviewRequestVersion } from "@/lib/review-status-state";
+import { isDeepStrictEqual } from "node:util";
+import { prisma, type Prisma } from "@octopus/db";
+import { withForgejoPublication } from "@/lib/forgejo-connector";
+import type { ReviewCoverage } from "@/lib/review-coverage";
 
 /**
  * Which configuration a review actually runs with.
@@ -18,7 +24,7 @@ import type { ReviewConfig } from "@/lib/review-helpers";
  * nobody can assert against.
  */
 
-/** The frozen part of an attempt this decision needs. */
+/** The frozen part of a `ReviewRun` this decision needs. */
 export interface AttemptSnapshot {
   readonly configSnapshot: unknown;
 }
@@ -27,7 +33,7 @@ export interface AttemptSnapshot {
  * The snapshot wins whenever there is one.
  *
  * `live` is still evaluated by the caller and passed in, deliberately: it is the
- * fallback for jobs enqueued before attempts existed, which are still in the
+ * fallback for jobs enqueued before runs existed, which are still in the
  * queue and were enqueued under the old behaviour. Refusing them would strand
  * real work.
  */
@@ -48,21 +54,21 @@ export function resolveReviewConfig(
 }
 
 /**
- * What terminal state an attempt reached, derived from the pull request's status
- * once execution returns.
+ * What terminal state a `ReviewRun` reached, derived from the pull request's
+ * status once execution returns.
  *
  * Derived rather than threaded. `processReview` is one 2,100-line function with
  * around a dozen exits -- completion, failure, delegation to the large-review
  * pipeline, "reviews are paused", "already completed", a low-balance deferral --
- * and marking the attempt at each of them means every future exit somebody adds
- * silently leaves the attempt `pending`. The pull request's status is already
+ * and marking the run at each of them means every future exit somebody adds
+ * silently leaves the run `pending`. The pull request's status is already
  * written at each of those exits, so reading it afterwards answers the same
  * question without depending on anyone remembering.
  *
- * `null` means the attempt is NOT terminal: work is still in flight. `queued` is
+ * `null` means the run is NOT terminal: work is still in flight. `queued` is
  * that case -- both the large-review handoff and the low-balance deferral park a
  * pull request there with something else due to pick it up, and terminalising the
- * attempt would claim a review ended when it had only moved.
+ * run would claim a review ended when it had only moved.
  */
 export function attemptOutcomeForStatus(
   status: string | null | undefined,
@@ -78,11 +84,94 @@ export function attemptOutcomeForStatus(
       // `reviewing` or `pending` after execution returned means an early exit that
       // wrote no terminal status: reviews paused for the organization, an author on
       // the blocked list, a duplicate claim. None of those ran the review, and none
-      // of them is a failure of it, so the attempt is cancelled rather than failed --
+      // of them is a failure of it, so the run is cancelled rather than failed --
       // and, either way, it does not stay `pending` forever pretending to be live.
       return {
         state: "cancelled",
         detail: `review did not run (pull request left "${status ?? "unknown"}")`,
       };
   }
+}
+
+export async function updateCurrentReview(pullRequestId: string, headSha: string | null, reviewRequestVersion: number | undefined, data: Prisma.PullRequestUpdateManyMutationInput, expectedReviewBody?: string) {
+  if (!headSha || !isReviewRequestVersion(reviewRequestVersion)) return { count: 0 };
+  return prisma.pullRequest.updateMany({ where: { id: pullRequestId, headSha, reviewRequestVersion, ...(expectedReviewBody !== undefined ? { reviewBody: expectedReviewBody } : {}) }, data });
+}
+
+/** Call only after the final report has been published successfully. Never infer this from an archived result. */
+export async function recordFirstReviewCompletion(pullRequestId: string, headSha: string | null, reviewRequestVersion: number | undefined, reviewBody: string) {
+  if (!headSha || !isReviewRequestVersion(reviewRequestVersion)) return;
+  await prisma.pullRequest.updateMany({
+    where: { id: pullRequestId, headSha, reviewRequestVersion, reviewBody, status: "completed", firstReviewCompletedAt: null },
+    data: { firstReviewCompletedAt: new Date() },
+  });
+}
+
+export async function createReviewAttemptComment(
+  pullRequestId: string,
+  headSha: string | null,
+  reviewRequestVersion: number | undefined,
+  create: () => Promise<number>,
+  expectedReviewBody?: string,
+): Promise<number> {
+  let saved = false;
+  return withForgejoPublication(async () => {
+    const id = await create();
+    const updated = await updateCurrentReview(pullRequestId, headSha, reviewRequestVersion, { reviewCommentId: id }, expectedReviewBody);
+    saved = updated.count === 1;
+    return id;
+  }, { key: JSON.stringify([pullRequestId, headSha, reviewRequestVersion]), acknowledged: async () => saved });
+}
+
+export function withForgejoReviewPublication(
+  pullRequestId: string, headSha: string | null, reviewRequestVersion: number,
+  review: () => Promise<void>, signal?: AbortSignal,
+): Promise<void> {
+  return withForgejoPublication(review, {
+    key: JSON.stringify([pullRequestId, headSha, reviewRequestVersion]), signal,
+    acknowledged: async tx => (await tx.pullRequest.count({ where: {
+      id: pullRequestId, headSha, reviewRequestVersion, status: { in: ["completed", "failed"] },
+    } })) === 1,
+  });
+}
+
+export async function hasReviewAttempt(attemptId: string, pullRequestId: string, coverage: ReviewCoverage, reviewBody: string, client: Pick<Prisma.TransactionClient, "reviewAttempt"> = prisma) {
+  const existing = await client.reviewAttempt.findUnique({ where: { id: attemptId } });
+  if (!existing) return false;
+  if (existing.pullRequestId !== pullRequestId || existing.headSha !== coverage.headSha || existing.baseSha !== coverage.baseSha
+    || existing.reviewBody !== reviewBody || !isDeepStrictEqual(existing.coverage, JSON.parse(JSON.stringify(coverage)))) {
+    throw new Error("Review attempt identity conflict");
+  }
+  return true;
+}
+
+/** Store a new immutable result and the current PR view atomically. */
+export async function saveReviewAttempt(
+  attemptId: string,
+  pullRequestId: string,
+  coverage: ReviewCoverage,
+  reviewBody: string,
+  issues?: Prisma.ReviewIssueCreateManyInput[],
+) {
+  const coverageJson = JSON.parse(JSON.stringify(coverage)) as Prisma.InputJsonValue;
+  return prisma.$transaction(async tx => {
+    const inserted = await tx.reviewAttempt.createMany({ skipDuplicates: true, data: [{
+      id: attemptId, pullRequestId, headSha: coverage.headSha,
+      baseSha: coverage.baseSha, coverage: coverageJson, reviewBody,
+    }] });
+    if (!inserted.count) {
+      if (!await hasReviewAttempt(attemptId, pullRequestId, coverage, reviewBody, tx)) throw new Error("Review attempt identity conflict");
+      return false;
+    }
+    if (!coverage.headSha || !isReviewRequestVersion(coverage.reviewRequestVersion)) return false;
+    const promoted = await tx.pullRequest.updateMany({ where: { id: pullRequestId, headSha: coverage.headSha, reviewRequestVersion: coverage.reviewRequestVersion }, data: {
+      status: "completed", reviewBody, reviewCoverage: coverageJson, errorMessage: null,
+    } });
+    if (!promoted.count) return false;
+    if (issues !== undefined) {
+      await tx.reviewIssue.deleteMany({ where: { pullRequestId } });
+      if (issues.length) await tx.reviewIssue.createMany({ data: issues });
+    }
+    return true;
+  });
 }

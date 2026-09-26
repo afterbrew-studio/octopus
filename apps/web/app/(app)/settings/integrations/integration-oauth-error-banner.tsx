@@ -1,6 +1,14 @@
 import { IconAlertTriangle } from "@tabler/icons-react";
 
 const OAUTH_ERROR_MESSAGES = {
+  connection_replacement: {
+    title: "Current connection kept",
+    description: "An owner or admin must disconnect the current provider before connecting a different host, namespace or workspace. Reconnecting after disconnection requires repairing any retained webhooks with the new connection details.",
+  },
+  connection_busy: {
+    title: "Connection could not be saved",
+    description: "Setup or another connection change may be running. Your current connection has been kept. Retry shortly.",
+  },
   state_expired: {
     title: "Connection flow expired",
     description:

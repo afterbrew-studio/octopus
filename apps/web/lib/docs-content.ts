@@ -27,13 +27,13 @@ Octopus is a source-available, AI-powered code review tool.`,
       },
       {
         heading: "How It Works",
-        text: `Step 1: Connect GitHub — Install the Octopus GitHub App on your repositories. Select which repos to monitor. GitLab and Bitbucket are also supported via OAuth.
+        text: `Step 1: Connect your repository. Use the GitHub App, GitLab or Bitbucket OAuth, or Forgejo. For Forgejo choose Cloud + public HTTPS (direct), Cloud + private LAN/VPN (local connector), or self-hosted Octopus + private LAN/VPN (direct). All Forgejo connections use a personal access token and signed repository webhooks.
 Step 2: AI Learns Your Code — Octopus indexes your codebase, creating vector embeddings of your code chunks. It understands your architecture, patterns, and conventions.
 Step 3: Reviews on Autopilot — Every pull request is automatically reviewed. Octopus posts findings as inline comments with severity levels: Critical, Major, Minor, Suggestion, and Tip.`,
       },
       {
         heading: "Cloud or Self-Host",
-        text: `Two ways to run Octopus. Cloud (recommended): a fully managed service — nothing to run or maintain. Auto-reviews every PR via the GitHub App, free credits to start with usage-based pricing after (no card required), managed updates, backups, and scaling, and your code is never stored long-term or used for training. Self-host: run the entire platform on your own infrastructure with one Docker Compose file — free and source-available (Modified MIT License), your code never leaves your network, and you can bring your own AI keys or run local models.`,
+        text: `Two ways to run Octopus. Cloud: a managed service with reviews for GitHub, GitLab, Bitbucket and Forgejo. Forgejo can connect directly over public HTTPS or through a local connector for private LAN/VPN access. The connector and Forgejo both need outbound HTTPS to Cloud. Free credits to start, then usage-based pricing. Self-host: run Octopus with Docker Compose on your own infrastructure. It is free and source-available (Modified MIT License). You choose the AI services; external services receive code for processing. Use local services when processing must stay on your network.`,
       },
       {
         heading: "Stats",
@@ -51,27 +51,27 @@ Analytics — Track review activity, time to merge, token usage, and costs acros
       {
         heading: "Source-Available",
         text: `Octopus is source-available under a Modified MIT License and free to self-host.
-Self-Host Ready — Run Octopus on your own infrastructure with one Docker Compose file. Your code never leaves your servers. Bring your own AI keys or run local models.`,
+Self-Host Ready — Run Octopus on your own infrastructure with one Docker Compose file. Choose local AI services to keep processing on your network, or configure external AI providers.`,
       },
       {
         heading: "FAQ",
         text: `Q: What is Octopus?
-A: Octopus is an AI-powered code review tool that connects to GitHub, GitLab, and Bitbucket, indexes your codebase for deep context, and automatically reviews every pull request (and GitLab merge request) — posting findings as inline comments with severity levels.
+A: Octopus is an AI-powered code review tool that connects to GitHub, GitLab, Bitbucket, and Forgejo, indexes your codebase for deep context, and automatically reviews every pull request (and GitLab merge request) — posting findings as inline comments with severity levels.
 
 Q: How does the automated review work?
-A: When a pull request is opened, Octopus fetches the diff, retrieves relevant context from your indexed codebase using vector search, and sends it to an LLM (Claude, OpenAI, or Google Gemini) for analysis. Findings are posted directly on the PR with severity ratings: Critical, Major, Minor, Suggestion, and Tip.
+A: When a pull request is opened, Octopus fetches the diff, retrieves relevant context from your indexed codebase using vector search, and sends it to an LLM (Anthropic Claude, OpenAI GPT, Google Gemini, xAI Grok, Alibaba Qwen, or any model on OpenRouter) for analysis. Findings are posted directly on the PR with severity ratings: Critical, Major, Minor, Suggestion, and Tip.
 
 Q: Which programming languages are supported?
 A: Octopus is language-agnostic. It reviews any text-based code file — TypeScript, Python, Go, Rust, Java, C#, Ruby, PHP, Swift, Kotlin, and more.
 
 Q: Is my source code safe?
-A: Yes. Your code is processed in-memory and never stored permanently. Only vector embeddings are persisted for search. You can also self-host Octopus.
+A: Octopus reads repository content to index and review your code. Configured AI services process code and review context. Self-hosting Forgejo does not change this. Self-hosted Octopus with local AI services lets you keep processing on your infrastructure. See the security overview and data-retention documentation for storage details.
 
 Q: Does Octopus replace human reviewers?
 A: No. Octopus augments your team's review process. It catches bugs, security issues, and style inconsistencies so your human reviewers can focus on architecture, design decisions, and business logic.
 
 Q: Is there a free tier?
-A: Yes! Every organization gets free credits to start. You can also bring your own API keys (Anthropic, OpenAI, Google, Cohere) to avoid credit costs entirely.`,
+A: Yes! Every organization gets free credits to start. You can also bring your own API keys (Anthropic, OpenAI, Google, Alibaba Cloud Model Studio, Cohere) to avoid credit costs entirely.`,
       },
     ],
   },
@@ -86,20 +86,20 @@ A: Yes! Every organization gets free credits to start. You can also bring your o
         text: `Octopus is an AI-powered code review tool that indexes your entire codebase, learns your patterns and architecture, and reviews every pull request with deep context awareness. It catches real bugs, security issues, and code quality problems before they reach production.
 Codebase-Aware: Indexes your code and understands your architecture, not just the diff.
 Automatic Reviews: Every PR gets reviewed instantly with severity-rated inline comments.
-Works With Your Tools: GitHub, GitLab, Bitbucket, Slack, Linear, Jira. Fits into your existing workflow.`,
+Works With Your Tools: GitHub, GitLab, Bitbucket, Forgejo, Slack, Linear, Jira. Fits into your existing workflow.`,
       },
       {
         heading: "1. Connect Your Repository",
-        text: `Start by connecting your GitHub, GitLab, or Bitbucket account from the dashboard. Octopus installs as a GitHub App or sets up GitLab/Bitbucket OAuth to receive webhook events from your repositories.
-GitHub: Install the GitHub App, select repositories, and you're ready to go.
+        text: `Start by connecting your GitHub, GitLab, Bitbucket, or Forgejo account from the dashboard. Octopus uses the GitHub App, GitLab/Bitbucket OAuth, or a Forgejo personal access token to access repositories.
+GitHub: Install the GitHub App and select repositories.
 GitLab: Connect via OAuth and Octopus automatically manages webhooks for merge requests.
 Bitbucket: Connect via OAuth and Octopus automatically manages webhooks.
-Once connected, Octopus indexes your codebase. It chunks your code, creates embeddings, and builds a searchable representation of your entire project.`,
+Forgejo: Choose Cloud + public HTTPS (direct), Cloud + private LAN/VPN (local connector), or self-hosted Octopus + private LAN/VPN (direct). Use the matching personal access token and signed webhook steps at /docs/integrations#forgejo.
+For repository readiness, automatic preparation and the first-review milestone, follow /docs/getting-started. For separate authorization, sync and webhook checks and safe recovery, see /docs/integrations#setup-checks.`,
       },
       {
         heading: "2. Your First Review",
-        text: `Open a pull request on any connected repository. Octopus automatically picks it up via webhook, analyzes the diff against your full codebase context, and posts findings as inline comments.
-The review pipeline: Webhook receives PR event → Octopus fetches the diff → AI analyzes changes with codebase context → Findings posted as inline PR comments.`,
+        text: `Follow the authoritative first-review instructions at /docs/getting-started and the repository-specific guide at /dashboard.`,
       },
       {
         heading: "3. Understanding Findings",
@@ -118,7 +118,7 @@ Key commands: octp chat (chat with your codebase), octp review --pr <number> (re
       },
       {
         heading: "5. Customize Your Setup",
-        text: `AI Provider: Choose between Claude (Anthropic), OpenAI, and Google Gemini for reviews and chat. Or bring your own API keys.
+        text: `AI Provider: Choose between Claude (Anthropic), OpenAI, Google Gemini, and Qwen (Alibaba Cloud Model Studio) for reviews and chat. Or bring your own API keys.
 Knowledge Base: Upload documents, coding guidelines, and architecture decisions. Octopus references these during reviews.
 .octopusignore: Exclude files and directories from indexing and review (same syntax as .gitignore).
 Spend Limits: Set monthly spending caps per organization to control costs.
@@ -151,8 +151,10 @@ octp chat — Start an interactive chat session about your codebase.`,
       {
         heading: "Pull Request Commands",
         text: `octp review --pr <number> — Review a specific pull request.
-You can also pass a full PR URL: octp review --pr https://github.com/org/repo/pull/142
-The CLI streams the review in real-time and posts findings to the PR.`,
+You can also pass a full GitHub, GitLab, or Bitbucket PR URL: octp review --pr https://github.com/org/repo/pull/142
+For Forgejo, use the PR number from its connected repository checkout; native CLI 0.6.0 does not accept Forgejo full PR URLs.
+This requests an asynchronous server-side review for a connected repository. A successful response means queued, not completed. Follow Review Logs and the resulting comments on the PR.
+For a staged local diff, use octp review --staged --no-index --format json. It returns findings in the terminal; it does not post PR comments. --no-index prevents new indexing but can still use existing indexed context. Code and review metadata go to Octopus and its configured AI services; credits or provider budget apply. Check truncated in local JSON output before claiming complete coverage.`,
       },
       {
         heading: "Dependency Analysis",
@@ -174,9 +176,10 @@ The local agent monitors your project and provides real-time assistance.`,
       },
       {
         heading: "Skills",
-        text: `octp skills list — List available automation skills.
-octp skills install <name> — Install a skill for Claude Code or Codex.
-Skills are pre-built automation workflows like "Split and Ship" and "Octopus Fix".`,
+        text: `octp skills list — List available automation command files.
+octp skills install octopus-fix — Install this Claude Code command into the current project's .claude/commands directory.
+octp skills install --all — Install all available command files there.
+The native CLI does not support --claude or --codex install flags. For Codex, OpenCode, Hermes Agent, OpenClaw, Cursor, or a Claude Code skill, use the shared SKILL.md and per-tool setup at https://octopus-review.ai/docs/cli/ai-agents.`,
       },
       {
         heading: "Configuration",
@@ -185,6 +188,58 @@ octp config set <key> <value> — Set a configuration value.
 octp usage — View token and credit usage.
 octp logout — End your session.
 Multiple profiles are supported for switching between accounts.`,
+      },
+    ],
+  },
+
+  {
+    page: "cli/ai-agents",
+    title: "AI Coding Agents",
+    sections: [
+      {
+        heading: "Install the CLI and shared skill",
+        text: `Use Octopus with Claude Code, Codex, OpenCode, Hermes Agent by Nous Research, OpenClaw, and Cursor through the native octp CLI and a shared skill. These are CLI/skill setups; do not invent a published Codex, OpenCode, Hermes, or OpenClaw plugin.
+Follow https://octopus-review.ai/docs/cli to install and run octp login yourself. Install and authenticate in the environment where the agent actually runs commands, including its remote host, container, sandbox, or node. Ask the agent to run octp --version and octp whoami there and confirm the intended organization. These checks do not start a review. Never paste tokens into chat or skill files.
+Download https://octopus-review.ai/skills/octopus/SKILL.md and save it in the location for your tool. This skill is separate from the Claude command files installed by octp skills install. Full guide: https://octopus-review.ai/docs/cli/ai-agents.`,
+      },
+      {
+        heading: "Agent skill locations and activation",
+        text: `Claude Code: save .claude/skills/octopus/SKILL.md in the project; start a new session and use /octopus. The separately packaged MCP plugin has its own setup at https://octopus-review.ai/docs/cli/claude-code-integration.
+Codex: save .agents/skills/octopus/SKILL.md in the project and invoke $octopus or ask Codex to use the skill.
+OpenCode: save .agents/skills/octopus/SKILL.md (or .opencode/skills/octopus/SKILL.md); start in that project and ask it to use the octopus skill.
+Hermes Agent by Nous Research: save .agents/skills/octopus/SKILL.md; review the project's skills and run hermes skills trust from its root before starting Hermes. Use /skills to check discovery, then /octopus. The CLI and login must exist inside the configured terminal backend, including Docker or SSH.
+OpenClaw: save .agents/skills/octopus/SKILL.md in the configured agent workspace, or skills/octopus/SKILL.md. Run openclaw skills info octopus to check discovery, then use /octopus in a new session. The configured workspace and execution host/node/sandbox may differ from your shell's current checkout.
+Cursor: save .agents/skills/octopus/SKILL.md in the project, check Customize > Skills, then use /octopus in Agent chat. Remote agents need their own available CLI and login.
+Each tool's ordinary terminal permissions and trust controls still apply.`,
+      },
+      {
+        heading: "Choose the review scope",
+        text: `For exactly the staged diff, run octp review --staged --no-index --format json from the intended repository. Untracked files are excluded. Default octp review --no-index --format json can include committed changes since upstream plus unstaged tracked changes, and may omit staged-only changes; inspect the intended scope first. --no-index avoids new repository indexing but can use already indexed context. Local JSON's truncated:true means incomplete coverage.
+For a connected repository's PR, octp review --pr 42 (or a full GitHub, GitLab, or Bitbucket PR URL) queues a server-side review. For Forgejo use the PR number from its connected checkout; the native CLI 0.6.0 URL parser does not accept Forgejo PR URLs. Confirm the final result in https://octopus-review.ai/review-logs and on the PR before reporting completion.
+Reviews send code/diffs and metadata to the configured Octopus server and AI services and use credits or provider budget, separately from the coding agent subscription. Present findings first; editing files, committing, pushing, and posting comments follow the user's authorization and repository instructions.`,
+      },
+    ],
+  },
+  {
+    page: "cli/claude-code-integration",
+    title: "Claude Code Integration",
+    sections: [
+      {
+        heading: "Install the current Claude plugin",
+        text: `The current Octopus MCP plugin is octopus-review in the publisher's octopus-review marketplace. In a terminal run:
+claude plugin marketplace add octopusreview/octopus-plugin
+claude plugin install octopus-review@octopus-review
+Inside Claude Code the equivalents start with /plugin marketplace add and /plugin install. This is the publisher's marketplace, not a claim of inclusion in Anthropic's official catalog. Prerequisites: current Claude Code, Node.js 18 or later with npx, Git, and outbound access to GitHub, the npm registry and Octopus Cloud. The plugin does not need the Octopus CLI. Guide: https://octopus-review.ai/docs/cli/claude-code-integration.`,
+      },
+      {
+        heading: "Configure and verify the Claude plugin",
+        text: `Create an organization API token in https://octopus-review.ai/settings/api-tokens. Inside Claude Code run /plugin configure octopus-review@octopus-review and enter it in the sensitive api_token field. Keep tokens out of chat and Git. Restart Claude Code, open /mcp to check that octopus connects, and ask it to call octopus_status without starting a review. Confirm the intended organization.
+For tracked working-tree and staged changes, ask the plugin to review the current repository. It uses git diff HEAD; untracked files are excluded, and the Octopus API limit is 500 KiB. The plugin shows brief findings summaries; use the native CLI for structured local review results. Reviews send code to Octopus and configured AI services and use organization credits or provider budget. For a connected repository, asking it to review PR 42 queues a server-side review; verify completion in Review Logs and the PR comments. Type /octopus-review: and select the review command for slash-command use.
+Installation and component discovery were checked with Claude Code 2.1.276; this is not evidence of an authenticated customer review. For the native CLI or a configured self-hosted Octopus server, follow https://octopus-review.ai/docs/cli/ai-agents instead.`,
+      },
+      {
+        heading: "Legacy plugin instructions",
+        text: `claude plugin install octopus fails in a fresh configuration because its marketplace has not been added. The older octopusreview/claude-plugin repository declares the separate octopus@octopus plugin and still contains instructions calling the obsolete octopus executable. Adding that old marketplace can make installation succeed without making those review commands current. Recommend the current octopus-review@octopus-review plugin or the shared native octp skill. Do not recommend an unqualified /review command or npm @octp/cli as the current native installation.`,
       },
     ],
   },
@@ -202,23 +257,12 @@ Usage-Based: Pay only for what you use. Purchase credits as needed or set up aut
       },
       {
         heading: "Bring Your Own Keys (BYOK)",
-        text: `You can bring your own API keys for Anthropic (Claude), OpenAI, Google, and Cohere. When using your own keys, AI operations don't consume Octopus credits — you pay the providers directly at their rates.
+        text: `You can bring your own API keys for Anthropic (Claude), OpenAI, Google, Alibaba Cloud Model Studio (Qwen), and Cohere. When using your own keys, AI operations don't consume Octopus credits — you pay the providers directly at their rates.
 This is ideal for teams that already have API agreements with AI providers or want full control over costs.`,
       },
       {
         heading: "Model Pricing",
-        text: `Octopus supports multiple AI models. A 20% platform fee is applied on top of provider costs. Base prices per 1M tokens:
-Claude Fable 5 — $10 input / $50 output. Anthropic's Claude 5 frontier model; the top opt-in tier for the most demanding reviews.
-Claude Opus 5 — $5 input / $25 output. Premium, opt-in review model for a deeper read on tricky pull requests.
-Claude Opus 4.8 — $5 input / $25 output. The default review model on Octopus Cloud.
-Claude Opus 4 — $15 input / $75 output. Legacy high-quality review model.
-Claude Sonnet 4.6 and Claude Sonnet 4 — $3 input / $15 output. High quality and fast; Sonnet 4.6 is the default for self-hosted installs.
-Claude Haiku 4.5 — $1 input / $5 output. Lightweight tasks like title generation.
-Gemini 2.5 Pro — $1.25 input / $10 output. Gemini 2.5 Flash — $0.15 input / $0.60 output.
-GPT-5.3 Codex — $1.75 input / $14 output.
-Embeddings: text-embedding-3-large ($0.13) and text-embedding-3-small ($0.02).
-Cohere rerank is used for re-ranking search results.
-Prompt caching reduces costs: cached reads are billed at 10% of the input price.`,
+        text: `Octopus supports models including Claude Opus 5.5 and GPT-6 Astra. For model pricing, the platform rate and prompt-cache discounts, see the pricing guide: https://octopus-review.ai/docs/pricing.`,
       },
       {
         heading: "Spend Limits & Billing",
@@ -251,7 +295,26 @@ Authentication uses OAuth Bearer tokens; clone is handled via the GitLab API so 
         heading: "Bitbucket",
         text: `Connect Bitbucket via OAuth from the Octopus dashboard.
 Features: PR reviews via webhook, inline comments, automatic webhook management.
-Octopus manages the webhook lifecycle — no manual setup needed.`,
+Workspace webhook setup checks and recovery, including existing hooks with ambiguous ownership: /docs/integrations#setup-checks.`,
+      },
+      {
+        heading: "Forgejo connection options",
+        text: `Choose one of three setups at /docs/integrations#forgejo:
+1. Octopus Cloud + public HTTPS: direct connection with a personal access token stored encrypted in Octopus. /docs/integrations#forgejo-cloud-public.
+2. Octopus Cloud + private LAN/VPN: run the local outbound connector on a machine with private Forgejo access. Forgejo stays private; its personal access token stays on the connector machine. Both the connector and Forgejo need outbound HTTPS to octopus-review.ai on port 443. The connector handles API requests, and Forgejo sends signed webhooks directly to Cloud. No public Forgejo address, tunnel or connector inbound port is needed. Code and review context still reach Cloud and the configured AI services. /docs/integrations#forgejo-cloud-private.
+3. Self-hosted Octopus + private LAN/VPN: connect directly from your own Octopus web application and review workers. In Settings > Integrations > Forgejo, enter the HTTPS origin and personal access token, then click Connect Forgejo to connect and sync repositories. Both need network/DNS access and FORGEJO_ALLOWED_PRIVATE_ORIGINS with exact HTTPS origins; see /docs/self-hosting#forgejo. No connector is required.
+All modes use a dedicated Forgejo account with repository admin access, not instance administrator access. Token scopes: read:user, write:repository, write:issue. For private repositories choose All (public, private, and limited), limiting repository access through the bot account. Specific repositories tokens cannot include read:user. One Forgejo instance per Octopus organization; only repositories administered by the account sync. Configure signed webhooks using the URL and secret in Settings. In Forgejo choose Trigger on > Custom events… > Pull request events, then Modification and Synchronized. Select Comments in that same group for @octopus or /octopus PR commands, keep Active checked and save. Token, webhook and automatic/manual event details: /docs/integrations#forgejo. Native CLI agent setup remains GitHub-only.`,
+      },
+      {
+        heading: "Forgejo private connector setup",
+        text: `The Forgejo connector is a small Docker container you run on a machine with access to your private Forgejo instance. Docker downloads it automatically when you run the setup command; no separate installer is needed. Install Docker at https://docs.docker.com/get-started/get-docker/. The published connector image is ghcr.io/octopusreview/octopus-selfhost:forgejo-connector-1.2.0, available at https://github.com/orgs/octopusreview/packages/container/octopus-selfhost/1269975499.
+1. In your dedicated Forgejo account, open Settings > Applications and create a personal access token with read:user, write:repository and write:issue, choosing All (public, private, and limited). Keep this separate token on your connector machine as FORGEJO_TOKEN. Give the account admin access only to the intended repositories; instance administrator access is unnecessary.
+2. As an Octopus organization owner or admin, open /settings/integrations#forgejo in Octopus Cloud. Choose Private network connector, enter the exact HTTPS Forgejo origin and click Create connector, then Copy connector token. Save this one-time token as OCTOPUS_CONNECTOR_TOKEN.
+3. On that machine, create a protected connector.env file with OCTOPUS_URL=https://octopus-review.ai, OCTOPUS_CONNECTOR_TOKEN, FORGEJO_URL and FORGEJO_TOKEN (chmod 600). Start the connector with docker run using --env-file connector.env, --restart unless-stopped, --stop-timeout 120 and --read-only; publish no ports. Copyable commands: /docs/integrations#forgejo-cloud-private. Container DNS/VPN routes must reach Forgejo, not just the host browser. Verified HTTPS is required; localhost, loopback, link-local, metadata addresses, redirects and HTTP are blocked. For an internal CA, set NODE_EXTRA_CA_CERTS to a mounted trusted PEM file and keep certificate verification enabled.
+4. Return to Octopus Settings > Integrations > Forgejo, click Refresh status and wait for Connector online, then click Sync repositories.
+5. In each Forgejo repository, open Settings > Webhooks > Add Webhook > Forgejo. Copy Target URL and Webhook secret from Octopus; use POST and application/json. Under Trigger on choose Custom events… > Pull request events, selecting Modification and Synchronized. Also select Comments in that same group for PR commands. Keep Active checked and save the webhook. Forgejo sends these webhooks directly to Octopus Cloud.
+6. Follow /docs/integrations#forgejo-cloud-private for repository readiness and your first PR, with automatic preparation. Keep the connector running for indexing and reviews.
+Rotating the connector credential invalidates the old one; update the local configuration and restart. Docker users must recreate the container with the env file; docker restart does not reload it. An uncertain write result pauses the connector; inspect Forgejo before selecting Resume after checking Forgejo. The uncertain write is not automatically replayed. Consumed response payloads are cleared immediately; payload-free publication recovery metadata stays until acknowledgement, with renewable 60-second leases capped at two hours. Failed or expired metadata is eligible for deletion after five minutes; the reconciliation hold remains until an administrator resumes the connector. Disconnecting deactivates repositories. Remove webhooks and revoke the Forgejo token too. This connection needs internet access and does not keep Cloud review processing on your network. Full setup: /docs/integrations#forgejo-cloud-private.`,
       },
       {
         heading: "Jira",
@@ -298,7 +361,7 @@ The self-host compose file includes PostgreSQL and Qdrant containers.`,
       },
       {
         heading: "Environment Variables",
-        text: `Required: DATABASE_URL, QDRANT_URL, OPENAI_API_KEY, ANTHROPIC_API_KEY, BETTER_AUTH_SECRET, BETTER_AUTH_URL, GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY, GITHUB_WEBHOOK_SECRET.
+        text: `Configure DATABASE_URL, QDRANT_URL, BETTER_AUTH_SECRET, BETTER_AUTH_URL, and your embedding/review AI services. GitHub App credentials are needed only when connecting GitHub repositories. For a direct Forgejo connection, enter the instance URL and token in Settings > Integrations and add repository webhooks. Self-hosted Octopus can reach private Forgejo through FORGEJO_ALLOWED_PRIVATE_ORIGINS configured on both web and review workers. Cloud users with private Forgejo instead use the local connector described at /docs/integrations#forgejo-cloud-private.
 Optional: GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET (for GitHub login), COHERE_API_KEY (for re-ranking), GOOGLE_API_KEY (Gemini models), STRIPE_SECRET_KEY (for billing).
 The self-hosting docs page includes an interactive env generator.`,
       },
@@ -331,7 +394,7 @@ Running without Docker: Install Bun, set up PostgreSQL and Qdrant locally, run b
 A: Octopus is a source-available, AI-powered code review tool that indexes your codebase and automatically reviews pull requests with context-aware findings.
 
 Q: How does Octopus review code?
-A: When a PR is opened, Octopus fetches the diff, retrieves relevant code context via vector search, and uses an LLM (Claude, OpenAI, or Google Gemini) to analyze changes. Findings are posted as inline PR comments.
+A: When a PR is opened, Octopus fetches the diff, retrieves relevant code context via vector search, and uses an LLM (Anthropic Claude, OpenAI GPT, Google Gemini, xAI Grok, Alibaba Qwen, or any model on OpenRouter) to analyze changes. Findings are posted as inline PR comments.
 
 Q: What languages does Octopus support?
 A: Octopus is language-agnostic. It supports TypeScript, JavaScript, Python, Go, Rust, Java, C#, Ruby, PHP, Swift, Kotlin, Scala, C, C++, Vue, Svelte, Astro, HTML, CSS, SQL, GraphQL, and more.
@@ -345,21 +408,21 @@ A: Linters check syntax and formatting rules. Octopus understands your entire co
       {
         heading: "Security & Privacy",
         text: `Q: Is my code safe?
-A: Your code is processed in-memory and never stored permanently. Only vector embeddings are persisted.
+A: Octopus reads repository content for indexing and reviews, and configured AI services process code and review context. This also applies to self-hosted Forgejo connected to Octopus Cloud. See the security overview and data-retention documentation for storage details.
 
 Q: Can I self-host Octopus?
-A: Yes. Octopus is fully self-hostable with Docker. Your code never leaves your infrastructure.
+A: Yes. Octopus is fully self-hostable with Docker. External AI services still receive code when configured. Use local services for processing that must stay on your infrastructure.
 
 Q: Which AI models are used?
-A: Claude (Anthropic), OpenAI (GPT), and Google Gemini are all supported review/chat models, selectable per organization — and you can bring your own key for any of them (a Google Gemini API key works for reviews, not just embeddings). OpenAI text-embedding-3-large is used for embeddings. Cohere Rerank is used for search re-ranking.
+A: Claude (Anthropic), OpenAI (GPT), Google Gemini, and Qwen (Alibaba Cloud Model Studio) are all supported review/chat models, selectable per organization — and you can bring your own key for any of them (a Google Gemini API key works for reviews, not just embeddings). OpenAI text-embedding-3-large is used for embeddings. Cohere Rerank is used for search re-ranking.
 
 Q: Is my code used for AI training?
-A: No. Anthropic, OpenAI, and Google do not use API inputs to train their models. Your code is never used to train AI models.`,
+A: Octopus sends code to configured AI services for indexing and reviews. Check each service's current terms and account settings for its data-use policy. Use local services when external processing is not permitted.`,
       },
       {
         heading: "Integrations",
         text: `Q: Which Git platforms are supported?
-A: GitHub, GitLab, and Bitbucket. GitLab supports both GitLab.com and self-managed instances.
+A: GitHub, GitLab, Bitbucket, and Forgejo. GitLab supports both GitLab.com and self-managed instances. Forgejo supports Cloud + public HTTPS (direct), Cloud + private LAN/VPN (local connector), or self-hosted Octopus + private LAN/VPN (direct). All use an HTTPS instance, a personal access token and signed repository webhooks. See /docs/integrations#forgejo.
 
 Q: Does Octopus work with Slack?
 A: Yes. Use the /octopus command to ask questions about your codebase. You also receive notifications for review events.
@@ -385,7 +448,7 @@ Q: Is there a free tier?
 A: Yes. Every organization gets free credits. No credit card required.
 
 Q: Can I use my own API keys?
-A: Yes. Bring Your Own Keys (BYOK) for Anthropic, OpenAI, Google, and Cohere. No credits consumed.
+A: Yes. Bring Your Own Keys (BYOK) for Anthropic, OpenAI, Google, Alibaba Cloud Model Studio, and Cohere. No credits consumed.
 
 Q: How do spend limits work?
 A: Set a monthly cap per organization. Operations are paused when the limit is reached.`,
@@ -417,7 +480,7 @@ A: Octopus uses WebSocket connections (via Pubby SDK) to push real-time updates:
     sections: [
       {
         heading: "Terms",
-        text: `BYO Keys (Bring Your Own Keys): Use your own API keys for Anthropic, OpenAI, Google, or Cohere instead of Octopus credits. Configure in organization settings.
+        text: `BYO Keys (Bring Your Own Keys): Use your own API keys for Anthropic, OpenAI, Google, Alibaba Cloud Model Studio, or Cohere instead of Octopus credits. Configure in organization settings.
 
 Codebase Indexing: The process of cloning a repository, splitting code into chunks, creating vector embeddings, and storing them in Qdrant for semantic search.
 
@@ -431,7 +494,7 @@ Embeddings: Numerical vector representations of text. Octopus uses OpenAI text-e
 
 Knowledge Base: Custom documents uploaded to an organization (coding guidelines, architecture decisions, style guides) that Octopus references during reviews.
 
-LLM (Large Language Model): AI models like Claude (Anthropic), GPT (OpenAI), and Gemini (Google) that analyze code and generate review findings.
+LLM (Large Language Model): AI models like Claude (Anthropic), GPT (OpenAI), Gemini (Google), Grok (xAI) and Qwen (Alibaba) that analyze code and generate review findings.
 
 .octopusignore: A file in your repository root (same syntax as .gitignore) that tells Octopus which files to skip during indexing and review.
 
@@ -445,7 +508,7 @@ Spend Limit: A monthly cost cap per organization. When reached, AI operations ar
 
 Vector Search: Semantic search using embeddings. Instead of keyword matching, vector search finds code that is semantically similar to the query, even with different wording.
 
-Webhook: An HTTP callback from GitHub, GitLab, or Bitbucket that notifies Octopus when events occur (PR/MR opened, PR/MR updated, push). This triggers automatic reviews.`,
+Webhook: An HTTP callback from GitHub, GitLab, Bitbucket, or Forgejo that notifies Octopus when events occur (PR/MR opened, PR/MR updated, push). This triggers automatic reviews.`,
       },
     ],
   },
@@ -457,7 +520,7 @@ Webhook: An HTTP callback from GitHub, GitLab, or Bitbucket that notifies Octopu
     sections: [
       {
         heading: "Overview",
-        text: `Skills are pre-built automation workflows that you can install and run with Claude Code or Codex. They automate common development tasks using Octopus as the backbone.
+        text: `The downloadable workflow command files on /docs/skills target Claude Code. The native CLI installs them under the project's .claude/commands directory, not as Codex plugins. For a shared Octopus review skill covering Claude Code, Codex, OpenCode, Hermes Agent, OpenClaw and Cursor, follow https://octopus-review.ai/docs/cli/ai-agents and download /skills/octopus/SKILL.md.
 Features: Smart categorization of changes, automatic PR creation, full traceability from issue to PR.`,
       },
       {
@@ -512,7 +575,7 @@ Turborepo for monorepo management.`,
       },
       {
         heading: "Future Direction",
-        text: `More Git provider integrations beyond the current GitHub, GitLab, and Bitbucket support.
+        text: `More Git provider integrations beyond the current GitHub, GitLab, Bitbucket, and Forgejo support.
 Smarter review engine with better context retrieval.
 Expanded CLI capabilities.
 Plugin system for custom review rules and integrations.`,

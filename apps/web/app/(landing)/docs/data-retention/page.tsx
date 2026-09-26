@@ -27,7 +27,7 @@ const RETENTION: RetentionRow[] = [
     category: "Diffs",
     what: "PR diff content used for a single review",
     retention: "Discarded after the review completes",
-    notes: "Never persisted to durable storage.",
+    notes: "Private Forgejo connector responses can temporarily include diffs in the encrypted transport queue described below.",
   },
   {
     category: "Embeddings",
@@ -49,9 +49,15 @@ const RETENTION: RetentionRow[] = [
   },
   {
     category: "Integration tokens",
-    what: "OAuth refresh tokens for Slack / Linear / Jira / GitLab",
+    what: "OAuth refresh tokens for Slack / Linear / Jira / GitLab and direct-connection Forgejo personal access tokens",
     retention: "Until the user disconnects the integration",
-    notes: "Stored encrypted at rest (apps/web/lib/crypto.ts).",
+    notes: "Stored encrypted at rest. For the private Forgejo connector, the Forgejo token stays on the connector machine; Octopus stores a hash of its separate connector credential. Disconnecting revokes connector access. Remove the local credentials and revoke the Forgejo token too.",
+  },
+  {
+    category: "Forgejo connector transport",
+    what: "Encrypted queued API requests and responses, including repository content and diffs",
+    retention: "Consumed responses are deleted; requests expire after 60 seconds",
+    notes: "Cleanup runs during connector activity and in a worker job scheduled every minute. Uncertain-write content is cleared when the connection is paused. Payload-free publication recovery metadata remains until durable acknowledgement, with renewable 60-second leases capped at two hours. Failed or expired metadata is eligible for deletion after five minutes; the reconciliation hold remains until an administrator resumes the connector. Worker outages can delay cleanup. Database backups follow the separate backup retention window.",
   },
   {
     category: "Sessions",
@@ -77,8 +83,8 @@ const RETENTION: RetentionRow[] = [
   {
     category: "Webhook deliveries",
     what: "Signature-verified webhook delivery metadata (IDs, event type, payload hash — never payload content)",
-    retention: "30 days (hosted default)",
-    notes: "Pruned daily; WEBHOOK_DELIVERY_RETENTION_DAYS accepts 1–365 days and fails server startup on invalid configuration.",
+    retention: "30 days by default; Forgejo acceptance records have no automatic expiry",
+    notes: "Non-Forgejo records are pruned daily; WEBHOOK_DELIVERY_RETENTION_DAYS accepts 1–365 days and fails server startup on invalid configuration. Forgejo acceptance metadata is excluded from that sweep to prevent replay from creating another billable review, including after a restart or completed review.",
   },
   {
     category: "Activity events",
@@ -103,7 +109,7 @@ export default function DataRetentionPage() {
           Compliance
         </div>
         <h1 className="text-3xl font-bold tracking-tight text-white sm:text-4xl">Data Retention</h1>
-        <p className="mt-3 text-sm text-[#555]">Last updated: August 2026</p>
+        <p className="mt-3 text-sm text-[#555]">Last updated: September 2026</p>
       </div>
 
       <P>

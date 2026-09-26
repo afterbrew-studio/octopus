@@ -1,4 +1,5 @@
 import "server-only";
+import { observeAiRequest } from "./request-evidence";
 import { prisma } from "@octopus/db";
 import type { Provider, AiCreateParams, AiResponse } from "./index";
 import { AGENT_STALE_THRESHOLD_MS } from "@/lib/agent-constants";
@@ -65,14 +66,14 @@ export const localProvider: Provider = {
     }
 
     const task = await prisma.agentLlmTask.create({
-      data: {
+      data: observeAiRequest(params, "local", {
         organizationId: orgId,
         modelId: params.model.startsWith("local:") ? params.model.slice(6) : params.model,
         system: params.system,
         messages: params.messages as object,
         maxTokens: params.maxTokens,
         timeoutMs: DEFAULT_TIMEOUT_MS,
-      },
+      }),
       select: { id: true },
     });
 

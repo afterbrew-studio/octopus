@@ -3,15 +3,12 @@ import { postJson } from "./api.js";
 import type { Credentials } from "./credentials.js";
 
 /**
- * Headless auth for the operational commands. Extracted so `login`,
- * `setup-token`, and the onboarding wizard share one device-flow
- * implementation. Endpoints:
- *   POST /api/cli/auth/device        → { deviceCode, expiresAt }
- *   GET  /api/cli/auth/poll?...      → { status, token, organization, user }
- *   POST /api/cli/auth/verify        → { user, organization }   (token paste)
+ * Shared device flow: login opts into user sessions; setup-token and the
+ * wizard retain organisation approval. Do not silently downgrade a requested
+ * user session when talking to an older server.
  */
 
-const MAX_POLL_ATTEMPTS = 200;
+const MAX_POLL_ATTEMPTS = 450;
 const POLL_INTERVAL_MS = 2000;
 const REQUEST_TIMEOUT_MS = 15_000;
 
@@ -22,12 +19,14 @@ export function isValidTokenFormat(token: string): boolean {
 }
 
 export interface AuthIdentity {
+  kind?: "user";
   token: string;
   organization: { id: string; slug: string; name: string };
   user: { name: string; email: string };
 }
 
 export interface DeviceFlowOptions {
+  userSession?: boolean;
   /** Don't open the browser automatically (the URL is still surfaced via onAuthorizeUrl). */
   noOpen?: boolean;
   /** Receives the authorize URL — callers decide stdout vs stderr vs silent. */
@@ -90,6 +89,7 @@ export async function runDeviceFlow(
   try {
     deviceRes = await fetch(`${baseUrl}/api/cli/auth/device`, {
       method: "POST",
+      ...(options.userSession ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify({ scope: "user" }) } : {}),
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
   } catch (e) {
@@ -106,6 +106,7 @@ export async function runDeviceFlow(
   }
 
   const deviceData = (await deviceRes.json()) as Record<string, unknown>;
+  if (options.userSession && deviceData.scope !== "user") throw new Error("This server needs an update for user-level CLI login. Existing organisation tokens remain supported with --token.");
   const deviceCode = deviceData.deviceCode;
   const expiresAt = deviceData.expiresAt;
   if (typeof deviceCode !== "string" || typeof expiresAt !== "string") {
@@ -145,12 +146,17 @@ export async function runDeviceFlow(
     if (!pollRes.ok) continue;
 
     const data = (await pollRes.json()) as {
+      scope?: string;
       status?: string;
       token?: string;
       organization?: { id: string; slug: string; name: string };
       user?: { name?: string; email?: string };
     };
-    if (data.status === "approved" && data.token && data.organization) {
+    if (data.status === "approved" && data.token && options.userSession && data.scope === "user") {
+      if (!/^oct_u_[a-f0-9]{64}$/.test(data.token)) throw new Error("Invalid CLI user credential response.");
+      return { kind: "user", token: data.token, organization: { id: "", slug: "", name: "" }, user: { name: data.user?.name ?? "Unknown User", email: data.user?.email ?? "" } };
+    }
+    if (data.status === "approved" && data.token && data.organization && !options.userSession) {
       return {
         token: data.token,
         organization: data.organization,
@@ -165,14 +171,16 @@ export async function runDeviceFlow(
 export async function verifyToken(
   baseUrl: string,
   token: string,
-): Promise<{ organization: { id: string; slug: string; name: string }; user: { name: string; email: string } }> {
+): Promise<Omit<AuthIdentity, "token">> {
   const res = await postJson<{
+    scope?: string;
     user: { id: string; name: string; email: string };
     organization: { id: string; name: string; slug: string };
   }>(`${baseUrl}/api/cli/auth/verify`, {}, token, { timeoutMs: REQUEST_TIMEOUT_MS });
   if (!res.ok) throw new Error(res.error || "Invalid token");
   return {
-    organization: res.data.organization,
+    ...(res.data.scope === "user" ? { kind: "user" as const } : {}),
+    organization: res.data.organization ?? { id: "", slug: "", name: "" },
     user: { name: res.data.user.name, email: res.data.user.email },
   };
 }
@@ -180,6 +188,7 @@ export async function verifyToken(
 /** Assemble a Credentials record from a completed auth + base URL. */
 export function buildCredentials(baseUrl: string, id: AuthIdentity): Credentials {
   return {
+    ...(id.kind ? { kind: id.kind } : {}),
     baseUrl,
     token: id.token,
     orgId: id.organization.id,

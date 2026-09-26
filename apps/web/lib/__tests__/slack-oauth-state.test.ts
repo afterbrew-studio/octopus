@@ -47,7 +47,7 @@ mock.module("@/lib/auth", () => ({
   auth: { api: { getSession: (...a: unknown[]) => mockGetSession(...(a as [])) } },
 }));
 
-mock.module("@octopus/db", () => ({
+mock.module("@octopus/db", () => ({ Prisma: { DbNull: null },
   prisma: {
     organizationMember: { findFirst: (...a: unknown[]) => mockMemberFindFirst(...(a as [])) },
     slackIntegration: { upsert: (...a: unknown[]) => mockIntegrationUpsert(...(a as [{ where: { organizationId: string }; create: { teamId: string } }])) },

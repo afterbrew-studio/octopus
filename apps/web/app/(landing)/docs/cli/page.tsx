@@ -1,4 +1,5 @@
 import Link from "@/components/link";
+import { docsPageJsonLd, jsonLd } from "@/lib/structured-data";
 import { IconTerminal2 } from "@tabler/icons-react";
 import { CodeBlock } from "../self-hosting/code-block";
 
@@ -14,6 +15,19 @@ export const metadata = {
 export default function CLIPage() {
   return (
     <article className="prose-invert max-w-3xl">
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{
+          __html: jsonLd(
+            docsPageJsonLd({
+              title: metadata.title,
+              description: metadata.description,
+              path: "/docs/cli",
+              crumb: "CLI",
+            }),
+          ),
+        }}
+      />
       <div className="mb-8">
         <div className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.2em] text-[#555]">
           <IconTerminal2 className="size-4" />
@@ -35,6 +49,30 @@ export default function CLIPage() {
         <CodeBlock>{`powershell -c "irm https://octopus-review.ai/install.ps1 | iex"`}</CodeBlock>
       </Section>
 
+      <Section title="Let your AI handle setup">
+        <Paragraph>
+          Give the <Link href="/#agent-setup" className="text-white underline">homepage setup prompt</Link> to the AI working in your project.
+          With octp 0.5.0 or later, it can connect your GitHub repository, start or join indexing and analysis, and check the result through the CLI.
+        </Paragraph>
+        <CodeBlock>octp onboard --agent --json</CodeBlock>
+        <Paragraph>
+          Run this from the project directory, or supply <Mono>--repo owner/name</Mono>.
+          Use <Mono>--account name</Mono> to select a saved user profile, and <Mono>--org slug</Mono> to choose an organisation for one command.
+        </Paragraph>
+        <Paragraph>
+          If sign-in is needed, the AI runs the returned login command with <Mono>--no-open</Mono>,
+          gives you the approval URL, and keeps that process running while you approve.
+          GitHub App installation and repository access also return approval links.
+          Approve those in your browser, then let the AI continue through the CLI.
+        </Paragraph>
+        <Paragraph>
+          Agent setup currently supports github.com repositories. Existing organisation settings stay in place;
+          dismissed repositories and failed jobs need explicit attention. If login is interrupted, start it again.
+          See the <Link href="https://github.com/octopusreview/octopus/blob/master/apps/cli/README.md#set-up-a-repository-with-your-ai" className="text-white underline">agent protocol reference</Link> for
+          JSON fields, continuation arguments, exit codes and recovery limits.
+        </Paragraph>
+      </Section>
+
       {/* Auth */}
       <Section title="Authentication">
         <Paragraph>
@@ -42,11 +80,24 @@ export default function CLIPage() {
           browser window for authentication.
         </Paragraph>
         <CodeBlock>octp login</CodeBlock>
+        <p className="text-[#a0a0a0]">
+          CLI 0.6.0 with server 1.0.157 signs you in once without selecting an organisation in the browser.
+          Your session lasts 30 days. Run <Mono>octp logout</Mono> to revoke it.
+        </p>
+        <CodeBlock>{`octp org list --json
+octp --org acme onboard --agent --json --repo acme/app
+octp --org another-org repo list`}</CodeBlock>
+        <p className="text-[#a0a0a0]">
+          Without <Mono>--org</Mono>, repository setup uses a unique repository or GitHub owner match.
+          If it cannot choose safely, it returns <Mono>organization_required</Mono> with your available organisations
+          before starting work. Choose one and retry. Existing organisation tokens keep their original scope;
+          run <Mono>octp login</Mono> again to enable switching.
+        </p>
         <Paragraph>You can also authenticate with an API token directly:</Paragraph>
         <CodeBlock>octp login --token oct_your_token_here</CodeBlock>
         <Paragraph>
           Need a token for CI/CD or a script? Use <Mono>setup-token</Mono>. It
-          runs the same browser approval flow but prints the token to stdout
+          uses organisation-scoped browser approval and prints the token to stdout
           (progress messages go to stderr) so it can be captured directly:
         </Paragraph>
         <CodeBlock>{`# Print token to stdout
@@ -105,15 +156,41 @@ octp setup-token --no-open`}</CodeBlock>
         />
       </Section>
 
+      <Section title="Review Local Changes">
+        <Paragraph>
+          Run these from your Git repository. The first command can include commits
+          since the upstream branch and unstaged tracked changes, but may omit
+          staged-only changes. Inspect the intended diff first; use the second
+          command for staged changes. Untracked files are not included.
+        </Paragraph>
+        <CodeBlock>{`octp review --no-index --format json
+octp review --staged --no-index --format json`}</CodeBlock>
+        <Paragraph>
+          Reviews send the selected diff to your configured Octopus server and use
+          your organisation&apos;s review budget. <Mono>--no-index</Mono> skips new
+          working-tree indexing; existing repository context can still be used.
+          If the output reports <Mono>truncated: true</Mono>, split the changes
+          before treating the review as complete.
+        </Paragraph>
+      </Section>
+
       {/* PR commands */}
       <Section title="Pull Request Commands">
         <CommandCard
           command="octp review --pr <pr>"
-          description="Trigger an AI review on a pull request. Accepts a PR number or full URL."
+          description="Trigger an AI review on a pull request. Accepts a PR number or full GitHub, GitLab, or Bitbucket PR URL."
         />
         <Paragraph>Examples:</Paragraph>
         <CodeBlock>{`octp review --pr 42
 octp review --pr https://github.com/owner/repo/pull/42`}</CodeBlock>
+        <Paragraph>
+          For Forgejo, run the command from the connected repository checkout and
+          use its PR number; native CLI 0.6.0 does not accept Forgejo PR URLs.
+          This queues a review that posts comments on the pull request. A successful
+          command confirms the request was accepted. Follow completion in{" "}
+          <Link href="/review-logs" className="text-white underline">Review Logs</Link>
+          {" "}and on the pull request.
+        </Paragraph>
       </Section>
 
       {/* Dependency Analysis */}
@@ -213,27 +290,27 @@ octp agent serve --verbose`}</CodeBlock>
         </div>
       </Section>
 
-      {/* Claude Code Integration */}
-      <Section title="Claude Code Integration">
+      {/* AI agent integration */}
+      <Section title="Use with Your AI Agent">
         <Paragraph>
-          Use Octopus directly inside Claude Code with the official plugin.
-          Review PRs, auto-fix findings, and chat with your codebase without
-          leaving the terminal.
+          Claude Code, Codex, OpenCode, Hermes, OpenClaw, and Cursor can use the
+          native Octopus CLI through their shell tools. Follow the setup guide
+          for your agent, including an optional Octopus skill and a connection check.
         </Paragraph>
         <Link
-          href="/docs/cli/claude-code-integration"
+          href="/docs/cli/ai-agents"
           className="mb-3 inline-flex items-center gap-2 rounded-lg border border-white/[0.06] bg-white/[0.04] px-4 py-2.5 text-sm text-white transition-colors hover:bg-white/[0.08]"
         >
-          View Claude Code Integration docs →
+          Set up your AI agent →
         </Link>
       </Section>
 
       {/* Skills */}
       <Section title="Skills">
         <Paragraph>
-          Install and manage Octopus skills for AI coding agents like Claude
-          Code and Codex. Skills are reusable automation workflows that run
-          inside your AI editor. See the{" "}
+          The <Mono>octp skills</Mono> commands install the existing Claude Code
+          command library into <Mono>.claude/commands</Mono> in your current
+          project. Sign in first, then run them from the project root. See the{" "}
           <Link
             href="/docs/skills"
             className="text-white underline decoration-white/30 underline-offset-2 transition-colors hover:decoration-white"
@@ -253,30 +330,22 @@ octp agent serve --verbose`}</CodeBlock>
   octopus-fix  Check open PRs for review comments, apply fixes, and push updates`}</CodeBlock>
 
         <CommandCard
-          command="octp skills install"
-          description="Install Octopus skills for AI coding agents. By default installs for both Claude Code and Codex."
+          command="octp skills install <name>"
+          description="Install a named command into this project's .claude/commands directory."
         />
-        <CodeBlock>{`# Install for both Claude Code and Codex
-octp skills install
+        <CodeBlock>{`# Install one command
+octp skills install octopus-fix
 
-# Install only for Claude Code
-octp skills install --claude
-
-# Install only for Codex
-octp skills install --codex`}</CodeBlock>
+# Install the whole command library
+octp skills install --all`}</CodeBlock>
         <Paragraph>
-          Once installed, you can use the skills as slash commands:
+          Use <Mono>/octopus-fix</Mono> in Claude Code after installation. For
+          Codex and other agents, use the separate{" "}
+          <Link href="/docs/cli/ai-agents" className="text-white underline">
+            AI agent setup guide
+          </Link>
+          .
         </Paragraph>
-        <div className="mb-3 space-y-1.5">
-          <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] px-4 py-2.5">
-            <span className="text-sm text-[#888]">Claude Code: </span>
-            <Mono>/octopus-fix</Mono>
-          </div>
-          <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] px-4 py-2.5">
-            <span className="text-sm text-[#888]">Codex: </span>
-            <span className="text-sm text-[#888]">Automatically available as a skill</span>
-          </div>
-        </div>
       </Section>
 
       {/* Config & Usage */}
@@ -302,7 +371,7 @@ octp skills install --codex`}</CodeBlock>
       {/* Profiles */}
       <Section title="Multiple Profiles">
         <Paragraph>
-          Use profiles to switch between different accounts or organizations:
+          Use profiles for different users or servers. Within one user account, switch organisations with --org:
         </Paragraph>
         <CodeBlock>{`octp login --profile work
 octp login --profile personal

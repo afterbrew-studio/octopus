@@ -1,7 +1,9 @@
+import "server-only";
 import crypto from "node:crypto";
 import { prisma } from "@octopus/db";
 import { getFileContent as ghGetFileContent } from "@/lib/github";
 import { getFileContent as bbGetFileContent } from "@/lib/bitbucket";
+import { getFileContent as forgejoGetFileContent } from "@/lib/forgejo";
 import { createAiMessage } from "@/lib/ai-router";
 import { logAiUsage } from "@/lib/ai-usage";
 import {
@@ -60,6 +62,9 @@ async function fetchOne(filePath: string, args: FetchArgs): Promise<string | nul
         args.branch,
         filePath,
       );
+    }
+    if (args.provider === "forgejo") {
+      return await forgejoGetFileContent(args.organizationId, `${args.owner}/${args.repo}`, args.branch, filePath);
     }
     return null;
   } catch {

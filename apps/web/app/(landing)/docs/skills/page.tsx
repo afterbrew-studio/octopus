@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import Link from "@/components/link";
 import {
   IconWand,
   IconGitPullRequest,
@@ -52,6 +53,12 @@ export default function SkillsPage() {
           parts of your development cycle, categorize changes, create issues,
           open PRs, and ship code, all fully automated.
         </p>
+      </div>
+
+      <div className="mb-8 rounded-lg border border-white/10 bg-white/[0.02] p-5 text-sm leading-relaxed text-[#aaa]">
+        For Claude Code, Codex, OpenCode, Hermes Agent, OpenClaw, and Cursor, start with the{" "}
+        <Link href="/docs/cli/ai-agents" className="text-cyan-400 underline underline-offset-4">AI coding agents guide and shared Octopus skill</Link>.
+        The workflow files below are Claude Code command files. The native CLI installs them into <code>.claude/commands</code>; they are not a Codex plugin installer.
       </div>
 
       {/* What are Skills */}

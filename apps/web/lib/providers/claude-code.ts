@@ -1,4 +1,5 @@
 import "server-only";
+import { observeAiRequest, completionEvidence } from "./request-evidence";
 import Anthropic from "@anthropic-ai/sdk";
 import { spawn } from "node:child_process";
 import { prisma } from "@octopus/db";
@@ -140,7 +141,7 @@ async function runAnthropicApi(params: AiCreateParams, apiKey: string | null): P
   );
 
   const stream = client.messages.stream(
-    {
+    observeAiRequest(params, "claude-code", {
       model: apiModel,
       max_tokens: maxTokens,
       ...(thinking ? { thinking } : {}),
@@ -174,7 +175,7 @@ async function runAnthropicApi(params: AiCreateParams, apiKey: string | null): P
             tool_choice: { type: "tool" as const, name: params.responseSchema!.name },
           }
         : {}),
-    },
+    }),
     { signal: AbortSignal.timeout(ANTHROPIC_CALL_TIMEOUT_MS) },
   );
 
@@ -208,6 +209,7 @@ async function runAnthropicApi(params: AiCreateParams, apiKey: string | null): P
 
   return {
     text,
+    completion: completionEvidence(response.stop_reason, useTool ? ["tool_use"] : ["end_turn"]),
     provider: "claude-code",
     model: params.model,
     usage: {
@@ -244,6 +246,7 @@ async function runClaudeCli(params: AiCreateParams): Promise<AiResponse> {
     prompt,
   ];
 
+  observeAiRequest(params, "claude-code", { command: "claude", args });
   const result = await runCli("claude", args, CLI_TIMEOUT_MS);
   if (result.timedOut) {
     throw new Error(
@@ -260,15 +263,18 @@ async function runClaudeCli(params: AiCreateParams): Promise<AiResponse> {
 
   // Best-effort JSON parse; falls back to raw stdout if the CLI changes
   // formats or the user is on an older version.
+  let completion = completionEvidence(undefined, []);
   let text = result.stdout;
   let inputTokens = 0;
   let outputTokens = 0;
   try {
     const parsed = JSON.parse(result.stdout) as {
-      content?: string;
+      content?: string; result?: string; subtype?: string; is_error?: boolean; stop_reason?: string;
       usage?: { input_tokens?: number; output_tokens?: number };
     };
     if (typeof parsed.content === "string") text = parsed.content;
+    else if (typeof parsed.result === "string") text = parsed.result;
+    completion = completionEvidence(parsed.is_error || parsed.subtype !== "success" ? undefined : parsed.stop_reason, ["end_turn"]);
     inputTokens = parsed.usage?.input_tokens ?? 0;
     outputTokens = parsed.usage?.output_tokens ?? 0;
   } catch {
@@ -277,6 +283,7 @@ async function runClaudeCli(params: AiCreateParams): Promise<AiResponse> {
 
   return {
     text,
+    completion,
     provider: "claude-code",
     model: params.model,
     usage: {

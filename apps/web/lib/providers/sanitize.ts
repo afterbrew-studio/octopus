@@ -3,11 +3,9 @@
  *
  * JS strings are UTF-16 and can hold lone surrogates — e.g. when review content
  * (a diff or file body) is truncated mid-emoji, splitting a surrogate pair.
- * Serializing such a string into a JSON request body produces invalid UTF-8,
- * and Anthropic rejects the whole request with
- * `400 invalid_request_error: ... no low surrogate in string`, failing the
- * review. This strips only the UNPAIRED halves; valid surrogate pairs (real
- * emoji, astral-plane chars) are left intact.
+ * JSON serialization escapes lone surrogates, but provider decoders can reject
+ * those escapes and fail the whole request. Replace only the unpaired halves;
+ * valid surrogate pairs (real emoji, astral-plane chars) are left intact.
  */
 const LONE_SURROGATE =
   // high surrogate not followed by a low surrogate, OR

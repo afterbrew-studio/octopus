@@ -6,6 +6,7 @@ import { ollamaProvider } from "./ollama";
 import { localProvider } from "./local";
 import { grokProvider } from "./grok";
 import { openrouterProvider } from "./openrouter";
+import { alibabaProvider } from "./alibaba";
 import { acpProvider } from "./acp";
 import { opencodeProvider } from "./opencode";
 import { claudeCodeProvider } from "./claude-code";
@@ -21,6 +22,7 @@ export type AiProvider =
   | "local"
   | "grok"
   | "openrouter"
+  | "alibaba"
   | "acp"
   | "opencode"
   | "claude-code"
@@ -46,6 +48,12 @@ export type ResponseJsonSchema = {
 
 export type AiCreateParams = {
   model: string;
+  /** Internal complete-input admission; never serialized into provider payloads. */
+  completeReviewAdmission?: import("../review-capacity").CompleteReviewAdmission;
+  /** Shares the queue lifetime with supplemental recovery after an admitted primary. */
+  executionWindow?: import("../review-capacity").ReviewExecutionWindow;
+  /** Digest-only observation of the final adapter request; never sent to the model. */
+  onRequest?: (receipt: import("./request-evidence").AiRequestReceipt) => void;
   maxTokens: number;
   system?: string;
   messages: AiMessage[];
@@ -57,9 +65,18 @@ export type AiCreateParams = {
    * it. Falls back to the env/built-in default when unset.
    */
   effort?: ThinkingEffort;
+  /**
+   * Set to "disabled" for short utility calls (classification, metadata,
+   * validation JSON) so models that default to adaptive thinking (Sonnet 5,
+   * Opus 4.7+) don't spend the small max_tokens budget on thinking. Ignored on
+   * always-thinking models, which reject thinking-off.
+   */
+  thinking?: "disabled";
 };
 
 export type AiResponse = {
+  usedOwnKey?: boolean;
+  completion?: { state: "completed" | "incomplete" | "unknown"; reason: string | null };
   text: string;
   provider: AiProvider;
   model: string;
@@ -108,6 +125,7 @@ const PROVIDERS: Partial<Record<AiProvider, Provider>> = {
   local: localProvider,
   grok: grokProvider,
   openrouter: openrouterProvider,
+  alibaba: alibabaProvider,
   acp: acpProvider,
   opencode: opencodeProvider,
   "claude-code": claudeCodeProvider,

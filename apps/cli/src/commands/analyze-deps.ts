@@ -1,6 +1,6 @@
 import { loadCredentials } from "../lib/credentials.js";
 import { streamSse } from "../lib/api.js";
-import { positionals } from "../lib/args.js";
+import { dependencyRepositoryArgument } from "../lib/command-arguments.js";
 import {
   c,
   heading,
@@ -120,7 +120,7 @@ export async function analyzeDepsCommand(argv: string[]): Promise<number> {
     return 2;
   }
 
-  const repoUrl = positionals(argv)[0];
+  const repoUrl = dependencyRepositoryArgument(argv);
   if (!repoUrl || repoUrl.trim().length === 0) {
     error("Missing <repo-url>.");
     printHelp();

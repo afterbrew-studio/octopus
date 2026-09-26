@@ -18,6 +18,17 @@ export async function register() {
     );
     resolveWebhookDeliveryRetentionDays();
 
+    // Fail before queue startup when the GitHub App lacks the OAuth client
+    // credentials the install verification needs (cloud throws, self-host logs).
+    const { getGithubAppConfig, assertGithubAppVerificationConfig } = await import(
+      "./lib/github-app-config"
+    );
+    const { isSelfHosted } = await import("./lib/self-hosted");
+    assertGithubAppVerificationConfig({
+      selfHosted: isSelfHosted(),
+      appConfig: await getGithubAppConfig(),
+    });
+
     const { reconcileStaleRepoStates } = await import("./lib/boot-reconciler");
     await reconcileStaleRepoStates();
 
@@ -49,6 +60,10 @@ export async function register() {
       }, 60 * 60 * 1000);
       cleanupTimer.unref?.();
 
+      // Daily provider-catalog discovery, independent of admin page visits.
+      await boss.schedule("discover-models", "0 7 * * *", {}, { tz: "UTC" });
+      await boss.schedule("cleanup-forgejo-connector", "* * * * *");
+
       // Daily audit-log retention enforcement (03:00 UTC). pg-boss dedups the
       // schedule across instances; the worker in queue-workers.ts runs the
       // deletion. Self-hosters tune the window via AUDIT_LOG_RETENTION_DAYS.
@@ -69,12 +84,45 @@ export async function register() {
       // instances; the worker in queue-workers.ts does the work.
       await boss.schedule("reap-stuck-reviews", "*/5 * * * *");
 
+      // Automatic repository discovery sweep. Default :17 past every hour
+      // (offset from the other crons); REPO_DISCOVERY_CRON overrides, "off"
+      // disables it (and clears a previously stored schedule). Runs on cloud
+      // and self-hosted alike; the worker in queue-workers.ts does the work.
+      const discoveryCron = process.env.REPO_DISCOVERY_CRON?.trim() || "17 * * * *";
+      if (discoveryCron.toLowerCase() === "off") {
+        await boss.unschedule("discover-repositories");
+      } else {
+        try {
+          await boss.schedule("discover-repositories", discoveryCron);
+        } catch (err) {
+          // pg-boss parses the expression eagerly; name the knob so a typo is
+          // obvious instead of an anonymous boot crash.
+          throw new Error(
+            `Invalid REPO_DISCOVERY_CRON "${discoveryCron}": ${err instanceof Error ? err.message : String(err)}. Use a 5-field cron expression or "off".`,
+          );
+        }
+      }
+
       // Daily release-cache refresh (05:00 UTC — offset from the retention jobs).
       // Gated to self-hosted: the release-check/update panel only surfaces there
       // (same server-side flag the admin bootstrap above uses). pg-boss dedups
       // the cron across instances; the worker in queue-workers.ts does the fetch.
       if (process.env.NEXT_PUBLIC_OCTOPUS_SELF_HOSTED === "true") {
         await boss.schedule("refresh-release-cache", "0 5 * * *");
+      }
+
+      // Disabled by default. Existing schedules are removed on opt-out;
+      // the worker rechecks the flag before reading any product facts.
+      if (!isSelfHosted() && process.env.UNIFIED_ADS_ENABLED === "true") {
+        await boss.schedule("marketing-conversions", "* * * * *");
+      } else {
+        await boss.unschedule("marketing-conversions");
+      }
+
+      if (!isSelfHosted() && process.env.UNIFIED_ADS_ENABLED === "true" && process.env.UNIFIED_ADS_TRACKING_ENABLED === "true") {
+        await boss.schedule("marketing-contexts", "* * * * *");
+      } else {
+        await boss.unschedule("marketing-contexts");
       }
 
       // Daily subscription renewals (06:00 UTC — offset from the jobs above).

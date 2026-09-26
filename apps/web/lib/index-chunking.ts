@@ -12,6 +12,11 @@ export const MAX_FILE_SIZE = 100_000; // 100 KB — skip larger files (binaries,
 export const CHUNK_SIZE = 1500; // ~375 tokens
 export const CHUNK_OVERLAP = 200;
 
+/** Byte-size gate for content fetched without size metadata — mirrors the tree-item size check in shouldIndex. */
+export function exceedsMaxFileSize(content: string): boolean {
+  return Buffer.byteLength(content, "utf8") > MAX_FILE_SIZE;
+}
+
 const CODE_EXTENSIONS = new Set([
   ".ts", ".tsx", ".js", ".jsx", ".py", ".go", ".rs", ".java", ".rb",
   ".c", ".cpp", ".h", ".hpp", ".cs", ".swift", ".kt", ".scala",
@@ -27,6 +32,11 @@ const IGNORE_PATHS = [
   "vendor/", "__pycache__/", ".turbo/", "coverage/",
   "package-lock.json", "bun.lock", "yarn.lock", "pnpm-lock.yaml",
 ];
+
+/** Git-tree entries that are files (`type === "blob"`), not directories. */
+export function treeBlobs<T extends { type: string }>(items: T[]): T[] {
+  return items.filter((item) => item.type === "blob");
+}
 
 export function shouldIndex(path: string, size?: number, ig?: Ignore): boolean {
   if (size && size > MAX_FILE_SIZE) return false;

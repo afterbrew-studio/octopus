@@ -11,6 +11,7 @@
  * self-protecting: it never emits a model that has no pricing (which would bill
  * $0), falling back to the default instead.
  */
+import type { ReviewCoverage } from "@/lib/review-coverage";
 import { getModelPricing } from "@/lib/cost";
 import { resolveReviewModelPin } from "@/lib/ai-client";
 
@@ -58,8 +59,8 @@ export function extractChangedPaths(diff: string): string[] {
   return paths;
 }
 
-export function classifyDiff(diff: string): DiffClass {
-  const paths = extractChangedPaths(diff);
+export function classifyDiff(diff: string, coverage?: ReviewCoverage): DiffClass {
+  const paths = [...new Set(coverage ? coverage.files.filter(file => file.state !== "excluded").map(file => file.path) : extractChangedPaths(diff))];
   const files = paths.length;
 
   // Changed lines of code = added/removed content lines, excluding the +++/---
@@ -74,7 +75,7 @@ export function classifyDiff(diff: string): DiffClass {
   const nonMechanical = paths.filter((p) => !anyMatch(MECHANICAL_FILE, p) && !anyMatch(TEST_FILE, p));
   // Mechanical only if every changed file is a lockfile/generated/docs/test file
   // (and at least one file changed).
-  const mechanicalOnly = files > 0 && nonMechanical.length === 0;
+  const mechanicalOnly = files > 0 && nonMechanical.length === 0 && (!coverage || coverage.inventoryComplete);
   const highRisk = paths.some((p) => anyMatch(HIGH_RISK_FILE, p));
 
   let tier: DiffTier;
@@ -83,7 +84,7 @@ export function classifyDiff(diff: string): DiffClass {
     tier = "mechanical";
   } else if (highRisk || loc > 400 || files > 20) {
     tier = "complex";
-  } else if (files <= 1 && loc <= 10) {
+  } else if (files <= 1 && loc <= 10 && (!coverage || coverage.complete)) {
     tier = "mechanical";
   } else {
     tier = "standard";
@@ -102,6 +103,7 @@ export async function resolveReviewModel(args: {
   repoId?: string;
   modelOverride?: string;
   diff: string;
+  coverage?: ReviewCoverage;
 }): Promise<string> {
   const { orgId, repoId, modelOverride, diff } = args;
 
@@ -113,7 +115,7 @@ export async function resolveReviewModel(args: {
   const { model: base, pinned } = await resolveReviewModelPin(orgId, repoId);
   if (pinned) return base;
 
-  const cls = classifyDiff(diff);
+  const cls = classifyDiff(diff, args.coverage);
   if (cls.tier === "mechanical" && MECHANICAL_MODEL !== base) {
     // Self-protect: never emit a model without pricing (would bill $0).
     const pricing = await getModelPricing().catch(() => null);

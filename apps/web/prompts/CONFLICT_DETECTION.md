@@ -71,7 +71,7 @@ npm install
 ```
 
 CONFLICT RISK NOTE:
-When a PR touches high-traffic files (shared types, utilities, configs), add:
+When a PR touches high-traffic files (shared types, utilities, configs), place the following standalone blockquote under `### ⚡ Conflict Analysis`. Add that heading if there are no conflict tables. Keep this section separate from `### Findings Summary`; never append advisory prose to its table:
 > ⚠️ **Conflict Risk**: This PR modifies shared files. Merge or rebase frequently
 > against `main` and coordinate with authors of related open PRs.
 </conflict_detection>

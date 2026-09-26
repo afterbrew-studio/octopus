@@ -52,6 +52,14 @@ const SUBPROCESSORS: Subprocessor[] = [
     url: "https://policies.google.com/privacy",
   },
   {
+    name: "Alibaba Cloud (Model Studio)",
+    purpose: "Qwen LLM for code review",
+    dataAccessed: "Diff content + retrieved code context for orgs that use Qwen with platform keys (not used when org has a BYOK DashScope key, which routes to their own account)",
+    location: "Singapore (Alibaba Cloud international region)",
+    required: "conditional",
+    url: "https://www.alibabacloud.com/help/en/legal/latest/privacy-policy",
+  },
+  {
     name: "Cohere",
     purpose: "Rerank API for retrieval result reranking",
     dataAccessed: "Repository chunk previews and the query string used for retrieval",
@@ -159,6 +167,14 @@ export default function SubprocessorsPage() {
         by default — your data stays within your own infrastructure unless you
         explicitly configure an integration that needs an external vendor (e.g.
         Slack notifications or a non-self-hosted LLM provider).
+      </P>
+
+      <P>
+        Forgejo is software run by the operator of the instance you connect.
+        Forgejo&apos;s project does not receive your repository data through this
+        integration. Check your instance operator&apos;s terms if someone else
+        hosts it. Octopus and the configured AI services still process code for
+        reviews, even when you host Forgejo yourself.
       </P>
 
       <P>

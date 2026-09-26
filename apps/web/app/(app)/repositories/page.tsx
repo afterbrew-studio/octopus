@@ -1,3 +1,4 @@
+import "server-only";
 import { headers, cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
@@ -5,8 +6,12 @@ import { getGithubAppConfig } from "@/lib/github-app-config";
 import { prisma } from "@octopus/db";
 import { HARDCODED_REVIEW_MODEL, HARDCODED_EMBED_MODEL } from "@/lib/ai-client";
 import { RepositoriesContent } from "./repositories-content";
+import { WELCOME_DEFERRED_REASON } from "@/lib/org-create";
+import { hasOrgPermission } from "@/lib/org-permissions";
 
 const PAGE_SIZE = 50;
+/** Repositories created in the last week are badged "New" (auto-discovery or first sync). */
+const NEW_REPO_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
 export default async function RepositoriesPage({
   searchParams,
@@ -29,6 +34,8 @@ export default async function RepositoriesPage({
       deletedAt: null,
     },
     select: {
+      role: true,
+      scopes: true,
       organization: {
         select: { id: true, defaultModelId: true, defaultEmbedModelId: true },
       },
@@ -79,10 +86,12 @@ export default async function RepositoriesPage({
     name: true,
     fullName: true,
     provider: true,
+    externalId: true,
     defaultBranch: true,
     isActive: true,
     autoReview: true,
     dismissedAt: true,
+    createdAt: true,
     indexStatus: true,
     indexedAt: true,
     indexedFiles: true,
@@ -102,7 +111,7 @@ export default async function RepositoriesPage({
   } as const;
 
   // Step 2: All queries in parallel
-  const [repos, totalCount, allRepoNames, favoriteRepos, otherOrgMemberships, availableModels, bitbucketIntegration, platformDefaults] = await Promise.all([
+  const [repos, totalCount, allRepoNames, favoriteRepos, otherOrgMemberships, availableModels, bitbucketIntegration, platformDefaults, ownerMember] = await Promise.all([
     // Paginated repos — light select, no heavy fields
     prisma.repository.findMany({
       where: baseWhere,
@@ -158,6 +167,20 @@ export default async function RepositoriesPage({
       where: { isPlatformDefault: true, isActive: true },
       select: { modelId: true, displayName: true, category: true },
     }),
+
+    // Org owner's welcome-grant state — drives the empty-state hint that
+    // connecting a repo unlocks the deferred welcome credits. The hint only
+    // shows for orgs marked deferred at creation (WELCOME_DEFERRED_REASON):
+    // legacy pre-stamp owners also have welcomeGrantedAt=null, but connecting
+    // a repo won't grant them anything.
+    prisma.organizationMember.findFirst({
+      where: { organizationId: orgId, role: "owner", deletedAt: null },
+      orderBy: { createdAt: "asc" },
+      select: {
+        user: { select: { welcomeGrantedAt: true } },
+        organization: { select: { welcomeRiskReason: true } },
+      },
+    }),
   ]);
 
   const orgLlmModelId = member.organization.defaultModelId;
@@ -203,10 +226,13 @@ export default async function RepositoriesPage({
     name: r.name,
     fullName: r.fullName,
     provider: r.provider,
+    repoUrl: r.provider === "forgejo" ? `${r.externalId.slice(0, r.externalId.lastIndexOf(":"))}/${r.fullName}` : undefined,
     defaultBranch: r.defaultBranch,
     isActive: r.isActive,
     autoReview: r.autoReview,
     dismissedAt: r.dismissedAt?.toISOString() ?? null,
+    // Decided on the server so the badge cannot differ between SSR and hydration.
+    isNew: Date.now() - r.createdAt.getTime() < NEW_REPO_WINDOW_MS,
     indexStatus: r.indexStatus,
     indexedAt: r.indexedAt?.toISOString() ?? null,
     indexedFiles: r.indexedFiles,
@@ -225,6 +251,8 @@ export default async function RepositoriesPage({
 
   return (
     <RepositoriesContent
+      canManageRepos={hasOrgPermission(member, "repos:manage")}
+      canConfigureReviews={hasOrgPermission(member, "reviews:configure")}
       repos={mappedRepos}
       orgId={orgId}
       selectedRepoId={selectedRepoId ?? null}
@@ -242,6 +270,10 @@ export default async function RepositoriesPage({
       totalPages={totalPages}
       totalCount={totalCount}
       bitbucketWorkspaceSlug={bitbucketIntegration?.workspaceSlug ?? null}
+      welcomePending={
+        ownerMember?.user.welcomeGrantedAt === null &&
+        ownerMember.organization.welcomeRiskReason === WELCOME_DEFERRED_REASON
+      }
     />
   );
 }

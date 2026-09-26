@@ -15,9 +15,12 @@ const PRICING_CACHE_TTL = 5 * 60 * 1000;
 
 // Fallback pricing for models not yet in DB
 const FALLBACK_PRICING: Record<string, ModelPricing> = {
+  "claude-opus-5-5": { input: 4, output: 20 },
   // Claude Fable 5 is the Claude 5 frontier model; offered as the top "max"
   // review tier (2x Opus 5).
   "claude-fable-5": { input: 10, output: 50 },
+  // Fable 5.1 succeeds Fable 5 at the same price; opt-in, never the default.
+  "claude-fable-5-1": { input: 10, output: 50 },
   // Anthropic's published API id for Opus 5 is undated (no dated canonical id
   // was released); the key must match the id used in calls for exact-key lookup.
   "claude-opus-5": { input: 5, output: 25 },
@@ -32,11 +35,15 @@ const FALLBACK_PRICING: Record<string, ModelPricing> = {
   "claude-haiku-4-5-20251001": { input: 1, output: 5 },
   "gemini-2.5-pro": { input: 1.25, output: 10 },
   "gemini-2.5-flash": { input: 0.15, output: 0.6 },
+  // OpenAI GPT-6 Astra (2026-09-03) list price; the DB catalog row is authoritative.
+  "gpt-6-astra": { input: 10, output: 50 },
   "gpt-5.3-codex": { input: 1.75, output: 14 },
   // Claude Code is subscription-billed (not per-token), so platform price is 0.
   "claude-code:sonnet": { input: 0, output: 0 },
   // OpenRouter Hermes 3 8B — estimate (~$0.10/$0.15 per 1M in/out).
   "openrouter/nousresearch/hermes-3-llama-3.1-8b": { input: 0.1, output: 0.15 },
+  // Alibaba Cloud Model Studio — Qwen3.8-Max list price (international region).
+  "qwen3.8-max-0902": { input: 2, output: 6 },
   "text-embedding-3-large": { input: 0.13, output: 0 },
   "rerank-v3.5": { input: 2000.0, output: 0 },
 };
@@ -84,6 +91,23 @@ if (rawMarkup !== undefined && rawMarkup !== "" && !markupValid) {
 }
 export const PLATFORM_MARKUP = markupValid ? parsedMarkup : 1.2;
 
+/** Conservative primary admission estimate; separate from post-hoc usage settlement. */
+export function estimateCompleteReviewCost(
+  pricing: Map<string, ModelPricing>, model: string, inputTokens: number, outputTokens: number,
+  cacheWriteMultiplier: number, markup = PLATFORM_MARKUP,
+): { estimateUsd: number; pricing: { identity: string; input: number; output: number; cacheWriteMultiplier: number; markup: number } } | null {
+  if (model !== "claude-fable-5-1") return null;
+  const catalogue = pricing.get(model);
+  const floor = FALLBACK_PRICING[model];
+  if (!catalogue || !floor || ![catalogue.input, catalogue.output].every(rate => Number.isFinite(rate) && rate >= 0)
+    || ![inputTokens, outputTokens].every(tokens => Number.isSafeInteger(tokens) && tokens >= 0)
+    || ![1, 1.25, 2].includes(cacheWriteMultiplier) || !Number.isFinite(markup) || markup < 1) return null;
+  const rates = { identity: "fable-5-1-catalogue-with-published-floor-v1", input: Math.max(catalogue.input, floor.input),
+    output: Math.max(catalogue.output, floor.output), cacheWriteMultiplier, markup };
+  const estimateUsd = (inputTokens * rates.input * cacheWriteMultiplier + outputTokens * rates.output) / 1_000_000 * markup;
+  return Number.isFinite(estimateUsd) ? { estimateUsd, pricing: rates } : null;
+}
+
 export function calcCost(
   pricing: Map<string, ModelPricing>,
   model: string,
@@ -103,7 +127,7 @@ export function calcCost(
   const baseCost =
     (plainInput * p.input +
       cacheWriteTokens * p.input * cacheWriteMultiplier +
-      cacheReadTokens * p.input * 0.1 +
+      cacheReadTokens * p.input * (model === "claude-opus-5-5" ? 0.05 : 0.1) +
       outputTokens * p.output) /
     1_000_000;
   return baseCost * PLATFORM_MARKUP;
@@ -145,6 +169,7 @@ function orgOwnsKeyForProvider(
     cohereApiKey: string | null;
     grokApiKey: string | null;
     openrouterApiKey: string | null;
+    alibabaApiKey: string | null;
     claudeCodeApiKey: string | null;
     claudeCodeAuthMode: string | null;
   },
@@ -157,6 +182,7 @@ function orgOwnsKeyForProvider(
     case "cohere": return !!org.cohereApiKey;
     case "grok": return !!org.grokApiKey;
     case "openrouter": return !!org.openrouterApiKey;
+    case "alibaba": return !!org.alibabaApiKey;
     case "claude-code":
       return !!org.claudeCodeApiKey || org.claudeCodeAuthMode === "subscription";
     // Operator-infra / local-agent / gateways / test doubles: never platform-billed.
@@ -175,6 +201,7 @@ function orgOwnsKeyForProvider(
 export async function getOrgSpendLimitStatus(
   orgId: string,
   repoId?: string,
+  resolvedRoute?: { model: string; provider: import("./providers").AiProvider },
 ): Promise<SpendLimitResult> {
   const org = await prisma.organization.findUnique({
     where: { id: orgId },
@@ -186,6 +213,7 @@ export async function getOrgSpendLimitStatus(
       cohereApiKey: true,
       grokApiKey: true,
       openrouterApiKey: true,
+      alibabaApiKey: true,
       claudeCodeApiKey: true,
       claudeCodeAuthMode: true,
       monthlySpendLimitUsd: true,
@@ -206,15 +234,16 @@ export async function getOrgSpendLimitStatus(
   // wrongly credit-blocked.) On resolution failure, fall back to the old strict
   // all-provider check so the gate never throws and never bills a fully-keyed org.
   try {
-    const [{ getReviewModel }, { getProviderForModel }] = await Promise.all([
-      import("@/lib/ai-client"),
-      import("@/lib/ai-router"),
-    ]);
     // Resolve the provider of the model this review will ACTUALLY use — a
     // repo-level pin overrides the org default. Without repoId, a BYOK-Anthropic
     // org whose default is Anthropic would be exempted even when a repo is pinned
     // to a platform provider (e.g. Grok), letting that usage skip the credit gate.
-    const provider = await getProviderForModel(await getReviewModel(orgId, repoId));
+    const provider = resolvedRoute ? resolvedRoute.provider : await (async () => {
+      const [{ getReviewModel }, { getProviderForModel }] = await Promise.all([
+        import("@/lib/ai-client"), import("@/lib/ai-router"),
+      ]);
+      return getProviderForModel(await getReviewModel(orgId, repoId));
+    })();
     if (orgOwnsKeyForProvider(org, provider)) return { blocked: false };
   } catch (err) {
     console.error("[cost] spend-gate provider resolution failed; using strict BYOK check:", err);

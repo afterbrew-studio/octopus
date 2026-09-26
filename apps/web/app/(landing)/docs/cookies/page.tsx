@@ -21,7 +21,7 @@ export default function CookiePolicyPage() {
         <h1 className="text-3xl font-bold tracking-tight text-white sm:text-4xl">
           Cookie Policy
         </h1>
-        <p className="mt-3 text-sm text-[#555]">Last updated: March 2026</p>
+        <p className="mt-3 text-sm text-[#555]">Last updated: September 2026</p>
       </div>
 
       <Section title="1. What Are Cookies">
@@ -57,8 +57,9 @@ export default function CookiePolicyPage() {
 
         <H3>Analytics Cookies</H3>
         <P>
-          We use Google Analytics to understand how visitors interact with the
-          landing page. These cookies collect anonymous, aggregated data.
+          With your usage-analytics permission, Google Analytics measures visits
+          and interactions. Optional analytics and advertising measurement stay
+          off until you choose to allow them.
         </P>
         <CookieTable
           cookies={[
@@ -76,7 +77,32 @@ export default function CookiePolicyPage() {
         />
       </Section>
 
+      <Section title="First-party measurement and preferences">
+        <P>
+          With usage analytics enabled, Octopus can record visits using random
+          browser and tab identifiers. With advertising measurement also enabled,
+          we can connect a tagged visit to a signup or successful purchase in
+          Unified Ads. These identifiers are not derived from your email or IP address.
+        </P>
+        <CookieTable cookies={[
+          { name: "__Host-octopus_visit", purpose: "Reference to a consented visit", duration: "30 days, renewed on a visit" },
+          { name: "__Host-octopus_attribution", purpose: "Current advertising-measurement permission", duration: "30 days" },
+        ]} />
+        <P>
+          Your privacy choices are stored locally until you change them or clear
+          browser storage. A random analytics session identifier uses session
+          storage for the current tab. Withdrawing permission clears our local
+          tracking identifiers and stops new collection; previously recorded
+          sales and refunds remain in business reporting.
+        </P>
+      </Section>
+
       <Section title="3. Third-Party Cookies">
+        <P>
+          Advertising measurement also controls the X advertising pixel and
+          advertising consent for the Google tag on our production website.
+          Those providers may use their own cookies under their respective policies.
+        </P>
         <P>
           When you sign in through GitHub or Google OAuth, those providers may
           set their own cookies as part of the authentication flow. These
@@ -87,7 +113,8 @@ export default function CookiePolicyPage() {
 
       <Section title="4. Managing Cookies">
         <P>
-          You can control and delete cookies through your browser settings.
+          Use the Privacy choices button on any page to change or withdraw optional
+          permissions. You can also control and delete cookies through your browser settings.
           Most browsers allow you to:
         </P>
         <UL>
@@ -104,9 +131,8 @@ export default function CookiePolicyPage() {
       <Section title="5. Self-Hosted Instances">
         <P>
           If you self-host Octopus, only essential session cookies are set by
-          default. Analytics cookies are only present if you configure Google
-          Analytics in your environment. You have full control over which
-          cookies your instance uses.
+          default. The hosted analytics and advertising tags and Unified Ads visitor
+          collection are disabled on self-hosted instances.
         </P>
       </Section>
 

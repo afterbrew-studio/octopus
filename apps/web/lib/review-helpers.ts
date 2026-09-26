@@ -118,7 +118,7 @@ export function countFindingsFromTable(reviewBody: string): number {
  */
 export function normalizeScoreDenominators(reviewBody: string): string {
   return reviewBody.replace(
-    /### Score\s*\n[\s\S]*?(?=\n### |\n## |$)/,
+    /### Score\s*\n[\s\S]*?(?=\n### |\n## |<!-- OCTOPUS_FINDINGS_START -->|$)/,
     (section) =>
       section.replace(
         /(\*{0,2})([1-5])\/(\d+)(\*{0,2})/g,
@@ -153,6 +153,21 @@ export const MIN_SCORE_WITHOUT_BLOCKING_FINDINGS = 4;
  * and fractions elsewhere in the body are preserved. Assumes denominators are
  * already `/5` (normalizeScoreDenominators runs first).
  */
+/**
+ * Pin the "Last reviewed commit:" line to the exact reviewed head SHA.
+ *
+ * The model writes this line from the prompt template and sometimes copies the
+ * short-SHA style of the example, or paraphrases it. Downstream consumers (merge
+ * gates that verify a review belongs to an exact commit) need the full
+ * 40-character SHA, so the value is rewritten from the pull request's recorded
+ * head rather than trusted from the model.
+ */
+export function normalizeLastReviewedCommit(reviewBody: string, headSha: string | null | undefined): string {
+  if (!headSha || !/^[0-9a-f]{40}$/i.test(headSha)) return reviewBody;
+  const body = reviewBody.replace(/^[ \t]*(?:\*\*)?Last reviewed commit:(?:\*\*)?[^\n]*$/gm, "").trimEnd();
+  return `${body}${body ? "\n\n" : ""}Last reviewed commit: ${headSha}`;
+}
+
 export function reconcileScoreTable(
   reviewBody: string,
   findings: { hasCritical: boolean; hasHigh: boolean; hasMedium: boolean },
@@ -160,7 +175,7 @@ export function reconcileScoreTable(
   if (findings.hasCritical || findings.hasHigh || findings.hasMedium) return reviewBody;
   const floor = MIN_SCORE_WITHOUT_BLOCKING_FINDINGS;
   return reviewBody.replace(
-    /### Score\s*\n[\s\S]*?(?=\n### |\n## |$)/,
+    /### Score\s*\n[\s\S]*?(?=\n### |\n## |<!-- OCTOPUS_FINDINGS_START -->|$)/,
     (section) =>
       section.replace(
         /(\*{0,2})([1-5])\/5(\*{0,2})/g,

@@ -1,4 +1,5 @@
 import Link from "@/components/link";
+import { docsPageJsonLd, jsonLd, pricingProductJsonLd } from "@/lib/structured-data";
 import {
   IconSparkles,
   IconCreditCard,
@@ -20,6 +21,23 @@ export const metadata = {
 export default function PricingPage() {
   return (
     <article className="max-w-3xl">
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{
+          __html: jsonLd(
+            docsPageJsonLd({
+              title: metadata.title,
+              description: metadata.description,
+              path: "/docs/pricing",
+              crumb: "Pricing",
+            }),
+          ),
+        }}
+      />
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: jsonLd(pricingProductJsonLd()) }}
+      />
       <div className="mb-8">
         <div className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.2em] text-[#555]">
           <IconCreditCard className="size-4" />
@@ -68,7 +86,7 @@ export default function PricingPage() {
       </Section>
 
       {/* BYO Keys */}
-      <Section title="Bring Your Own Keys">
+      <Section title="Can I use my own API keys?">
         <div className="mb-4 rounded-xl border border-white/[0.08] bg-white/[0.03] p-6">
           <div className="flex items-start gap-4">
             <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-white/[0.06] text-[#888]">
@@ -79,13 +97,13 @@ export default function PricingPage() {
                 Use your own API keys, pay zero credits
               </h3>
               <p className="mt-2 text-sm leading-relaxed text-[#888]">
-                Configure your own Anthropic, OpenAI, Google, or Cohere API keys
-                in the organization settings. When you bring your own keys,
+                Configure your own Anthropic, OpenAI, Google, Alibaba Cloud,
+                or Cohere API keys in the organization settings. When you bring your own keys,
                 Octopus routes requests directly to your provider account and no
                 credits are deducted.
               </p>
               <div className="mt-3 flex flex-wrap gap-2">
-                {["Anthropic", "OpenAI", "Google AI", "Cohere"].map((p) => (
+                {["Anthropic", "OpenAI", "Google AI", "Alibaba Cloud", "Cohere"].map((p) => (
                   <span
                     key={p}
                     className="rounded-md border border-white/[0.06] bg-white/[0.03] px-2.5 py-1 text-xs text-[#888]"
@@ -100,10 +118,12 @@ export default function PricingPage() {
       </Section>
 
       {/* Model pricing */}
-      <Section title="Model Pricing">
+      <Section title="How much does each model cost?">
         <P>
-          Credit consumption varies by model. A 20% platform fee is applied on
-          top of provider costs. Below are the base prices per 1M tokens:
+          Credit consumption varies by model. Octopus Cloud bills usage at 2x
+          the provider&apos;s list price; that multiple is the platform rate, and
+          there are no other fees. Below are the provider list prices per 1M
+          tokens:
         </P>
         <div className="mb-4 overflow-x-auto rounded-lg border border-white/[0.06]">
           <table className="w-full text-sm">
@@ -115,24 +135,30 @@ export default function PricingPage() {
               </tr>
             </thead>
             <tbody className="text-[#888]">
+              <ModelRow model="Claude Fable 5.1" input="$10" output="$50" />
               <ModelRow model="Claude Fable 5" input="$10" output="$50" />
               <ModelRow model="Claude Opus 5" input="$5" output="$25" />
               <ModelRow model="Claude Opus 4.8" input="$5" output="$25" />
+              <ModelRow model="Claude Sonnet 5" input="$2" output="$10" />
               <ModelRow model="Claude Sonnet 4.6" input="$3" output="$15" />
               <ModelRow model="Claude Sonnet 4" input="$3" output="$15" />
               <ModelRow model="Claude Opus 4" input="$15" output="$75" />
               <ModelRow model="Claude Haiku 4.5" input="$1" output="$5" />
               <ModelRow model="Gemini 2.5 Pro" input="$1.25" output="$10" />
               <ModelRow model="Gemini 2.5 Flash" input="$0.15" output="$0.60" />
+              <ModelRow model="GPT-6 Astra" input="$10" output="$50" />
               <ModelRow model="GPT-5.3 Codex" input="$1.75" output="$14" />
+              <ModelRow model="Grok 4.6" input="$2" output="$6" />
+              <ModelRow model="Qwen3.8-Max" input="$2" output="$6" />
+              <ModelRow model="Kimi K3 (via OpenRouter)" input="$3" output="$15" />
               <ModelRow model="Embeddings (text-embedding-3-large)" input="$0.13" output="—" />
               <ModelRow model="Embeddings (text-embedding-3-small)" input="$0.02" output="—" last />
             </tbody>
           </table>
         </div>
         <P>
-          Prompt caching reduces costs: cached reads are billed at 10% of the
-          input price.
+          Prompt caching reduces costs: the cache-read discount depends on the
+          model.
         </P>
       </Section>
 
@@ -152,7 +178,7 @@ export default function PricingPage() {
           <FeatureCard
             icon={<IconRefresh className="size-4" />}
             title="Auto-Reload"
-            description="Configure automatic credit reload when your balance drops below a threshold."
+            description="Configure automatic credit reload when your balance drops below a threshold. Saving with auto-reload enabled opens Add card if no saved card is found. Your draft is kept if you cancel, card setup fails, or the card is saved. After adding a card, review your settings and select Save Auto-Reload to apply them."
           />
           <FeatureCard
             icon={<IconShieldCheck className="size-4" />}

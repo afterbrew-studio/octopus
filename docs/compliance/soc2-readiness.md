@@ -89,7 +89,7 @@ Evidence column points to the code, doc, or operational artefact that backs the 
 
 | # | Control | Status | Evidence |
 |---|---|---|---|
-| CC8.1 | Changes follow defined process | ✅ | All changes via PR; required approvals from CODEOWNERS |
+| CC8.1 | Changes follow defined process | ✅ | All changes via PR with required CI and Octopus 4+/5 gates; see [PR review policy](../../GOVERNANCE.md#pr-review) |
 | CC8.2 | Changes tested before deployment | ✅ | CI (lint + typecheck + build + tests + security review) blocks merge on failure |
 | CC8.3 | Emergency change process | 🟡 | Hot-fix path exists but undocumented |
 

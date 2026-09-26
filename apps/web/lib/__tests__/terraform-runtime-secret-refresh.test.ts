@@ -98,8 +98,11 @@ if [[ "$*" == *" ps "* ]] && [ "$FAKE_STACK_RUNNING" = "1" ]; then
 elif [[ "$*" == *" ps "* ]] && [ "$FAKE_WEB_RUNNING" = "1" ]; then
   printf 'web\n'
 fi
-if [[ "$*" == *" run "* ]] && [ "$FAKE_REDIS_PROBE_FAIL" = "1" ]; then
-  exit 45
+if [[ "$*" == *" run "* ]]; then
+  /bin/cat >/dev/null
+  if [ "$FAKE_REDIS_PROBE_FAIL" = "1" ]; then
+    exit 45
+  fi
 fi
 if [[ "$*" == *" up "* ]] && [ "$FAKE_DOCKER_UP_FAIL" = "1" ]; then
   exit 42

@@ -1,4 +1,5 @@
 import "server-only";
+import { bindMarketingPayment } from "./marketing-capture";
 
 import { prisma, type Prisma } from "@octopus/db";
 import { randomUUID } from "node:crypto";
@@ -234,6 +235,7 @@ export async function chargeCreditsOffSession(
   // Distinct clicks pass distinct keys, so intentional repeat purchases still go
   // through.
   idempotencyKey: string,
+  marketingAttributionId: string | null = null,
 ): Promise<OffSessionPurchaseResult> {
   const org = await prisma.organization.findUnique({
     where: { id: orgId },
@@ -289,6 +291,7 @@ export async function chargeCreditsOffSession(
   // between charge and grant, the webhook still delivers the credits — the
   // customer can never be charged without receiving them. A duplicate here
   // (webhook already granted) is a benign no-op.
+  await bindMarketingPayment(marketingAttributionId, paymentIntent.id, paymentIntent);
   await grantPurchaseFromPaymentIntent(orgId, amountUsd, paymentIntent.id, paymentIntent.latest_charge);
 
   return { status: "succeeded", paymentIntentId: paymentIntent.id };

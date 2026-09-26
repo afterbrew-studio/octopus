@@ -26,7 +26,7 @@ This package is **the Octopus CLI** (`octp` binary). It replaces the previous np
 
 ## Don't
 
-- Don't render to `process.stdout` directly. Pipe subprocess output into React state, then render it.
+- In Ink components, don't render to `process.stdout` directly. Pipe subprocess output into React state, then render it.
 - Don't `process.exit()` from a step. Call `useApp().exit()` so ink can clean up the terminal.
 - Don't add `chalk` / `kleur` / other color libraries — use ink's `<Text color>` prop.
 - Don't add a Node-only dependency that breaks Bun's `--compile` (no native modules without testing the cross-compile path).

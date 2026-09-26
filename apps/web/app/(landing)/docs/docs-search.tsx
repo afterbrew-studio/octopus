@@ -57,9 +57,9 @@ const docsPages = [
   {
     href: "/docs/integrations",
     label: "Integrations",
-    description: "GitHub, Bitbucket, Slack, Linear connections and webhooks.",
+    description: "GitHub, GitLab, Bitbucket, Forgejo, Slack, Linear and Jira connections.",
     icon: IconPlugConnected,
-    keywords: ["github", "bitbucket", "slack", "linear", "webhook", "oauth"],
+    keywords: ["github", "gitlab", "bitbucket", "forgejo", "self-hosted", "private", "lan", "vpn", "connector", "public", "https", "token", "slack", "linear", "jira", "webhook", "oauth"],
   },
   {
     href: "/docs/cli",
@@ -67,6 +67,20 @@ const docsPages = [
     description: "Installation, commands, authentication, and profiles.",
     icon: IconTerminal2,
     keywords: ["terminal", "command", "install", "curl", "octp", "login", "review", "index", "chat"],
+  },
+  {
+    href: "/docs/cli/ai-agents",
+    label: "AI Coding Agents",
+    description: "Set up the Octopus CLI and shared skill in your coding agent.",
+    icon: IconTerminal2,
+    keywords: ["claude", "codex", "opencode", "hermes", "openclaw", "cursor", "skills", "setup"],
+  },
+  {
+    href: "/docs/cli/claude-code-integration",
+    label: "Claude Code Integration",
+    description: "Install the Claude plugin, configure its token, and check the connection.",
+    icon: IconPlugConnected,
+    keywords: ["claude", "plugin", "marketplace", "mcp", "octopus-review", "token"],
   },
   {
     href: "/docs/octopusignore",

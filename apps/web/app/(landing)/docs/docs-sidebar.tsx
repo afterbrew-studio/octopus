@@ -49,6 +49,10 @@ const sections: SidebarSection[] = [
         label: "CLI",
         children: [
           {
+            href: "/docs/cli/ai-agents",
+            label: "AI Coding Agents",
+          },
+          {
             href: "/docs/cli/claude-code-integration",
             label: "Claude Code Integration",
             icon: "/claude-color.svg",
