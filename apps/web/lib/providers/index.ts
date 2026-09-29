@@ -69,7 +69,8 @@ export type AiCreateParams = {
    * Set to "disabled" for short utility calls (classification, metadata,
    * validation JSON) so models that default to adaptive thinking (Sonnet 5,
    * Opus 4.7+) don't spend the small max_tokens budget on thinking. Ignored on
-   * always-thinking models, which reject thinking-off.
+   * always-thinking models, which reject thinking-off; Sonnet 5.5 maps it to
+   * between_tools to skip upfront thinking instead.
    */
   thinking?: "disabled";
 };

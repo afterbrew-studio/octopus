@@ -16,4 +16,12 @@ Provider references:
 - https://platform.claude.com/docs/en/build-with-claude/structured-outputs
 - https://www.anthropic.com/claude-opus-5-5
 
+Claude Sonnet 5.5 (`claude-sonnet-5-5`) is also opt-in. Its [additive migration](../packages/db/prisma/migrations/20260929150000_sonnet55/migration.sql) seeds provider rates of $2 input / $10 output per million tokens, with no default or pin changes. Cache reads cost $0.20, five-minute writes $2.50 and one-hour writes $4 per million tokens before platform markup. These are the same input/output prices as Sonnet 5; lower cost per task is not a token-price reduction.
+
+Sonnet 5.5 uses native JSON and adaptive thinking at Octopus's configured effort (medium by default). Explicit `thinking: "disabled"` maps to `between_tools`, which skips upfront thinking; `xhigh` and `max` effort are clamped to `high` only in that mode. The installed SDK predates this mode, so a narrow request type extension preserves all other SDK field checking. [Regression tests](../apps/web/lib/__tests__/sonnet55.test.ts) exercise serialized SDK requests with mocked responses. Enable the catalog entry only when compatible web and review workers are deployed; older adapters send unsupported thinking or forced-tool settings. A real provider request remains a release acceptance check.
+
+- [Sonnet 5.5 specifications](https://platform.claude.com/docs/en/models/sonnet-5-5/overview)
+- [Migration guide](https://platform.claude.com/docs/en/models/sonnet-5-5/migration-guide)
+- [Thinking modes](https://platform.claude.com/docs/en/build-with-claude/thinking)
+
 Apply the additive migration before starting the updated application and workers, then deploy the coordinated admin UI. Offline regression coverage lives in [opus55.test.ts](../apps/web/lib/__tests__/opus55.test.ts), [cost.test.ts](../apps/web/lib/__tests__/cost.test.ts) and [model-discovery.test.ts](../apps/web/lib/__tests__/model-discovery.test.ts). For release acceptance, verify the actual catalog row, persisted scheduled check and authenticated cached response; a schedule declaration alone does not prove a completed discovery. The subscriber touchbase template is prepared separately in `octopus-admin`. Do not send it until release availability and the opted-in audience are verified and a send is authorized.

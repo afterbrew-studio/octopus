@@ -5,14 +5,23 @@ import { resolveThinking, resolveThinkingOverride } from "./thinking";
 import { stripLoneSurrogates } from "./sanitize";
 import { VALID_EFFORTS } from "./thinking";
 
-export const usesNativeJsonOutput = (model: string) => model === "claude-opus-5-5";
+export const usesNativeJsonOutput = (model: string) => model === "claude-opus-5-5" || model === "claude-sonnet-5-5";
+
+// SDK 0.91.1 predates Sonnet 5.5's between_tools mode. Keep its other fields typed.
+export type AnthropicRequest = Omit<Anthropic.MessageCreateParamsStreaming, "thinking"> & {
+  thinking?: Anthropic.ThinkingConfigParam | { type: "between_tools" };
+};
 
 /** One adapter transformation for ordinary generation and measured complete reviews. */
-export function prepareAnthropicRequest(params: AiCreateParams, cacheTtl: CacheTtl): Anthropic.MessageCreateParamsStreaming {
+export function prepareAnthropicRequest(params: AiCreateParams, cacheTtl: CacheTtl): AnthropicRequest {
   const nativeJson = usesNativeJsonOutput(params.model) && params.responseSchema !== undefined;
   const useTool = params.responseSchema !== undefined && !nativeJson;
   const { maxTokens, thinking, outputConfig } = resolveThinking(params.model, params.maxTokens, useTool, params.effort);
   const thinkingParam = resolveThinkingOverride(params.model, params.thinking, thinking);
+  // between_tools rejects xhigh/max; preserve the caller's no-upfront-thinking
+  // intent while using the highest effort supported by that mode.
+  if (thinkingParam?.type === "between_tools" && outputConfig
+    && (outputConfig.effort === "xhigh" || outputConfig.effort === "max")) outputConfig.effort = "high";
   return {
     model: params.model, max_tokens: maxTokens,
     // MessageStream adds this before SDK create; include it in the admitted digest.
@@ -44,7 +53,7 @@ export function freezeRequest<T>(body: T): T {
 }
 
 /** The installed SDK count endpoint accepts these input fields; no other field may disappear. */
-export function anthropicCountProjection(body: Anthropic.MessageCreateParamsStreaming): Anthropic.MessageCountTokensParams | null {
+export function anthropicCountProjection(body: AnthropicRequest): Anthropic.MessageCountTokensParams | null {
   const supported = new Set(["model", "messages", "system", "thinking", "output_config", "max_tokens", "stream"]);
   if (Object.keys(body).some(key => !supported.has(key))) return null;
   const only = (value: object, keys: string[]) => Object.keys(value).every(key => keys.includes(key));
@@ -58,5 +67,5 @@ export function anthropicCountProjection(body: Anthropic.MessageCreateParamsStre
     || !body.output_config || !only(body.output_config, ["effort"])
     || !VALID_EFFORTS.includes(body.output_config.effort as typeof VALID_EFFORTS[number])) return null;
   const { max_tokens: _maxTokens, stream: _stream, ...input } = body;
-  return input;
+  return { ...input, thinking: body.thinking };
 }

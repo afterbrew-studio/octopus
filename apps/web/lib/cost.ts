@@ -16,6 +16,7 @@ const PRICING_CACHE_TTL = 5 * 60 * 1000;
 
 // Fallback pricing for models not yet in DB
 const FALLBACK_PRICING: Record<string, ModelPricing> = {
+  "claude-sonnet-5-5": { input: 2, output: 10 },
   "claude-opus-5-5": { input: 4, output: 20 },
   // Claude Fable 5 is the Claude 5 frontier model; offered as the top "max"
   // review tier (2x Opus 5).

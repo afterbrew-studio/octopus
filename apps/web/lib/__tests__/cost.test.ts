@@ -8,7 +8,7 @@ mock.module("@octopus/db", () => ({
   prisma: {},
 }));
 
-const { calcCost, formatUsd, formatNumber } = await import("@/lib/cost");
+const { calcCost, formatUsd, formatNumber, fallbackPricedModels } = await import("@/lib/cost");
 
 // The cache-write premium tracks PROMPT_CACHE_TTL (1.25x for 5m, 2x for 1h).
 // Pin 5m so the formula assertions below stay deterministic; a dedicated test
@@ -163,6 +163,16 @@ describe("formatNumber", () => {
 it("prices Opus 5.5 cache reads at published $0.20 per million before markup", () => {
   const rates = new Map([["claude-opus-5-5", { input: 4, output: 20 }]]);
   expect(calcCost(rates, "claude-opus-5-5", 1_000_000, 0, 1_000_000, 0)).toBeCloseTo(0.20 * 1.2, 8);
+});
+
+it("prices Sonnet 5.5 input, output and both cache TTLs with platform markup", () => {
+  expect(fallbackPricedModels()).toContain("claude-sonnet-5-5");
+  const rates = new Map([["claude-sonnet-5-5", { input: 2, output: 10 }]]);
+  // Anthropic input excludes cached reads/writes; each count is billed once.
+  expect(calcCost(rates, "claude-sonnet-5-5", 1_000_000, 1_000_000, 1_000_000, 1_000_000, "anthropic", "5m"))
+    .toBeCloseTo((2 + 10 + 0.20 + 2.50) * 1.2, 8);
+  expect(calcCost(rates, "claude-sonnet-5-5", 1_000_000, 1_000_000, 1_000_000, 1_000_000, "anthropic", "1h"))
+    .toBeCloseTo((2 + 10 + 0.20 + 4) * 1.2, 8);
 });
 
 

@@ -21,7 +21,7 @@
 // Models that emit always-on thinking and need the adaptive config (confirmed
 // by their "use thinking.type.adaptive" API error). Opus 5 shares the Claude-5
 // thinking API with Fable 5.
-export const ALWAYS_THINKING_MODEL_RX = /^claude-(?:fable|mythos)-|^claude-opus-5(?:-|$)/;
+export const ALWAYS_THINKING_MODEL_RX = /^claude-(?:fable|mythos)-|^claude-opus-5(?:-|$)|^claude-sonnet-5-5$/;
 export const ALWAYS_THINKING_MAX_TOKENS_FLOOR = 64000;
 
 export type ThinkingEffort = "low" | "medium" | "high" | "xhigh" | "max";
@@ -40,6 +40,7 @@ export function resolveEffort(): ThinkingEffort {
 
 /**
  * A caller's explicit `thinking: "disabled"` wins on models that allow it.
+ * Sonnet 5.5 uses between_tools to skip upfront thinking instead.
  * Always-thinking models (Fable/Mythos/Opus 5) reject thinking-off, so they
  * keep whatever resolveThinking produced.
  */
@@ -47,7 +48,10 @@ export function resolveThinkingOverride(
   model: string,
   requested: "disabled" | undefined,
   resolved: { type: "adaptive" } | undefined,
-): { type: "adaptive" } | { type: "disabled" } | undefined {
+): { type: "adaptive" } | { type: "disabled" } | { type: "between_tools" } | undefined {
+  if (requested === "disabled" && model === "claude-sonnet-5-5") {
+    return { type: "between_tools" };
+  }
   if (requested === "disabled" && !ALWAYS_THINKING_MODEL_RX.test(model)) {
     return { type: "disabled" };
   }

@@ -262,7 +262,7 @@ This is ideal for teams that already have API agreements with AI providers or wa
       },
       {
         heading: "Model Pricing",
-        text: `Octopus supports models including Claude Opus 5.5 and GPT-6 Astra. For model pricing, the platform rate and prompt-cache discounts, see the pricing guide: https://octopus-review.ai/docs/pricing.`,
+        text: `Octopus supports models including Claude Sonnet 5.5, Claude Opus 5.5 and GPT-6 Astra. For model pricing, the platform rate and prompt-cache discounts, see the pricing guide: https://octopus-review.ai/docs/pricing.`,
       },
       {
         heading: "Spend Limits & Billing",
