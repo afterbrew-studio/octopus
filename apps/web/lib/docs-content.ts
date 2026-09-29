@@ -257,8 +257,7 @@ Usage-Based: Pay only for what you use. Purchase credits as needed or set up aut
       },
       {
         heading: "Bring Your Own Keys (BYOK)",
-        text: `You can bring your own API keys for Anthropic (Claude), OpenAI, Google, Alibaba Cloud Model Studio (Qwen), and Cohere. When using your own keys, AI operations don't consume Octopus credits — you pay the providers directly at their rates.
-This is ideal for teams that already have API agreements with AI providers or want full control over costs.`,
+        text: `For supported BYOK providers and which operations consume credits, see the pricing guide: https://octopus-review.ai/docs/pricing.`,
       },
       {
         heading: "Model Pricing",
@@ -448,7 +447,7 @@ Q: Is there a free tier?
 A: Yes. Every organization gets free credits. No credit card required.
 
 Q: Can I use my own API keys?
-A: Yes. Bring Your Own Keys (BYOK) for Anthropic, OpenAI, Google, Alibaba Cloud Model Studio, and Cohere. No credits consumed.
+A: Yes. See the pricing guide for BYOK coverage and credit charges: https://octopus-review.ai/docs/pricing.
 
 Q: How do spend limits work?
 A: Set a monthly cap per organization. Operations are paused when the limit is reached.`,
