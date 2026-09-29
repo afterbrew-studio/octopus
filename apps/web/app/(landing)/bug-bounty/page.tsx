@@ -162,7 +162,7 @@ const hallOfFame: {
 export default async function BugBountyPage() {
   const session = await auth.api.getSession({ headers: await headers() });
   return (
-    <div className="dark relative min-h-screen bg-[#0c0c0c] text-[#a0a0a0] selection:bg-white/20">
+    <div className="dark relative min-h-screen bg-background text-[#a0a0a0] selection:bg-white/20">
       {/* Grain overlay */}
       <div
         className="pointer-events-none fixed inset-0 z-50 opacity-[0.025]"
@@ -193,7 +193,7 @@ export default async function BugBountyPage() {
           <div className="animate-fade-in mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row [animation-delay:200ms]">
             <a
               href="#submit"
-              className="inline-flex items-center gap-2 rounded-full bg-white px-6 py-3 text-sm font-medium text-[#0c0c0c] transition-colors hover:bg-[#e0e0e0]"
+              className="inline-flex items-center gap-2 rounded-full bg-white px-6 py-3 text-sm font-medium text-background transition-colors hover:bg-[#e0e0e0]"
             >
               Submit a Report
             </a>

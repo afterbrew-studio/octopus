@@ -479,7 +479,7 @@ function PathCard({
     <div
       className={`flex flex-col rounded-lg border p-5 ${
         recommended
-          ? "border-[#10D8BE]/40 bg-[#10D8BE]/[0.04]"
+          ? "border-primary/40 bg-primary/[0.04]"
           : "border-white/[0.06] bg-white/[0.02]"
       }`}
     >
@@ -487,14 +487,14 @@ function PathCard({
         <div
           className={`flex size-9 items-center justify-center rounded-lg ${
             recommended
-              ? "bg-[#10D8BE]/10 text-[#10D8BE]"
+              ? "bg-primary/10 text-primary"
               : "bg-white/[0.06] text-[#888]"
           }`}
         >
           {icon}
         </div>
         {recommended && (
-          <span className="rounded-full bg-[#10D8BE]/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#10D8BE]">
+          <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary">
             Recommended
           </span>
         )}
@@ -515,7 +515,7 @@ function PathCard({
               i === 0
                 ? `inline-flex items-center gap-1 text-sm font-medium transition-colors ${
                     recommended
-                      ? "text-[#10D8BE] hover:text-[#10D8BE]/80"
+                      ? "text-primary hover:text-primary/80"
                       : "text-white hover:text-white/80"
                   }`
                 : "text-xs text-[#888] underline decoration-white/20 underline-offset-2 transition-colors hover:text-white"

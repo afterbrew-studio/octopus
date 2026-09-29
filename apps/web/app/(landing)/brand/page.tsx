@@ -9,7 +9,7 @@ import { LandingDesktopNav } from "@/components/landing-desktop-nav";
 export const metadata: Metadata = {
   title: "Brand Guidelines — Octopus",
   description:
-    "Resources for presenting the Octopus brand consistently and professionally. Download logos, view colors, and learn usage guidelines.",
+    "The Octopus green brand kit: mascot downloads, Geist typography, colors, and usage guidelines.",
   alternates: {
     canonical: "https://octopus-review.ai/brand",
   },
@@ -20,42 +20,11 @@ export const metadata: Metadata = {
 /* ------------------------------------------------------------------ */
 
 const brandColors = [
-  {
-    name: "Octopus Teal",
-    hex: "#10D8BE",
-    rgb: "16, 216, 190",
-    description: "Primary brand color. Used in the logo gradient and accents.",
-  },
-  {
-    name: "Mint",
-    hex: "#C0F4DA",
-    rgb: "192, 244, 218",
-    description: "Light tint from the logo gradient. Use for highlights.",
-  },
-  {
-    name: "Aqua",
-    hex: "#1DFAD9",
-    rgb: "29, 250, 217",
-    description: "Bright accent from the logo gradient.",
-  },
-  {
-    name: "Ink",
-    hex: "#0C0C0C",
-    rgb: "12, 12, 12",
-    description: "Primary dark background.",
-  },
-  {
-    name: "Charcoal",
-    hex: "#161616",
-    rgb: "22, 22, 22",
-    description: "Card and panel backgrounds.",
-  },
-  {
-    name: "White",
-    hex: "#FFFFFF",
-    rgb: "255, 255, 255",
-    description: "Text on dark backgrounds and light-mode primary.",
-  },
+  { name: "Octopus Green", hex: "#15BA81", rgb: "21, 186, 129", description: "Accent and buttons on dark backgrounds. Pair with Ink text." },
+  { name: "Deep Green", hex: "#087F5B", rgb: "8, 127, 91", description: "Accent and buttons on light backgrounds. Pair with White text." },
+  { name: "Ink", hex: "#0C0A09", rgb: "12, 10, 9", description: "Dark background and text on bright green buttons." },
+  { name: "Warm White", hex: "#FAFAF9", rgb: "250, 250, 249", description: "Primary text on dark backgrounds." },
+  { name: "White", hex: "#FFFFFF", rgb: "255, 255, 255", description: "Light background and text on deep green buttons." },
 ];
 
 /* ------------------------------------------------------------------ */
@@ -65,7 +34,7 @@ const brandColors = [
 export default async function BrandPage() {
   const session = await auth.api.getSession({ headers: await headers() });
   return (
-    <div className="dark relative min-h-screen bg-[#0c0c0c] text-[#a0a0a0] selection:bg-white/20">
+    <div className="dark relative min-h-screen bg-background text-[#a0a0a0] selection:bg-white/20">
       {/* Grain overlay */}
       <div
         className="pointer-events-none fixed inset-0 z-50 opacity-[0.025]"
@@ -129,40 +98,41 @@ export default async function BrandPage() {
         <SectionHeader
           label="Logo"
           title="Logo assets"
-          description="Use the Octopus logo with sufficient whitespace. Don't alter, rotate, or recolor the logo."
+          description="The approved green mascot is available as PNG artwork. Keep its proportions and leave clear space around it."
         />
         <div className="mt-10 grid gap-6 md:grid-cols-3">
           <LogoCard
-            label="Logomark"
-            sublabel="Primary — use wherever possible"
-            bg="bg-[#0c0c0c]"
-            svgHref="/logo.svg"
-            pngHref="/octopus-logo.png"
+            label="Transparent mascot"
+            sublabel="For app navigation and flexible layouts"
+            bg="bg-background"
+            pngHref="/brand/octopus-mark.png"
           >
-            <Image src="/logo.svg" alt="Octopus logomark" width={64} height={68} />
+            <Image src="/brand/octopus-mark.png" alt="Octopus green mascot" width={112} height={112} />
           </LogoCard>
           <LogoCard
-            label="Logomark on light"
+            label="Light artwork"
             sublabel="For light backgrounds"
             bg="bg-white"
-            svgHref="/logo.svg"
-            pngHref="/octopus-logo.png"
+            pngHref="/brand/octopus-light.png"
           >
-            <Image src="/logo.svg" alt="Octopus logomark on light" width={64} height={68} />
+            <Image src="/brand/octopus-light.png" alt="Octopus green mascot on white" width={144} height={144} />
           </LogoCard>
           <LogoCard
-            label="Wordmark"
-            sublabel="Logo + text lockup"
-            bg="bg-[#0c0c0c]"
-            svgHref="/logo-w-text.svg"
-            pngHref="/logo-w-text.png"
+            label="Dark artwork"
+            sublabel="For dark backgrounds"
+            bg="bg-background"
+            pngHref="/brand/octopus-dark.png"
           >
-            <div className="flex items-center gap-3">
-              <Image src="/logo.svg" alt="Octopus" width={40} height={42} />
-              <span className="text-2xl font-bold tracking-tight text-white">Octopus</span>
-            </div>
+            <Image src="/brand/octopus-dark.png" alt="Octopus green mascot on Ink" width={144} height={144} />
           </LogoCard>
         </div>
+
+        <p className="mt-6 text-sm text-[#a0a0a0]">
+          <a href="https://ads.weezboo.com/brand-kit/octopus/index.html" className="text-primary underline underline-offset-4">Browse the complete brand kit</a>
+          {" "}or{" "}
+          <a href="https://ads.weezboo.com/brand-kit/octopus/octopus-brand-kit-v1.0.0.zip" className="text-primary underline underline-offset-4">download the ZIP</a>
+          {" "}for social layouts, banners, editable layouts, and licensed font files. The mascot is raster artwork; there is no vector master.
+        </p>
 
         {/* Usage do / don't */}
         <div className="mt-10 grid gap-6 sm:grid-cols-2">
@@ -178,7 +148,7 @@ export default async function BrandPage() {
             <span className="text-xs font-semibold uppercase tracking-[0.2em] text-red-400">Don&apos;t</span>
             <ul className="mt-4 space-y-2 text-sm text-[#888]">
               <li>Alter, distort, or rotate the logo</li>
-              <li>Change the logo colors or gradient</li>
+              <li>Recolor the approved artwork</li>
               <li>Add effects like shadows or outlines</li>
               <li>Place the logo on busy or low-contrast backgrounds</li>
             </ul>
@@ -191,7 +161,7 @@ export default async function BrandPage() {
         <SectionHeader
           label="Colors"
           title="Color palette"
-          description="The Octopus brand palette is built around teal — derived from the logo gradient — complemented by neutral dark tones."
+          description="Use bright green on Ink and deep green on White. These button and text pairs meet WCAG AA contrast for normal text."
         />
         <div className="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {brandColors.map((color) => (
@@ -205,13 +175,14 @@ export default async function BrandPage() {
         <SectionHeader
           label="Typography"
           title="Typeface"
-          description="Octopus uses Public Sans as its primary typeface — a strong, neutral, open-source sans-serif."
+          description="Use Geist Sans for interface text and headings, and Geist Mono for code and technical labels. Both are open source under the SIL Open Font License."
         />
         <div className="mt-10 rounded-xl border border-white/[0.06] bg-white/[0.02] p-8 md:p-12">
           <p className="text-5xl font-bold tracking-tight text-white md:text-7xl">
             Aa
           </p>
-          <p className="mt-4 text-2xl font-semibold text-white">Public Sans</p>
+          <p className="mt-4 text-2xl font-semibold text-white">Geist Sans</p>
+          <p className="mt-4 font-mono text-sm text-primary">Geist Mono · octp review</p>
           <p className="mt-4 break-all text-sm text-[#888] sm:text-lg">
             ABCDEFGHIJKLMNOPQRSTUVWXYZ
           </p>
@@ -297,36 +268,25 @@ function LogoCard({
   label,
   sublabel,
   bg,
-  svgHref,
   pngHref,
   children,
 }: {
   label: string;
   sublabel: string;
   bg: string;
-  svgHref?: string;
   pngHref?: string;
   children: React.ReactNode;
 }) {
   return (
     <div className="group relative overflow-hidden rounded-xl border border-white/[0.06]">
       <div className={`relative flex h-48 items-center justify-center ${bg}`}>
-        {(svgHref || pngHref) && (
-          <div className="absolute right-3 top-3 flex gap-1.5 opacity-0 transition-opacity group-hover:opacity-100">
-            {svgHref && (
-              <a
-                href={svgHref}
-                download
-                className="rounded-lg border border-white/[0.1] bg-black/60 px-2.5 py-1.5 text-xs font-medium text-[#999] backdrop-blur-sm transition-colors hover:border-white/[0.2] hover:text-white"
-              >
-                SVG
-              </a>
-            )}
+        {pngHref && (
+          <div className="absolute right-3 top-3 flex gap-1.5">
             {pngHref && (
               <a
                 href={pngHref}
                 download
-                className="rounded-lg border border-white/[0.1] bg-black/60 px-2.5 py-1.5 text-xs font-medium text-[#999] backdrop-blur-sm transition-colors hover:border-white/[0.2] hover:text-white"
+                className="rounded-lg border border-white/[0.1] bg-black/60 px-2.5 py-1.5 text-xs font-medium text-white backdrop-blur-sm transition-colors hover:border-white/[0.2] hover:text-white"
               >
                 PNG
               </a>

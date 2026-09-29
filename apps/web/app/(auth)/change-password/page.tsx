@@ -75,13 +75,13 @@ export default function ChangePasswordPage() {
   }
 
   return (
-    <div className="dark flex min-h-screen items-center justify-center bg-[#0c0c0c] text-[#a0a0a0]">
+    <div className="dark flex min-h-screen items-center justify-center bg-background text-[#a0a0a0]">
       <div className="w-full max-w-sm px-8">
         <Link
           href="/"
           className="mb-10 flex items-center gap-3 transition-opacity hover:opacity-80"
         >
-          <Image src="/logo.svg" alt="Octopus" width={36} height={38} priority />
+          <Image src="/brand/octopus-mark.png" alt="Octopus" width={36} height={36} priority />
           <span className="text-xl font-bold tracking-tight text-white">Octopus</span>
         </Link>
 

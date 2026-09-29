@@ -89,7 +89,7 @@ export default async function VsCodeRabbitPage() {
   const session = await auth.api.getSession({ headers: await headers() }).catch(() => null);
 
   return (
-    <div className="dark relative min-h-screen bg-[#0c0c0c] text-[#a0a0a0] selection:bg-white/20">
+    <div className="dark relative min-h-screen bg-background text-[#a0a0a0] selection:bg-white/20">
       <script
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(faqJsonLd) }}
@@ -166,23 +166,23 @@ export default async function VsCodeRabbitPage() {
             </h2>
             <ul className="mt-5 space-y-3 text-sm text-[#a0a0a0]">
               <li className="flex gap-3">
-                <IconCheck className="mt-0.5 size-4 shrink-0 text-[#10D8BE]" />
+                <IconCheck className="mt-0.5 size-4 shrink-0 text-primary" />
                 You want to self-host on your own infrastructure.
               </li>
               <li className="flex gap-3">
-                <IconCheck className="mt-0.5 size-4 shrink-0 text-[#10D8BE]" />
+                <IconCheck className="mt-0.5 size-4 shrink-0 text-primary" />
                 You prefer credit-based, usage-only pricing over per-seat fees.
               </li>
               <li className="flex gap-3">
-                <IconCheck className="mt-0.5 size-4 shrink-0 text-[#10D8BE]" />
+                <IconCheck className="mt-0.5 size-4 shrink-0 text-primary" />
                 You want to bring your own Claude, OpenAI, or Gemini API keys.
               </li>
               <li className="flex gap-3">
-                <IconCheck className="mt-0.5 size-4 shrink-0 text-[#10D8BE]" />
+                <IconCheck className="mt-0.5 size-4 shrink-0 text-primary" />
                 Source access matters for audit, compliance, or customization.
               </li>
               <li className="flex gap-3">
-                <IconCheck className="mt-0.5 size-4 shrink-0 text-[#10D8BE]" />
+                <IconCheck className="mt-0.5 size-4 shrink-0 text-primary" />
                 You want a CLI to run reviews from the terminal too.
               </li>
             </ul>

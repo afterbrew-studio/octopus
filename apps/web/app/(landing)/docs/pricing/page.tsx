@@ -277,7 +277,7 @@ export default function PricingPage() {
         </p>
         <Link
           href="/login"
-          className="mt-4 inline-flex items-center gap-2 rounded-full bg-white px-6 py-2.5 text-sm font-medium text-[#0c0c0c] transition-colors hover:bg-[#e0e0e0]"
+          className="mt-4 inline-flex items-center gap-2 rounded-full bg-white px-6 py-2.5 text-sm font-medium text-background transition-colors hover:bg-[#e0e0e0]"
         >
           Get Started Free
         </Link>

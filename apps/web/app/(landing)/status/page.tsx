@@ -127,7 +127,7 @@ export default async function StatusPage() {
   }
 
   return (
-    <div className="min-h-screen bg-[#0c0c0c] text-white">
+    <div className="min-h-screen bg-background text-white">
       <StatusListener />
       <LandingDesktopNav isLoggedIn={isLoggedIn} />
       <LandingMobileNav isLoggedIn={isLoggedIn} />

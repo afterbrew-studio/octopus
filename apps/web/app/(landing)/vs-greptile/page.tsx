@@ -93,7 +93,7 @@ export default async function VsGreptilePage() {
   const session = await auth.api.getSession({ headers: await headers() }).catch(() => null);
 
   return (
-    <div className="dark relative min-h-screen bg-[#0c0c0c] text-[#a0a0a0] selection:bg-white/20">
+    <div className="dark relative min-h-screen bg-background text-[#a0a0a0] selection:bg-white/20">
       <script
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(faqJsonLd) }}
@@ -109,7 +109,7 @@ export default async function VsGreptilePage() {
           </span>
           <h1 className="mt-4 text-4xl font-bold tracking-tight text-white sm:text-5xl md:text-6xl">
             Octopus <span className="text-[#555]">vs</span>{" "}
-            <span className="bg-gradient-to-r from-[#C0F4DA] via-[#1DFAD9] to-[#10D8BE] bg-clip-text text-transparent">
+            <span className="text-primary">
               Greptile
             </span>
           </h1>
@@ -169,23 +169,23 @@ export default async function VsGreptilePage() {
             </h2>
             <ul className="mt-5 space-y-3 text-sm text-[#a0a0a0]">
               <li className="flex gap-3">
-                <IconCheck className="mt-0.5 size-4 shrink-0 text-[#10D8BE]" />
+                <IconCheck className="mt-0.5 size-4 shrink-0 text-primary" />
                 You want to self-host on your own infrastructure, for free.
               </li>
               <li className="flex gap-3">
-                <IconCheck className="mt-0.5 size-4 shrink-0 text-[#10D8BE]" />
+                <IconCheck className="mt-0.5 size-4 shrink-0 text-primary" />
                 Automated PR review with severity ratings is your main use case.
               </li>
               <li className="flex gap-3">
-                <IconCheck className="mt-0.5 size-4 shrink-0 text-[#10D8BE]" />
+                <IconCheck className="mt-0.5 size-4 shrink-0 text-primary" />
                 You prefer usage-based credits over per-developer seats.
               </li>
               <li className="flex gap-3">
-                <IconCheck className="mt-0.5 size-4 shrink-0 text-[#10D8BE]" />
+                <IconCheck className="mt-0.5 size-4 shrink-0 text-primary" />
                 You want to bring your own Claude, OpenAI, or Gemini API keys.
               </li>
               <li className="flex gap-3">
-                <IconCheck className="mt-0.5 size-4 shrink-0 text-[#10D8BE]" />
+                <IconCheck className="mt-0.5 size-4 shrink-0 text-primary" />
                 Source access matters for audit, compliance, or customization.
               </li>
             </ul>

@@ -39,7 +39,7 @@ const TONE_MAP: Record<AnnouncementTone, ToneStyle> = {
   teal: {
     bg: "linear-gradient(to right, rgb(16 216 190 / 0.08), rgb(16 216 190 / 0.14), rgb(16 216 190 / 0.08))",
     border: "rgb(16 216 190 / 0.20)",
-    accent: "#10D8BE",
+    accent: "#15BA81",
     text: "#d8fffa",
     hover: "rgb(16 216 190 / 0.12)",
   },

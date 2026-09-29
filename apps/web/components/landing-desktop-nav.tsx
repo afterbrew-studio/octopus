@@ -13,7 +13,7 @@ export function LandingDesktopNav({ isLoggedIn }: { isLoggedIn: boolean }) {
     <nav className="fixed left-1/2 top-12 z-40 hidden -translate-x-1/2 lg:block">
       <div className="flex items-center gap-2 rounded-full border border-white/[0.08] bg-white/[0.05] px-3 py-1.5 shadow-lg shadow-black/20 backdrop-blur-xl">
         <Link href="/" className="flex items-center gap-2 px-2">
-          <Image src="/logo.svg" alt="Octopus" width={24} height={24} priority />
+          <Image src="/brand/octopus-mark.png" alt="Octopus" width={24} height={24} priority />
           <span className="text-sm font-semibold tracking-tight text-white">Octopus</span>
         </Link>
         <div className="flex items-center gap-1 whitespace-nowrap pl-4 text-sm text-[#777]">
@@ -83,7 +83,7 @@ export function LandingDesktopNav({ isLoggedIn }: { isLoggedIn: boolean }) {
                   eventParams={{ label: "brand" }}
                   className="flex items-start gap-3 rounded-lg px-3 py-3 transition-colors hover:bg-white/[0.06]"
                 >
-                  <Image src="/logo.svg" alt="" width={20} height={20} className="mt-0.5 shrink-0 opacity-40 grayscale" />
+                  <Image src="/brand/octopus-mark.png" alt="" width={20} height={20} className="mt-0.5 shrink-0 opacity-40 grayscale" />
                   <div>
                     <div className="text-sm font-medium text-[#ccc]">Brand Guidelines</div>
                     <div className="mt-0.5 text-xs text-[#555]">Logos, colors & assets</div>
@@ -157,17 +157,17 @@ export function LandingDesktopNav({ isLoggedIn }: { isLoggedIn: boolean }) {
           onClick={() => window.dispatchEvent(new Event("ask-octopus-open"))}
           className="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-3 py-1.5 text-sm text-[#777] transition-colors hover:bg-white/[0.06] hover:text-white"
         >
-          <IconMessageCircle className="size-3.5 text-[#10D8BE]" />
+          <IconMessageCircle className="size-3.5 text-primary" />
           Ask AI
         </button>
         <div className="shrink-0">
           {isLoggedIn ? (
-            <Link href="/dashboard" className="inline-flex items-center gap-2 whitespace-nowrap rounded-full bg-white px-4 py-2 text-sm font-medium text-[#0c0c0c] transition-colors hover:bg-[#e0e0e0]">
+            <Link href="/dashboard" className="inline-flex items-center gap-2 whitespace-nowrap rounded-full bg-white px-4 py-2 text-sm font-medium text-background transition-colors hover:bg-[#e0e0e0]">
               Dashboard
               <IconArrowRight className="size-3.5" />
             </Link>
           ) : (
-            <TrackedLink href="/login" event="cta_click" eventParams={{ location: "desktop_nav", label: "get_started" }} className="inline-flex items-center gap-2 whitespace-nowrap rounded-full bg-white px-4 py-2 text-sm font-medium text-[#0c0c0c] transition-colors hover:bg-[#e0e0e0]">
+            <TrackedLink href="/login" event="cta_click" eventParams={{ location: "desktop_nav", label: "get_started" }} className="inline-flex items-center gap-2 whitespace-nowrap rounded-full bg-white px-4 py-2 text-sm font-medium text-background transition-colors hover:bg-[#e0e0e0]">
               Get Started
               <IconArrowRight className="size-3.5" />
             </TrackedLink>
