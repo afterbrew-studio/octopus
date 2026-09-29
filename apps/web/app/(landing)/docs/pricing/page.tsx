@@ -48,7 +48,7 @@ export default function PricingPage() {
         </h1>
         <p className="mt-3 text-lg text-[#888]">
           Free to start. Pay only for what you use, or bring your own API keys
-          and pay nothing.
+          and pay your providers directly.
         </p>
       </div>
 
@@ -99,8 +99,9 @@ export default function PricingPage() {
               <p className="mt-2 text-sm leading-relaxed text-[#888]">
                 Configure your own Anthropic, OpenAI, Google, Alibaba Cloud,
                 or Cohere API keys in the organization settings. When you bring your own keys,
-                Octopus routes requests directly to your provider account and no
-                credits are deducted.
+                Octopus routes requests using those keys to your provider account
+                and deducts no credits for them. Operations using other platform
+                providers, such as embeddings, still consume credits.
               </p>
               <div className="mt-3 flex flex-wrap gap-2">
                 {["Anthropic", "OpenAI", "Google AI", "Alibaba Cloud", "Cohere"].map((p) => (
@@ -135,6 +136,8 @@ export default function PricingPage() {
               </tr>
             </thead>
             <tbody className="text-[#888]">
+              <ModelRow model="Claude Sonnet 5.5" input="$2" output="$10" />
+              <ModelRow model="Claude Opus 5.5" input="$4" output="$20" />
               <ModelRow model="Claude Fable 5.1" input="$10" output="$50" />
               <ModelRow model="Claude Fable 5" input="$10" output="$50" />
               <ModelRow model="Claude Opus 5" input="$5" output="$25" />
@@ -159,6 +162,15 @@ export default function PricingPage() {
         <P>
           Prompt caching reduces costs: the cache-read discount depends on the
           model.
+        </P>
+        <P>
+          For Claude Sonnet 5.5, the Octopus Cloud rate is $4 per 1M uncached
+          input tokens and $20 per 1M output tokens, including thinking. Cache
+          reads cost $0.40 per 1M tokens; cache writes cost $5 for a five-minute
+          cache or $8 for a one-hour cache. A request using 20,000 uncached input
+          tokens and 2,000 output tokens costs $0.12. This is an example, not a
+          fixed review price: a review can make multiple AI calls, and indexing
+          and other operations have their own usage costs.
         </P>
       </Section>
 
