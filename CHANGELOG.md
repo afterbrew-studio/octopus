@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.13] - 2026-09-29
+
+### Improved
+
+- Octopus now uses the green mascot and Geist typography across the website, sign-in pages, docs, and app. Buttons and navigation share the new palette, with separate colours for light and dark themes.
+- Updated browser and home-screen icons, link previews, and the brand page with the approved artwork and downloads.
+
+### Upgrade notes
+
+- No database or configuration changes from 1.2.12. Update the application image as usual.
+
 ## [1.2.12] - 2026-09-29
 
 ### Added
