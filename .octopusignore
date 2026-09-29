@@ -16,3 +16,6 @@ bun.lock
 
 # Re-include a specific file even if its folder is ignored
 !docs/API.md
+
+# Generated raster favicon; validate rendered artwork separately from source diffs.
+/apps/web/app/favicon.ico
