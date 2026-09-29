@@ -6,6 +6,18 @@ describe("Sonnet 5.5 requests", () => {
   const base = { model: "claude-sonnet-5-5", maxTokens: 1000, messages: [{ role: "user" as const, content: "Review this change" }] };
   const schema = { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"], additionalProperties: false };
 
+  it("caps Sonnet output at 128000 while preserving its floor and other models", () => {
+    for (const thinking of [undefined, "disabled"] as const) {
+      for (const [maxTokens, expected] of [[1000, 64000], [64000, 64000], [100000, 100000], [128000, 128000], [131072, 128000]]) {
+        const body = prepareAnthropicRequest({ ...base, maxTokens, thinking, responseSchema: { name: "result", schema } }, "5m");
+        expect(body.max_tokens).toBe(expected);
+      }
+    }
+    for (const model of ["claude-opus-5-5", "claude-fable-5", "claude-sonnet-4-6", "claude-sonnet-5-50", "claude-sonnet-5-5-20260929"]) {
+      expect(prepareAnthropicRequest({ ...base, model, maxTokens: 131072 }, "5m").max_tokens).toBe(131072);
+    }
+  });
+
   it("uses adaptive thinking and the Octopus medium default when thinking is omitted", () => {
     const previous = process.env.FABLE_THINKING_EFFORT;
     delete process.env.FABLE_THINKING_EFFORT;

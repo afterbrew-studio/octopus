@@ -84,7 +84,10 @@ export function resolveThinking(
   // high per-model caps (>= 64000) and need the room. Other models keep their
   // requested budget so we never exceed a lower cap (a 400).
   if (!ALWAYS_THINKING_MODEL_RX.test(model)) return { maxTokens: requestedMaxTokens };
-  const maxTokens = Math.max(requestedMaxTokens, ALWAYS_THINKING_MAX_TOKENS_FLOOR);
+  const maxTokens = Math.max(
+    model === "claude-sonnet-5-5" ? Math.min(requestedMaxTokens, 128000) : requestedMaxTokens,
+    ALWAYS_THINKING_MAX_TOKENS_FLOOR,
+  );
   if (useTool) return { maxTokens };
   return {
     maxTokens,
