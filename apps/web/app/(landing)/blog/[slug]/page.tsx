@@ -121,7 +121,7 @@ export default async function BlogPostPage({
   };
 
   return (
-    <div className="min-h-screen bg-[#0c0c0c] text-white">
+    <div className="min-h-screen bg-background text-white">
       <script
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: safeJsonLd(blogPostingJsonLd) }}
@@ -160,7 +160,7 @@ export default async function BlogPostPage({
             {post.category && (
               <Link
                 href={`/blog?category=${encodeURIComponent(post.category)}`}
-                className="mb-3 inline-block text-xs font-semibold uppercase tracking-[0.2em] text-[#10D8BE] transition-colors hover:text-[#10D8BE]/80"
+                className="mb-3 inline-block text-xs font-semibold uppercase tracking-[0.2em] text-primary transition-colors hover:text-primary/80"
               >
                 {post.category}
               </Link>
@@ -201,7 +201,7 @@ export default async function BlogPostPage({
               </details>
             )}
 
-            <div className="text-[#a0a0a0] [&_h1]:text-white [&_h2]:text-white [&_h3]:text-white [&_strong]:text-white [&_a]:text-[#10D8BE] [&_code]:bg-white/[0.06] [&_pre]:bg-white/[0.04] [&_pre]:border [&_pre]:border-white/[0.06] [&_blockquote]:border-[#333] [&_th]:border-[#333] [&_td]:border-[#333] [&_hr]:border-[#333] [&_table]:border-[#333]">
+            <div className="text-[#a0a0a0] [&_h1]:text-white [&_h2]:text-white [&_h3]:text-white [&_strong]:text-white [&_a]:text-primary [&_code]:bg-white/[0.06] [&_pre]:bg-white/[0.04] [&_pre]:border [&_pre]:border-white/[0.06] [&_blockquote]:border-[#333] [&_th]:border-[#333] [&_td]:border-[#333] [&_hr]:border-[#333] [&_table]:border-[#333]">
               <BlogContent content={post.content} />
             </div>
 
@@ -211,7 +211,7 @@ export default async function BlogPostPage({
                   <Link
                     key={t}
                     href={`/blog?tag=${encodeURIComponent(t)}`}
-                    className="rounded-full border border-white/[0.08] px-3 py-1 text-xs text-[#888] transition-colors hover:border-[#10D8BE]/40 hover:text-[#10D8BE]"
+                    className="rounded-full border border-white/[0.08] px-3 py-1 text-xs text-[#888] transition-colors hover:border-primary/40 hover:text-primary"
                   >
                     #{t}
                   </Link>

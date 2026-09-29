@@ -125,7 +125,7 @@ const faqs = [
 export default async function EditorPage() {
   const session = await auth.api.getSession({ headers: await headers() });
   return (
-    <div className="dark relative min-h-screen bg-[#0c0c0c] text-[#a0a0a0] selection:bg-white/20">
+    <div className="dark relative min-h-screen bg-background text-[#a0a0a0] selection:bg-white/20">
       {/* Grain overlay */}
       <div
         className="pointer-events-none fixed inset-0 z-50 opacity-[0.025]"
@@ -157,7 +157,7 @@ export default async function EditorPage() {
           <div className="animate-fade-in mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row [animation-delay:200ms]">
             <a
               href="#install"
-              className="inline-flex items-center gap-2 rounded-full bg-white px-6 py-3 text-sm font-medium text-[#0c0c0c] transition-colors hover:bg-[#e0e0e0]"
+              className="inline-flex items-center gap-2 rounded-full bg-white px-6 py-3 text-sm font-medium text-background transition-colors hover:bg-[#e0e0e0]"
             >
               Add it to your editor
             </a>
@@ -218,7 +218,7 @@ export default async function EditorPage() {
           title="Here is what a review looks like"
           description="You ask for a review and Octopus replies with clear, ranked findings. No jargon required."
         />
-        <div className="mt-10 overflow-hidden rounded-xl border border-white/[0.08] bg-[#0c0c0c]">
+        <div className="mt-10 overflow-hidden rounded-xl border border-white/[0.08] bg-background">
           <div className="flex items-center gap-2 border-b border-white/[0.06] px-5 py-3">
             <IconMessageCircle className="size-4 text-teal-400" />
             <span className="text-sm font-medium text-white">Octopus review</span>
@@ -290,7 +290,7 @@ export default async function EditorPage() {
           <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
             <a
               href="#install"
-              className="inline-flex items-center gap-2 rounded-full bg-white px-6 py-3 text-sm font-medium text-[#0c0c0c] transition-colors hover:bg-[#e0e0e0]"
+              className="inline-flex items-center gap-2 rounded-full bg-white px-6 py-3 text-sm font-medium text-background transition-colors hover:bg-[#e0e0e0]"
             >
               Add it to your editor
               <IconArrowRight className="size-3.5" />

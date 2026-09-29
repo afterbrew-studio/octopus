@@ -42,12 +42,12 @@ export function LandingAgentPrompt() {
         aria-describedby="octopus-prompt-help"
         readOnly
         value={SETUP_PROMPT}
-        className="mt-5 h-64 w-full resize-y rounded-xl border border-white/15 bg-[#0c0c0c] p-4 font-mono text-sm leading-relaxed text-[#e0e0e0] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#10D8BE]"
+        className="mt-5 h-64 w-full resize-y rounded-xl border border-white/15 bg-background p-4 font-mono text-sm leading-relaxed text-[#e0e0e0] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
       />
       <button
         type="button"
         onClick={copyPrompt}
-        className="mt-4 inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-full bg-[#10D8BE] px-6 py-3 text-sm font-semibold text-[#0c0c0c] transition-colors hover:bg-[#0fbfa8] focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-white"
+        className="mt-4 inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-full bg-primary px-6 py-3 text-sm font-semibold text-background transition-colors hover:bg-primary/90 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-white"
       >
         {copyState === "copied" ? <IconCheck className="size-4" aria-hidden="true" /> : <IconCopy className="size-4" aria-hidden="true" />}
         {copyState === "copied" ? "Prompt copied" : "Copy setup prompt"}

@@ -123,9 +123,9 @@ export default function GitHubActionPage() {
       </div>
 
       {/* Highlight banner */}
-      <div className="mb-10 rounded-2xl border border-[#10D8BE]/25 bg-[#10D8BE]/[0.04] p-6">
+      <div className="mb-10 rounded-2xl border border-primary/25 bg-primary/[0.04] p-6">
         <div className="flex items-start gap-4">
-          <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-[#10D8BE]/10 text-[#10D8BE]">
+          <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
             <IconBolt className="size-5" />
           </div>
           <div>
@@ -416,7 +416,7 @@ export default function GitHubActionPage() {
           CI at all, install the{" "}
           <a
             href="/login"
-            className="text-[#10D8BE] hover:underline"
+            className="text-primary hover:underline"
           >
             Octopus GitHub App
           </a>{" "}

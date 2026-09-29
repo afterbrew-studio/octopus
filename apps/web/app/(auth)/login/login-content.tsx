@@ -245,7 +245,7 @@ export function LoginContent({
         !socialEnabled.microsoft && (
         <p className="mt-3 text-center text-xs text-[#555]">
           No OAuth providers configured. Self-hosting? See{" "}
-          <Link href="/docs/oauth-setup" className="text-cyan-400 underline">
+          <Link href="/docs/oauth-setup" className="text-primary underline">
             OAuth setup
           </Link>{" "}
           — or use the magic-link option below.
@@ -375,7 +375,7 @@ export function LoginContent({
   );
 
   return (
-    <div className="dark flex min-h-screen bg-[#0c0c0c] text-[#a0a0a0]">
+    <div className="dark flex min-h-screen bg-background text-[#a0a0a0]">
       {/* Grain overlay — same as landing */}
       <div
         className="pointer-events-none fixed inset-0 z-50 opacity-[0.025]"
@@ -394,10 +394,10 @@ export function LoginContent({
             onClick={() => trackEvent("login_logo_click", { location: "login" })}
           >
             <Image
-              src="/logo.svg"
+              src="/brand/octopus-mark.png"
               alt="Octopus"
               width={36}
-              height={38}
+              height={36}
               priority
             />
             <span className="text-xl font-bold tracking-tight text-white">Octopus</span>
@@ -409,11 +409,11 @@ export function LoginContent({
 
       {/* Right side — product highlights (hidden on mobile) */}
       <div className="relative hidden lg:flex lg:w-1/2 items-center justify-center overflow-hidden border-l border-white/[0.06]">
-        <div className="absolute inset-0 bg-gradient-to-br from-[#0f1a18] via-[#0c0c0c] to-[#0c0c0c]" />
-        <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 size-[500px] rounded-full bg-[#10d8be]/[0.04] blur-[100px]" />
+        <div className="absolute inset-0 bg-gradient-to-br from-[#0f1a18] via-background to-background" />
+        <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 size-[500px] rounded-full bg-primary/[0.04] blur-[100px]" />
 
         <div className="relative z-10 w-full max-w-md px-12">
-          <p className="text-xs font-medium uppercase tracking-[0.2em] text-[#10d8be]/70">
+          <p className="text-xs font-medium uppercase tracking-[0.2em] text-primary/70">
             Your AI senior reviewer
           </p>
           <h2 className="mt-3 text-2xl font-semibold leading-snug text-white">
@@ -424,7 +424,7 @@ export function LoginContent({
             {LOGIN_FEATURES.map(({ icon: Icon, title, description }) => (
               <li key={title} className="flex items-start gap-4">
                 <span className="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-lg border border-white/[0.08] bg-white/[0.03]">
-                  <Icon className="size-[18px] text-[#10d8be]" stroke={1.75} />
+                  <Icon className="size-[18px] text-primary" stroke={1.75} />
                 </span>
                 <div>
                   <p className="text-sm font-medium text-white">{title}</p>
@@ -444,7 +444,7 @@ export function LoginContent({
           </p>
           <Link
             href="/docs/self-hosting"
-            className="mt-3 inline-flex items-center gap-1.5 text-xs text-[#10d8be]/70 transition-colors hover:text-[#10d8be]"
+            className="mt-3 inline-flex items-center gap-1.5 text-xs text-primary/70 transition-colors hover:text-primary"
           >
             Prefer to run it yourself? Self-host Octopus
             <IconArrowRight className="size-3.5" />

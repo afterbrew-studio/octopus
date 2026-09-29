@@ -49,7 +49,7 @@ export default async function NotARabbitPage() {
   const session = await auth.api.getSession({ headers: await headers() });
 
   return (
-    <div className="dark relative min-h-screen bg-[#0c0c0c] text-[#a0a0a0] selection:bg-white/20">
+    <div className="dark relative min-h-screen bg-background text-[#a0a0a0] selection:bg-white/20">
       {/* Grain overlay */}
       <div
         className="pointer-events-none fixed inset-0 z-50 opacity-[0.025]"
@@ -108,7 +108,7 @@ export default async function NotARabbitPage() {
             <div className="absolute inset-0 flex items-center justify-center">
               <div className="flex h-[190px] w-[190px] items-center justify-center rounded-full border border-white/[0.06] bg-[#161616] sm:h-[225px] sm:w-[225px] md:h-[260px] md:w-[260px]">
                 <Image
-                  src="/logo.svg"
+                  src="/brand/octopus-mark.png"
                   alt="Octopus"
                   width={105}
                   height={111}
@@ -122,7 +122,7 @@ export default async function NotARabbitPage() {
           <h1 className="animate-fade-in text-4xl font-bold tracking-tight text-white [animation-delay:100ms] sm:text-5xl md:text-6xl">
             Not a Rabbit.
             <br />
-            <span className="bg-gradient-to-r from-[#C0F4DA] via-[#1DFAD9] to-[#10D8BE] bg-clip-text text-transparent">
+            <span className="text-primary">
               Don&apos;t follow trails.
             </span>
           </h1>
