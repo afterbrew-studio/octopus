@@ -238,19 +238,22 @@ jobs:
             The standalone connector image is
             `ghcr.io/octopusreview/octopus-selfhost:forgejo-connector-${{ steps.tags.outputs.semver }}`.
 
-            To upgrade a self-hosted instance, pull the new public image and
-            apply migrations (the runtime image ships no migrations, so run them
-            from a checkout of this tag):
+            Before upgrading, read this version's [Upgrade notes](https://github.com/${{ github.repository }}/blob/v${{ steps.tags.outputs.semver }}/CHANGELOG.md).
+            They specify the order for updating services and applying migrations.
+            Schema prerequisites may need migrations first; a new model catalog
+            entry may need compatible web and review workers running first.
+
+            Prepare the self-hosted upgrade:
 
             ```bash
             git fetch --tags && git checkout vX.Y.Z    # for the compose file + migrations
             export OCTOPUS_VERSION=${{ steps.tags.outputs.semver }}
             docker compose -f docker-compose.selfhost.yml pull
-            # migrate FIRST (expand-only, safe under the still-running old version) ...
-            cd packages/db && DATABASE_URL=postgresql://octopus:octopus@localhost:43332/octopus bunx prisma migrate deploy && cd ../..
-            # ... then roll to the new version
-            docker compose -f docker-compose.selfhost.yml up -d
             ```
+
+            Follow the Upgrade notes before running `docker compose -f docker-compose.selfhost.yml up -d`
+            and `bunx prisma migrate deploy` from `packages/db` with your configured
+            `DATABASE_URL`. The runtime image ships no migrations; use the tag checkout.
 
             Then verify:
 

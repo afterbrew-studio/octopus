@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.12] - 2026-09-29
+
+### Added
+
+- Choose Claude Sonnet 5.5 for reviews and chat. Existing defaults and pinned models stay unchanged.
+
+### Improved
+
+- The pricing guide lists Sonnet 5.5 usage and cache costs. It also clarifies that your own API keys cover only requests routed through those keys; other platform usage still consumes credits.
+
+### Upgrade notes
+
+- For upgrades from 1.2.11, verify that no earlier migrations are pending. Deploy 1.2.12 to every web instance and review worker, wait until all are healthy, and retire the older instances. Then run `bunx prisma migrate deploy` from `packages/db` in a checkout of the `v1.2.12` tag. The only new migration inserts the Sonnet 5.5 catalog entry. For older releases, check and apply prerequisite schema migrations before following this sequence.
+
 ## [1.2.11] - 2026-09-28
 
 ### Fixed
