@@ -19,3 +19,5 @@ bun.lock
 
 # Generated raster favicon; validate rendered artwork separately from source diffs.
 /apps/web/app/favicon.ico
+# Keep descendants reviewable if this path ever becomes a directory.
+!/apps/web/app/favicon.ico/
