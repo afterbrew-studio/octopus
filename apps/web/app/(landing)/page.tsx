@@ -1,4 +1,3 @@
-import Image from "next/image";
 import "server-only";
 import Link from "@/components/link";
 import { ORGANIZATION_ENTITY } from "@/lib/structured-data";
@@ -148,10 +147,6 @@ export default async function LandingPage() {
       <section className="relative z-10 px-6 pb-20 pt-40 md:px-8 md:pb-28 md:pt-52">
         <div className="mx-auto grid max-w-6xl grid-cols-1 items-center gap-12 lg:grid-cols-2 lg:gap-12">
          <div className="text-center lg:text-left">
-          <div className="mb-6 flex items-center justify-center gap-3 lg:justify-start">
-            <Image src="/brand/octopus-mark.png" alt="" width={64} height={64} priority />
-            <span className="text-sm font-medium text-primary">Review with context.</span>
-          </div>
           <h1 className="animate-fade-in text-4xl font-bold leading-[1.1] tracking-tight text-white [animation-delay:100ms] sm:text-5xl md:text-6xl">
             Give your AI this prompt.
             <br />
