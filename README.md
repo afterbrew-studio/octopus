@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="apps/web/public/octopus-logo.png" width="72" alt="Octopus" />
+  <img src="apps/web/public/brand/octopus-mark.png" width="72" alt="Octopus" />
 </p>
 
 # Octopus
