@@ -78,22 +78,26 @@ def read_artifact(repo, run_id, workflow, event, source, name):
     return receipt, attempt
 
 
+def rc_build(repo, run_id, source):
+    built, attempt = read_artifact(repo, run_id, "release.yml", "push", source, "rc-images")
+    validate_receipt(built, source, built["version"])
+    metadata(built["tag"])
+    require(built["run_id"] == int(run_id) and built["run_attempt"] == attempt,
+            "Build receipt run/attempt mismatch")
+    require(api(repo, f"commits/{built['tag']}")["sha"] == source, "RC tag moved or source differs")
+    return built
+
+
 def accepted_images(repo, run_id, source, base):
-    # Deliberately unavailable until the isolated acceptance producer is reviewed.
     require(Path(".github/workflows/rc-acceptance.yml").is_file(),
             "Stable promotion disabled: isolated rc-acceptance.yml is not implemented")
     accepted, _ = read_artifact(repo, run_id, "rc-acceptance.yml", "workflow_dispatch",
                                source, "rc-acceptance")
     validate_receipt(accepted, source, base)
     require(accepted.get("accepted") is True, "RC acceptance did not pass")
-    built, attempt = read_artifact(repo, accepted["run_id"], "release.yml", "push",
-                                  source, "rc-images")
-    validate_receipt(built, source, base)
-    require(built["run_id"] == accepted["run_id"] and built["run_attempt"] == attempt,
-            "Build receipt run/attempt mismatch")
+    built = rc_build(repo, accepted["run_id"], source)
     require({k: v for k, v in accepted.items() if k != "accepted"} == built,
             "Acceptance does not bind the exact RC build receipt")
-    require(api(repo, f"commits/{built['tag']}")["sha"] == source, "RC tag moved or source differs")
     return built
 
 
