@@ -50,7 +50,8 @@ jobs:
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ github.token }}
+          # Same registry credential as release.yml; artifact API reads keep github.token.
+          password: ${{ secrets.GHCR_PAT }}
       - name: Accept exact RC digests in disposable isolation
         run: python3 scripts/accept_rc_images.py
         env:
