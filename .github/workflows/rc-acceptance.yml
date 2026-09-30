@@ -1,0 +1,79 @@
+name: Isolated RC digest acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      rc_run_id:
+        description: Successful RC release workflow run ID at this exact source
+        type: string
+        required: true
+      enabled:
+        description: Explicitly run disposable acceptance (never production)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: read
+  packages: read
+
+concurrency:
+  group: rc-acceptance-${{ inputs.rc_run_id }}
+  cancel-in-progress: false
+
+jobs:
+  acceptance:
+    if: inputs.enabled && vars.OCTOPUS_RC_ACCEPTANCE_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: latest
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - name: Check source contract and install locked schema tooling
+        run: |
+          python3 -m unittest discover -s scripts -p 'test_*images.py'
+          test ! -e .env
+          bun install --frozen-lockfile
+      - name: Render synthetic schema SQL without a database connection
+        run: >-
+          bun run --cwd packages/db prisma migrate diff
+          --from-empty --to-schema prisma/schema.prisma --script
+          --output "$RUNNER_TEMP/rc-schema.sql"
+        env:
+          DATABASE_URL: postgresql://synthetic:synthetic@localhost:1/unused
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Accept exact RC digests in disposable isolation
+        run: python3 scripts/accept_rc_images.py
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RC_ACCEPTANCE_ENABLED: ${{ vars.OCTOPUS_RC_ACCEPTANCE_ENABLED }}
+          RC_RUN_ID: ${{ inputs.rc_run_id }}
+          RC_SCHEMA_SQL: ${{ runner.temp }}/rc-schema.sql
+          # Required official support-image digest; mutable tags are refused.
+          POSTGRES_IMAGE: ${{ vars.OCTOPUS_RC_POSTGRES_IMAGE }}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: rc-acceptance-${{ github.run_attempt }}
+          path: rc-evidence/receipt.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Retain scoped acceptance diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: rc-diagnostics-${{ github.run_attempt }}
+          path: |
+            rc-evidence/*.log
+            rc-evidence/runtime.json
+            rc-evidence/cleanup.json
+          if-no-files-found: ignore
+          retention-days: 30
