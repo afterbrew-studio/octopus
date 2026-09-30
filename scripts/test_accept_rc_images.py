@@ -256,13 +256,18 @@ class AcceptanceTest(unittest.TestCase):
         finally:
             os.chdir(previous)
 
-    def test_workflow_disabled_read_only_and_fixture_shipped(self):
+    def test_workflow_manual_gate_credentials_and_fixture(self):
         root = Path(__file__).resolve().parents[1]
         workflow = (root / ".github/workflows/rc-acceptance.yml").read_text()
         self.assertIn("default: false", workflow)
         self.assertIn("inputs.enabled && vars.OCTOPUS_RC_ACCEPTANCE_ENABLED == 'true'", workflow)
         self.assertIn("packages: read", workflow)
-        self.assertNotIn("secrets.", workflow)
+        login = workflow.split("      - uses: docker/login-action@", 1)[1].split("      - name: Accept exact", 1)[0]
+        self.assertIn("password: ${{ secrets.GHCR_PAT }}", login)
+        self.assertEqual(workflow.count("secrets."), 1)
+        self.assertIn("GH_TOKEN: ${{ github.token }}", workflow)
+        self.assertNotIn("pull_request", workflow)
+        self.assertNotIn("push:", workflow)
         self.assertNotIn("workflow_run:", workflow)
         self.assertIn("--from-empty --to-schema", workflow)
         dockerfile = (root / "apps/web/Dockerfile").read_text()
