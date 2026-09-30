@@ -102,7 +102,7 @@ class AcceptanceTest(unittest.TestCase):
                 self.assertGreater(kwargs["timeout"], 0)
                 self.assertLessEqual(kwargs["timeout"], 90)
                 stdout = json.dumps({"health": {"status": "ok"}, "version": {"version": BASE,
-                                    "buildId": "wrong" if failure == "version" else SOURCE, "selfHosted": variant == "selfhost"}})
+                                    "buildId": "wrong" if failure == "version" else SOURCE, "selfHosted": variant == "selfhost", "server": "excluded-server-field"}})
             elif args[:2] == ("exec", "-i"):
                 self.assertEqual(kwargs["input"], "CREATE TABLE synthetic_fixture(id int);")
                 self.assertIn("ON_ERROR_STOP=1", args)
@@ -136,8 +136,12 @@ class AcceptanceTest(unittest.TestCase):
                 try:
                     os.chdir(directory)
                     with patch.dict(os.environ, env, clear=True), patch.object(acceptance, "rc_build", return_value=BUILT):
-                        with self.assertRaises((ValueError, subprocess.TimeoutExpired)):
+                        with self.assertRaises((ValueError, subprocess.TimeoutExpired)) as error:
                             acceptance.main()
+                        if failure == "version":
+                            detail = str(error.exception).split("observed=", 1)[1]
+                            self.assertEqual(json.loads(detail), {"version": BASE, "buildId": "wrong", "selfHosted": True})
+                            self.assertNotIn("excluded-server-field", str(error.exception))
                 finally:
                     os.chdir(previous)
             else:

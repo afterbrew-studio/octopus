@@ -142,7 +142,8 @@ def accept(repo, receipt, sql, evidence, postgres):
             require(observed["health"] == {"status": "ok"}, f"Health mismatch: {variant}")
             version = observed["version"]
             require(version.get("version") == receipt["version"] and version.get("buildId") == receipt["source"]
-                    and version.get("selfHosted") is (variant == "selfhost"), f"Version/source/variant mismatch: {variant}")
+                    and version.get("selfHosted") is (variant == "selfhost"), f"Version/source/variant mismatch: {variant}; observed="
+                    + json.dumps({key: version.get(key) for key in ("version", "buildId", "selfHosted")}))
             result["web"][variant] = observed
             docker("stop", "--time", "10", web)
         connector = create(images["forgejo-connector"], options=isolated)

@@ -30,7 +30,7 @@ const nextConfig: NextConfig = {
     ],
   },
   env: {
-    NEXT_PUBLIC_BUILD_ID: Date.now().toString(),
+    NEXT_PUBLIC_BUILD_ID: process.env.NEXT_PUBLIC_BUILD_ID || Date.now().toString(),
   },
   async redirects() {
     // The Free-for-OSS pages were removed; keep inbound links (search, the
