@@ -36,11 +36,20 @@ def image_labels(reference, source, version):
 
 def wait_ready(check):
     deadline = time.monotonic() + 90
-    while time.monotonic() < deadline:
-        result = check()
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            result = check(remaining)
+        except subprocess.TimeoutExpired:
+            break
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
         if result.returncode == 0:
             return result.stdout
-        time.sleep(1)
+        time.sleep(min(1, remaining))
     raise ValueError("Isolated container did not become ready within 90 seconds")
 
 
@@ -69,24 +78,49 @@ def accept(repo, receipt, sql, evidence, postgres):
     require(inspect(postgres) == postgres.split("@", 1)[1], "Postgres digest mismatch")
     name = "octopus-rc-" + uuid.uuid4().hex
     containers, network = [], None
+    ownership = "ai.octopus.rc-acceptance-owner"
+    network_resource = {"name": name, "id": None}
     result = {"source": receipt["source"], "images": images, "postgres": postgres,
               "schema_sha256": hashlib.sha256(sql.encode()).hexdigest(), "web": {},
               "connector_scope": "amd64 missing-config execution; amd64/arm64 descriptors and labels; no live transport or arm64 execution"}
 
     def create(image, args=(), options=()):
-        cid = docker("create", "--platform", "linux/amd64", "--name", f"{name}-{len(containers)}", *options, image, *args).stdout.strip()
+        resource = {"name": f"{name}-{len(containers)}", "id": None}
+        containers.append(resource)  # Record intent before dispatch, including lost acknowledgements.
+        cid = docker("create", "--platform", "linux/amd64", "--name", resource["name"],
+                     "--label", f"{ownership}={name}", *options, image, *args).stdout.strip()
         require(re.fullmatch(r"[0-9a-f]{64}", cid), "Unexpected Docker container ID")
-        containers.append(cid)
+        resource["id"] = cid
         return cid
+
+    def owned(kind, resource):
+        labels = ".Config.Labels" if kind == "container" else ".Labels"
+        template = '{"id":{{json .Id}},"name":{{json .Name}},"labels":{{json ' + labels + '}}}'
+        try:
+            response = docker(kind, "inspect", "--format", template, resource["name"], check=False, timeout=15)
+            require(response.returncode == 0, "Resource reconciliation failed")
+            found = json.loads(response.stdout)
+            require(found["name"] in (resource["name"], "/" + resource["name"])
+                    and isinstance(found["labels"], dict) and found["labels"].get(ownership) == name
+                    and isinstance(found["id"], str)
+                    and re.fullmatch(r"[0-9a-f]{64}", found["id"])
+                    and (resource["id"] is None or found["id"] == resource["id"]),
+                    "Resource ownership mismatch")
+            resource["id"] = found["id"]
+            return True
+        except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
+            resource["error"] = "Ownership unresolved; removal refused"
+            return False
 
     isolated = ("--network", "none", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--read-only")
     try:
-        network = docker("network", "create", "--internal", name).stdout.strip()
+        network = docker("network", "create", "--internal", "--label", f"{ownership}={name}", name).stdout.strip()
         require(re.fullmatch(r"[0-9a-f]{64}", network), "Unexpected Docker network ID")
+        network_resource["id"] = network
         db = create(postgres, options=("--network", network, "--network-alias", "postgres",
                     "-e", "POSTGRES_USER=octopus", "-e", "POSTGRES_PASSWORD=synthetic-rc-only", "-e", "POSTGRES_DB=octopus_rc"))
         docker("start", db)
-        wait_ready(lambda: docker("exec", db, "pg_isready", "-h", "127.0.0.1", "-U", "octopus", "-d", "octopus_rc", check=False))
+        wait_ready(lambda timeout: docker("exec", db, "pg_isready", "-h", "127.0.0.1", "-U", "octopus", "-d", "octopus_rc", check=False, timeout=timeout))
         docker("exec", "-i", db, "psql", "-U", "octopus", "-d", "octopus_rc", "-v", "ON_ERROR_STOP=1", input=sql)
         for variant in ("selfhost", "prod"):
             fixture = create(images[variant], ("node", "/app/rc-acceptance.mjs"), isolated)
@@ -104,7 +138,7 @@ def accept(repo, receipt, sql, evidence, postgres):
                 options += ["-e", value]
             web = create(images[variant], options=options)
             docker("start", web)
-            observed = json.loads(wait_ready(lambda: docker("exec", web, "node", "-e", PROBE, check=False)))
+            observed = json.loads(wait_ready(lambda timeout: docker("exec", web, "node", "-e", PROBE, check=False, timeout=timeout)))
             require(observed["health"] == {"status": "ok"}, f"Health mismatch: {variant}")
             version = observed["version"]
             require(version.get("version") == receipt["version"] and version.get("buildId") == receipt["source"]
@@ -118,26 +152,33 @@ def accept(repo, receipt, sql, evidence, postgres):
                 and output.stderr.strip() == "Set OCTOPUS_URL and FORGEJO_URL to HTTPS origins",
                 "Connector missing-configuration smoke failed")
     finally:
-        cleanup = {"containers": [], "network": network, "network_removed": network is None}
-        for cid in reversed(containers):
+        cleanup = {"containers": containers, "network": network_resource, "diagnostic_errors": []}
+        for resource in reversed(containers):
+            resource["removed"] = False
+            if not owned("container", resource):
+                continue
+            cid = resource["id"]
             try:
                 log = docker("logs", "--tail", "100", cid, check=False, timeout=15)
+                if log.returncode:
+                    cleanup["diagnostic_errors"].append(f"Log read failed: {cid}")
                 (evidence / f"container-{cid[:12]}.log").write_text(log.stdout + log.stderr)
-            except subprocess.SubprocessError:
-                pass  # A log timeout must not prevent removal of owned containers.
+            except (OSError, subprocess.SubprocessError):
+                cleanup["diagnostic_errors"].append(f"Log capture/write failed: {cid}")
             try:
-                removed = docker("rm", "--force", "--volumes", cid, check=False, timeout=30).returncode == 0
-            except subprocess.SubprocessError:
-                removed = False
-            cleanup["containers"].append({"id": cid, "removed": removed})
-        if network:
+                resource["removed"] = docker("rm", "--force", "--volumes", cid, check=False, timeout=30).returncode == 0
+            except (OSError, subprocess.SubprocessError):
+                pass  # Keep failed status and attempt every remaining owned removal.
+        network_resource["removed"] = False
+        if owned("network", network_resource):
             try:
-                cleanup["network_removed"] = docker("network", "rm", network, check=False, timeout=30).returncode == 0
-            except subprocess.SubprocessError:
-                cleanup["network_removed"] = False
+                network_resource["removed"] = docker("network", "rm", network_resource["id"], check=False, timeout=30).returncode == 0
+            except (OSError, subprocess.SubprocessError):
+                pass
+        # Even a failed evidence write happens only after all removal attempts.
         (evidence / "cleanup.json").write_text(json.dumps(cleanup, indent=2) + "\n")
-        require(cleanup["network_removed"] and all(c["removed"] for c in cleanup["containers"]),
-                "Isolated resource cleanup failed")
+        require(network_resource["removed"] and all(c["removed"] for c in containers)
+                and not cleanup["diagnostic_errors"], "Isolated resource cleanup or diagnostics failed")
 
     return result
 
