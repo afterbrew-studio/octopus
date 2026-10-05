@@ -9,11 +9,10 @@ import { prisma, type Prisma } from "@octopus/db";
 import { pubby } from "@/lib/pubby";
 import {
   createPullRequestReview as ghCreatePullRequestReview,
-  dismissPullRequestReview as ghDismissPullRequestReview,
-  findReviewContaining as ghFindReviewContaining,
   updateCheckRun as ghUpdateCheckRun,
 } from "@/lib/github";
-import { attemptMarker, publicationCallTimeoutMs, publishOnce, PublicationOutcomeUnknownError } from "@/lib/review-publication";
+import { publicationCallTimeoutMs, SHORTEST_STALE_WINDOW_MS } from "@/lib/review-publication";
+import { submitVerdict } from "@/lib/review-verdict";
 import { parseFindings } from "@/lib/review-dedup";
 import { findingSignature, mergeFindingsBySignature, inheritReviewIssueTriage } from "@/lib/finding-merge";
 import {
@@ -286,47 +285,45 @@ export async function handleLargeReviewResult(
         .filter(Boolean)
         .join("\n\n");
 
-      // Reserved by a conditional write rather than checked by a read: a request
-      // admitted after a read would still be published over.
-      if (!await reserveCurrentRequest()) return;
-      const marker = attemptMarker(attemptId);
-      const callSignal = () => AbortSignal.timeout(publicationCallTimeoutMs());
-      let reviewId: number | null = null;
-      try {
-        // Delivery is retried, so an earlier attempt's review is looked for first.
-        try {
-          reviewId = await ghFindReviewContaining(installationId, owner, repoName, pr.number, marker, callSignal());
-        } catch (lookup) {
-          throw new PublicationOutcomeUnknownError(lookup);
-        }
-        reviewId ??= await publishOnce({
+      // A verdict recorded by an earlier delivery attempt may already be standing, and
+      // sending another would duplicate it; the reconcile that record scheduled owns it.
+      const earlier = reviewRun
+        ? (await prisma.reviewRun.findUnique({ where: { id: reviewRun.id }, select: { publication: true } }))?.publication as { headSha?: string | null; reviewRequestVersion?: number } | null | undefined
+        : null;
+      if (earlier && earlier.headSha === coverage.headSha && earlier.reviewRequestVersion === coverage.reviewRequestVersion) {
+      } else {
+        // Reserved by a conditional write rather than checked by a read: a request
+        // admitted after a read would still be published over. A verdict outcome that
+        // is unknown is not sent again; the delayed reconcile withdraws it if its
+        // request has been replaced.
+        const result = await submitVerdict({
+          event: reviewEvent,
+          reserve: reserveCurrentRequest,
+          record: {
+            runId: reviewRun?.id ?? null, pullRequestId: pr.id, installationId, owner, repo: repoName, prNumber: pr.number,
+            headSha: coverage.headSha, reviewRequestVersion: coverage.reviewRequestVersion!, commitId: coverage.headSha ?? null,
+          },
           send: () => ghCreatePullRequestReview(
             installationId, owner, repoName, pr.number,
-            `${marker}\n${summaryBody}`, reviewEvent, [], undefined, coverage.headSha ?? undefined, callSignal(),
+            summaryBody, reviewEvent, [], undefined, coverage.headSha ?? undefined,
+            AbortSignal.timeout(publicationCallTimeoutMs(SHORTEST_STALE_WINDOW_MS)),
           ),
-          find: () => ghFindReviewContaining(installationId, owner, repoName, pr.number, marker, callSignal()),
         });
-        console.log(
-          `[large-review-result] PR review submitted (${reviewEvent}, ${findings.length} findings in summary)`,
-        );
-      } catch (err) {
-        if (err instanceof PublicationOutcomeUnknownError) throw err;
-        console.error(
-          "[large-review-result] Failed to submit review, falling back to comment:",
-          err,
-        );
-        if (await publishReviewSummary({ pullRequestId: pr.id, headSha: coverage.headSha,
-          reviewRequestVersion: coverage.reviewRequestVersion, installationId, owner, repo: repoName,
-          prNumber: pr.number, body: normalizeLastReviewedCommit(`${stripDetailedFindings(reviewBody)}\n\n${summaryBody}`, coverage.headSha),
-          expectedReviewBody: reviewBody }) === null) return;
-      }
-      // A request admitted while the POST was in flight leaves this verdict naming a
-      // head nobody will merge. A comment holds nothing in force; a blocking review
-      // does, until it is dismissed.
-      if (reviewId !== null && reviewEvent !== "COMMENT" && !await stillCurrent()) {
-        await ghDismissPullRequestReview(installationId, owner, repoName, pr.number, reviewId,
-          "Superseded by a newer review request for this pull request.")
-          .catch((err) => console.error("[large-review-result] Failed to dismiss a superseded review:", err));
+        if (result.kind === "not-reserved") return;
+        if (result.kind === "rejected") {
+          console.error(
+            "[large-review-result] Failed to submit review, falling back to comment:",
+            result.error,
+          );
+          if (await publishReviewSummary({ pullRequestId: pr.id, headSha: coverage.headSha,
+            reviewRequestVersion: coverage.reviewRequestVersion, installationId, owner, repo: repoName,
+            prNumber: pr.number, body: normalizeLastReviewedCommit(`${stripDetailedFindings(reviewBody)}\n\n${summaryBody}`, coverage.headSha),
+            expectedReviewBody: reviewBody }) === null) return;
+        } else {
+          console.log(
+            `[large-review-result] PR review ${result.kind === "published" ? "submitted" : "sent, outcome unresolved"} (${reviewEvent}, ${findings.length} findings in summary)`,
+          );
+        }
       }
       await checkpoint({ summaryPublished: true });
     }

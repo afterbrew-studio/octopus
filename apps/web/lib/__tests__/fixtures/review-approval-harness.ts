@@ -108,7 +108,6 @@ mock.module("@/lib/github", () => ({
   getCommentReactions: async () => ({ thumbsUp: 0, thumbsDown: 0 }),
   listOwnUnresolvedThreads: async () => [],
   resolveReviewThread: async () => {},
-  findReviewContaining: async () => null,
   createSingleReviewComment: async () => 999,
   checkStateFor: async () => "success",
 }));
@@ -118,7 +117,7 @@ mock.module("@/lib/gitlab", () => ({}));
 mock.module("@/lib/github-app-config", () => ({ getGithubAppConfig: async () => ({ slug: "fixture" }) }));
 mock.module("@/lib/queue", () => ({
   loadQueueConfig: async () => ({ reviewTimeoutSeconds: 60, largeReviewTimeoutSeconds: 60 }),
-  computeStaleReclaimMs: () => 120000, enqueue: async () => {}, enqueueAfter: async () => {},
+  computeStaleReclaimMs: () => 120000, enqueue: async () => {}, enqueueAfter: async () => "job",
 }));
 mock.module("@/lib/cost", () => ({ getOrgSpendLimitStatus: async () => ({ blocked: false }), shouldGuardConcurrency: async () => false }));
 mock.module("@/lib/pubby", () => ({ pubby: { trigger: async () => {} } }));

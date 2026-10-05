@@ -99,6 +99,16 @@ export async function startQueue(): Promise<PgBoss> {
     expireInSeconds: 300,
   }).catch(() => {});
 
+  // Settles a review verdict whose outcome was not observed, and withdraws it if its
+  // request was replaced. Retried with backoff: a transient provider failure must not
+  // end as a verdict left standing.
+  await boss.createQueue("reconcile-review-publication", {
+    retryLimit: 5,
+    retryDelay: 60,
+    retryBackoff: true,
+    expireInSeconds: 300,
+  }).catch(() => {});
+
   // Hourly repository discovery sweep (scheduled in instrumentation.ts).
   // Cursor-driven via Organization.reposSyncedAt, so no retry: the next tick
   // resumes where this one stopped.

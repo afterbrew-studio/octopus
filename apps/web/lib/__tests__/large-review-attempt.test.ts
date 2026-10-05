@@ -22,8 +22,6 @@ mock.module("@/lib/github", () => ({
   createPullRequestComment: async () => 0,
   updatePullRequestComment: async () => {},
   createPullRequestReview: async () => {},
-  findReviewContaining: async () => null,
-  dismissPullRequestReview: async () => {},
   updateCheckRun: async () => {},
   // Consulted by publishReviewSummary (GitHub's placeholder-comment path),
   // loaded transitively even though this file only exercises activeReviewRun.

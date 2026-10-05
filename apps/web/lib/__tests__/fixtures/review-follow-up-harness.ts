@@ -205,7 +205,6 @@ mock.module("@/lib/github", () => ({
   // Auto-resolve-our-own-threads on a clean re-review: not under test here.
   listOwnUnresolvedThreads: async () => [],
   resolveReviewThread: async () => {},
-  findReviewContaining: async () => null,
   createSingleReviewComment: async (_installation: number, _owner: string, _repo: string, _number: number, comment: { path: string; line: number; body: string }) => {
     individualComments.push(comment);
     return 999;
@@ -257,7 +256,7 @@ mock.module("@/lib/github-app-config", () => ({ getGithubAppConfig: async () => 
 mock.module("@/lib/queue", () => ({
   loadQueueConfig: async () => ({ reviewTimeoutSeconds: 60, largeReviewTimeoutSeconds: 60 }),
   computeStaleReclaimMs: () => 120000,
-  enqueue: async () => {}, enqueueAfter: async () => {},
+  enqueue: async () => {}, enqueueAfter: async () => "job",
 }));
 mock.module("@/lib/cost", () => ({ getOrgSpendLimitStatus: async () => ({ blocked: false }), shouldGuardConcurrency: async () => false }));
 mock.module("@/lib/pubby", () => ({ pubby: { trigger: async (_channel: string, _name: string, data: { status?: string }) => { events.push(data); } } }));

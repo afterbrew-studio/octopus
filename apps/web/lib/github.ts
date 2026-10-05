@@ -1186,31 +1186,39 @@ export async function dismissPullRequestReview(
   if (!res.ok) throw new Error(`Failed to dismiss PR review: ${res.status} ${await res.text()}`);
 }
 
+export type PullRequestReviewRecord = {
+  id: number;
+  /** Login of the author. */
+  user: string;
+  /** APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED or PENDING. */
+  state: string;
+  commitId: string | null;
+  submittedAt: string | null;
+};
+
 /**
- * The id of a review on this pull request whose body contains `marker`, or null
- * when none does. Unlike `listPullRequestReviews` it throws when the answer is
- * unknown: reconciliation reads "not found" as "not published", so a failed read
- * must not look like one.
+ * Every review on the pull request, or a throw. Unlike `listPullRequestReviews` it
+ * never answers "none" for a failed read: reconciliation reads absence as "not
+ * published", so an unknown must not look like one.
  */
-export async function findReviewContaining(
+export async function listPullRequestReviewsStrict(
   installationId: number,
   owner: string,
   repo: string,
   prNumber: number,
-  marker: string,
   signal?: AbortSignal,
-): Promise<number | null> {
+): Promise<PullRequestReviewRecord[]> {
   const token = await getInstallationToken(installationId);
-  for (let page = 1; page <= 10; page++) {
+  const all: PullRequestReviewRecord[] = [];
+  for (let page = 1; page <= 20; page++) {
     const res = await fetchWithRetry(
       `${GITHUB_API}/repos/${owner}/${repo}/pulls/${prNumber}/reviews?per_page=100&page=${page}`,
       { signal, headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" } },
     );
     if (!res.ok) throw new Error(`Failed to list PR reviews: ${res.status}`);
-    const reviews = (await res.json()) as { id: number; body: string | null }[];
-    const match = reviews.find((r) => r.body?.includes(marker));
-    if (match) return match.id;
-    if (reviews.length < 100) return null;
+    const reviews = (await res.json()) as { id: number; user: { login: string } | null; state: string; commit_id: string | null; submitted_at: string | null }[];
+    all.push(...reviews.map((r) => ({ id: r.id, user: r.user?.login ?? "", state: r.state, commitId: r.commit_id, submittedAt: r.submitted_at })));
+    if (reviews.length < 100) return all;
   }
   throw new Error("Review list exceeded the pages searched");
 }

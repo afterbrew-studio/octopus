@@ -253,35 +253,38 @@ const pullRequestDb = {
   },
 };
 
-// Scenario J: the row is taken from a worker immediately after it checks that it
-// still owns it. Whatever the check is -- a read of `claimToken` or a write
-// conditioned on it -- the first such operation on "pr-j" is followed by a rival
-// worker's whole execution. Just before it, the row's last write is aged past
-// the reclaim window, as after a model call that outlived the pg-boss timeout.
+// Scenario J: the row is taken from a worker immediately after it first proves it
+// owns it. The first write on "pr-j" that only touches `updatedAt` (the reservation
+// that precedes publishing) is followed by a rival worker's whole execution. Just
+// before it, the row's last write is aged past the reclaim window, as after a model
+// call that outlived the pg-boss timeout.
 let racingWorker: (() => Promise<void>) | null = null;
-type FenceArgs = { where?: Record<string, unknown> & { id?: string }; select?: { claimToken?: boolean }; data?: Record<string, unknown> };
-const isFenceOperation = (args: FenceArgs) =>
-  args.where?.id === "pr-j" && racingWorker !== null && args.data?.claimToken === undefined
-  && (args.select?.claimToken === true || (args.where !== undefined && "claimToken" in args.where));
-async function raced<T>(args: FenceArgs, operation: () => Promise<T>): Promise<T> {
-  if (!isFenceOperation(args)) return operation();
-  const rival = racingWorker!;
+type RowArgs = { where?: Record<string, unknown>; data?: Record<string, unknown> };
+const whereId = (where?: Record<string, unknown>) => where?.id ?? (where?.AND as Array<{ id?: unknown }> | undefined)?.find((clause) => clause.id)?.id;
+const isReservation = (args: RowArgs) => Object.keys(args.data ?? {}).join() === "updatedAt";
+async function raced<T>(args: RowArgs, operation: () => Promise<T>): Promise<T> {
+  if (!(racingWorker !== null && whereId(args.where) === "pr-j" && isReservation(args))) return operation();
+  const rival = racingWorker;
   racingWorker = null;
   prs["pr-j"].updatedAt = new Date(Date.now() - 3600_000);
   const result = await operation();
   await rival();
   return result;
 }
-const findUnique = pullRequestDb.findUnique, updateMany = pullRequestDb.updateMany;
-pullRequestDb.findUnique = (args: { where: { id: string } }) => raced(args as FenceArgs, () => findUnique(args)) as ReturnType<typeof findUnique>;
-pullRequestDb.updateMany = (args: { where: Record<string, unknown>; data: Record<string, unknown> }) => raced(args as FenceArgs, () => updateMany(args)) as ReturnType<typeof updateMany>;
+const updateMany = pullRequestDb.updateMany;
+pullRequestDb.updateMany = async (args: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
+  const result = await raced(args, () => updateMany(args));
+  if (afterReservation && isReservation(args)) afterReservation(++reservations);
+  return result;
+};
 
 const attemptRows = new Map<string, { id: string }>();
-// Scenarios M-P: a window short enough for a publication to outlast it.
-let staleWindowMs: number | null = null;
+// Scenario M: runs after the Nth reservation write a worker makes, to take the claim in the gap before a provider call.
+let afterReservation: ((n: number) => void) | null = null;
+let reservations = 0;
 // Scenario Q: the queue refuses the retry a deferral schedules.
 let failDeferralEnqueue = false;
-const enqueuedAfter: Array<{ pullRequestId: string; data: Record<string, unknown>; delay: number }> = [];
+const enqueuedAfter: Array<{ name: string; pullRequestId: string; data: Record<string, unknown>; delay: number }> = [];
 mock.module("@octopus/db", () => ({
   Prisma: { DbNull: null },
   prisma: {
@@ -333,11 +336,11 @@ mock.module("@octopus/db", () => ({
 }));
 mock.module("@/lib/queue", () => ({
   loadQueueConfig: async () => ({ reviewTimeoutSeconds: 900, reviewConcurrency: 2, largeReviewTimeoutSeconds: 1800 }),
-  computeStaleReclaimMs: (s: number) => staleWindowMs ?? (s + 300) * 1000,
+  computeStaleReclaimMs: (s: number) => (s + 300) * 1000,
   enqueue: async () => "job",
   enqueueAfter: async (_name: string, data: Record<string, unknown>, delay: number) => {
     if (failDeferralEnqueue) throw new Error("queue unavailable");
-    enqueuedAfter.push({ pullRequestId: data.pullRequestId as string, data, delay });
+    enqueuedAfter.push({ name: _name, pullRequestId: data.pullRequestId as string, data, delay });
     return "job-1";
   },
 }));
@@ -391,13 +394,19 @@ let failDiffFetch = false;
 // a superseded execution must never reach any of them.
 let publishCalls = 0;
 const publishedReviews: string[] = [];
-const reviewBodies: string[] = [];
+const committedReviews: { prNumber: number; id: number; user: string; state: string; commitId: string | null; submittedAt: string }[] = [];
+const dismissedReviews: number[] = [];
 let singleComments = 0;
 // Applies a review the way GitHub does, whatever the caller then observes.
-const recordReview = async (args: unknown[]) => { publishCalls++; publishedReviews.push(String(args[5])); reviewBodies.push(String(args[4])); return 456; };
+const recordReview = async (args: unknown[]) => {
+  publishCalls++;
+  publishedReviews.push(String(args[5]));
+  const id = 900 + committedReviews.length;
+  committedReviews.push({ prNumber: args[3] as number, id, user: "fixture[bot]", state: args[5] === "APPROVE" ? "APPROVED" : args[5] === "REQUEST_CHANGES" ? "CHANGES_REQUESTED" : "COMMENTED", commitId: (args[8] as string) ?? null, submittedAt: new Date().toISOString() });
+  return id;
+};
 // Replaces the review POST for one scenario.
 let reviewPost: ((args: unknown[]) => Promise<number>) | null = null;
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 // A bound on how long a scenario may wait; unref'd so it never keeps the process alive.
 const giveUpAfter = (ms: number) => new Promise<symbol>((resolve) => { setTimeout(() => resolve(Symbol("hung")), ms).unref(); });
 let checkRunUpdates = 0;
@@ -415,9 +424,12 @@ mock.module("@/lib/github", () => ({
   createPullRequestComment: async () => { publishCalls++; return 123; },
   updatePullRequestComment: async () => { publishCalls++; },
   createPullRequestReview: async (...args: unknown[]) => (reviewPost ?? recordReview)(args),
-  // Models GitHub for reconciliation: a review is found if one that carries the marker was committed.
-  findReviewContaining: async (_i: number, _o: string, _r: string, _n: number, marker: string) =>
-    reviewBodies.some((body) => body.includes(marker)) ? 456 : null,
+  // Models GitHub for reconciliation: what was committed, and what has been dismissed.
+  listPullRequestReviewsStrict: async (_i: number, _o: string, _r: string, prNumber: number) => committedReviews.filter((review) => review.prNumber === prNumber),
+  dismissPullRequestReview: async (_i: number, _o: string, _r: string, _n: number, id: number) => {
+    dismissedReviews.push(id);
+    for (const review of committedReviews) if (review.id === id) review.state = "DISMISSED";
+  },
   createCheckRun: async () => 789,
   updateCheckRun: async () => { checkRunUpdates++; },
   getRepositoryTree: async () => ["src/check.ts"],
@@ -667,66 +679,71 @@ assert.equal(prs["pr-l"].reviewBody, "B is still reviewing", "nor replace the ot
 assert.equal(publishCalls, overtakenAt.publishCalls, "nor publish its failure over the other worker's review");
 assert.equal(checkRunUpdates, overtakenAt.checkRunUpdates, "nor fail the other worker's check run");
 
-// M. A review POST that outlasts the stale window. A rival worker tries to claim
-// the row well after the reservation was made but while the POST is in flight; the
-// claim is evaluated against the real `where`, so it only succeeds if nothing kept
-// the row fresh.
+// M. The claim is taken after the first check and before the provider call. Each
+// call is preceded by its own reservation, so a worker that lost the row in that gap
+// sends nothing, and records no verdict it never sent.
 const { AmbiguousPublicationError } = await import("@/lib/review-publication");
-staleWindowMs = 150;
-process.env.OCTOPUS_CLAIM_RENEW_MS = "20";
-let slowPosts = 0;
-reviewPost = async (args) => { if (slowPosts++ === 0) await sleep(600); return recordReview(args); };
-const reviewsBeforeSlowPost = publishedReviews.length;
-const rivalClaim = sleep(400).then(() => processReview("pr-m", undefined, "run-m2"));
+const { reconcileReviewPublication } = await import("@/lib/review-publication-reconcile");
+org.checkFailureThreshold = "high";
+reservations = 0;
+afterReservation = (n) => { if (n === 1) Object.assign(prs["pr-m"], { claimToken: "worker-b" }); };
+const reviewsBeforeGap = publishedReviews.length, jobsBeforeGap = enqueuedAfter.length;
 await processReview("pr-m", undefined, "run-m");
-await rivalClaim;
-reviewPost = null; staleWindowMs = null; delete process.env.OCTOPUS_CLAIM_RENEW_MS;
-assert.equal(publishedReviews.length - reviewsBeforeSlowPost, 1, "a publication that outlasts the stale window must not be reclaimed and repeated");
-assert.equal(runs["run-m"].state, "succeeded");
+afterReservation = null;
+assert.equal(publishedReviews.length - reviewsBeforeGap, 0, "a worker that cannot reserve immediately before the provider call must send nothing");
+assert.equal(enqueuedAfter.length - jobsBeforeGap, 0, "and must record no verdict");
 
-// N. A review POST whose answer is lost after GitHub applied it. The review is
-// found by this attempt's marker, so nothing is posted a second time.
+// N. A review POST whose answer is lost after GitHub applied it. It is not sent
+// again, nothing is posted in its place, and the verdict was recorded before the call.
 const reviewsBeforeLostAnswer = publishedReviews.length, singlesBeforeLostAnswer = singleComments;
-reviewPost = async (args) => { await recordReview(args); throw new AmbiguousPublicationError("gateway timeout"); };
+reviewPost = async (args) => {
+  assert.equal((runs["run-n"] as { publication?: { state?: string } }).publication?.state, "pending", "the verdict is recorded before it is sent");
+  await recordReview(args);
+  throw new AmbiguousPublicationError("gateway timeout");
+};
 await processReview("pr-n", undefined, "run-n");
 reviewPost = null;
-assert.equal(publishedReviews.length - reviewsBeforeLostAnswer, 1, "an applied review whose answer was lost must be found, not posted again");
+assert.equal(publishedReviews.length - reviewsBeforeLostAnswer, 1, "a verdict whose answer was lost must not be sent again");
 assert.equal(singleComments - singlesBeforeLostAnswer, 0, "nor replaced by individually posted comments");
-assert.equal(prs["pr-n"].status, "completed");
+assert.equal(prs["pr-n"].status, "completed", "the review itself carries on");
+const lostAnswerJob = enqueuedAfter.filter((job) => job.name === "reconcile-review-publication").at(-1);
+assert.equal(lostAnswerJob?.delay, 120, "a reconcile is scheduled to decide what happened");
 
-// O. A call that never answers. It is bounded, and the retry that follows is only
-// sent after reconciliation found nothing.
+// O. A call that never answers is bounded, not resent, and still reconciled.
 process.env.OCTOPUS_PUBLICATION_CALL_TIMEOUT_MS = "100";
-let hungPosts = 0;
 reviewPost = (args) => {
-  if (hungPosts++ > 0) return recordReview(args);
   const signal = args[9] as AbortSignal | undefined;
   return new Promise<number>((_, reject) => {
     signal?.addEventListener("abort", () => reject(new AmbiguousPublicationError("request timed out")));
   });
 };
-const reviewsBeforeHang = publishedReviews.length;
+const reviewsBeforeHang = publishedReviews.length, singlesBeforeHang = singleComments;
 const outcome = await Promise.race([processReview("pr-o", undefined, "run-o").then(() => "done" as const), giveUpAfter(4000)]);
 reviewPost = null; delete process.env.OCTOPUS_PUBLICATION_CALL_TIMEOUT_MS;
 assert.equal(outcome, "done", "a publication call must be bounded, not wait forever");
-assert.equal(publishedReviews.length - reviewsBeforeHang, 1, "the review is published once, after the bounded call gave up");
+assert.equal(publishedReviews.length - reviewsBeforeHang, 0);
+assert.equal(singleComments - singlesBeforeHang, 0, "an unknown outcome is not replaced by individually posted comments");
+assert.equal((runs["run-o"] as { publication?: { state?: string } }).publication?.state, "pending");
 
-// P. The claim is taken while the POST is in flight. The call is aborted and nothing else is sent.
-process.env.OCTOPUS_CLAIM_RENEW_MS = "20";
-let publishedBeforeLoss = 0;
-reviewPost = (args) => {
-  const signal = args[9] as AbortSignal | undefined;
-  publishedBeforeLoss = publishCalls;
-  setTimeout(() => Object.assign(prs["pr-p"], { claimToken: "worker-b" }), 60);
-  return new Promise<number>((_, reject) => {
-    signal?.addEventListener("abort", () => reject(new AmbiguousPublicationError("aborted")));
-  });
+// P. A verdict is accepted, the claim is lost and the request is replaced, all while
+// the POST is in flight. The worker stops; the recorded verdict is found later and,
+// because its request no longer exists, dismissed.
+let publishedAtLoss = 0;
+reviewPost = async (args) => {
+  const id = await recordReview(args);
+  publishedAtLoss = publishCalls;
+  Object.assign(prs["pr-p"], { headSha: B, reviewRequestVersion: 2, status: "pending", claimToken: null });
+  return id;
 };
-const lossOutcome = await Promise.race([processReview("pr-p", undefined, "run-p").then(() => "done" as const), giveUpAfter(4000)]);
-reviewPost = null; delete process.env.OCTOPUS_CLAIM_RENEW_MS;
-assert.equal(lossOutcome, "done", "a worker that lost its claim mid-publication must stop");
-assert.equal(publishCalls, publishedBeforeLoss, "and must send nothing further");
-assert.equal(prs["pr-p"].claimToken, "worker-b");
+saveForReal = true;
+try { await processReview("pr-p", undefined, "run-p"); } finally { saveForReal = false; reviewPost = null; }
+assert.equal(publishCalls, publishedAtLoss, "the worker sends nothing after it lost the claim");
+const acceptedVerdictJob = enqueuedAfter.filter((job) => job.name === "reconcile-review-publication").at(-1);
+assert.ok(acceptedVerdictJob, "the accepted verdict was recorded");
+await reconcileReviewPublication(acceptedVerdictJob.data as never);
+assert.equal(dismissedReviews.length, 1, "an accepted verdict active for a replaced request must be dismissed");
+assert.equal(prs["pr-p"].status, "pending", "and the new request is left alone");
+org.checkFailureThreshold = "critical";
 
 // Q. A deferral whose retry cannot be scheduled. The job fails so pg-boss retries it,
 // and the run must stay alive: the pending-row reconciler only recovers a pending row
@@ -777,4 +794,4 @@ try { await processReview("pr-s", undefined, "run-s"); } finally { console.error
 assert.equal(prs["pr-s"].status, "pending", "the unreviewed new head must not be marked completed by the old review");
 assert.equal(prs["pr-s"].reviewBody, null, "nor given the old report");
 
-console.log("PASS repository-preparation and low-balance deferrals stay claimable, a claim taken after the publication check cannot produce a second review, a replayed job for a finished run does not dispatch, a worker that lost its claim cannot publish or persist its failure, a worker that lost its claim while publishing cannot promote its result, an old claim cannot write to the request that replaced it, a long publication keeps its claim and an ambiguous one is reconciled before any retry, a deferral that cannot be scheduled leaves the run recoverable, preserves the run across defer-then-succeed and defer-then-fail, finalizes superseded runs on a cross-request race or a missed guarded update, treats only reviewRequestVersion (never headSha) as a legacy wildcard, and closes the binding-check-to-claim race");
+console.log("PASS repository-preparation and low-balance deferrals stay claimable, a claim taken after the publication check cannot produce a second review, a replayed job for a finished run does not dispatch, a worker that lost its claim cannot publish or persist its failure, a worker that lost its claim while publishing cannot promote its result, an old claim cannot write to the request that replaced it, a worker that loses its claim before a provider call sends nothing, an unknown outcome is never resent and is reconciled later, a deferral that cannot be scheduled leaves the run recoverable, preserves the run across defer-then-succeed and defer-then-fail, finalizes superseded runs on a cross-request race or a missed guarded update, treats only reviewRequestVersion (never headSha) as a legacy wildcard, and closes the binding-check-to-claim race");

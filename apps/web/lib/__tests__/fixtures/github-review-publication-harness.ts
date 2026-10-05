@@ -6,7 +6,7 @@ mock.module("server-only", () => ({}));
 const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { type: "pkcs8", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } });
 mock.module("@/lib/github-app-config", () => ({ getGithubAppConfig: async () => ({ appId: "1", privateKey }) }));
 
-const { createPullRequestReview, findReviewContaining } = await import("@/lib/github");
+const { createPullRequestReview, listPullRequestReviewsStrict } = await import("@/lib/github");
 const { AmbiguousPublicationError } = await import("@/lib/review-publication");
 
 /**
@@ -52,17 +52,18 @@ assert.equal(await post(), 99, "an unbounded caller keeps the gateway-error retr
 globalThis.setTimeout = originalSetTimeout;
 assert.equal(reviewPosts(), 3);
 
-const marker = "<!-- octopus-attempt:abc -->";
-const review = (id: number, body: string | null) => ({ id, body });
+const review = (id: number, login: string | null, state = "COMMENTED") => ({ id, user: login ? { login } : null, state, commit_id: "c".repeat(40), submitted_at: "2026-10-05T00:00:00Z" });
 const pages: Record<string, unknown[]> = {
-  "1": Array.from({ length: 100 }, (_, i) => review(i + 1, "other")),
-  "2": [review(101, `${marker}\nreview`), review(102, null)],
+  "1": Array.from({ length: 100 }, (_, i) => review(i + 1, "someone")),
+  "2": [review(101, "octopus-review[bot]", "CHANGES_REQUESTED"), review(102, null, "APPROVED")],
 };
 routeFetch((url) => (url.includes("/access_tokens") ? json({ token: "t" }, 201) : json(pages[new URL(url).searchParams.get("page")!] ?? [])));
-assert.equal(await findReviewContaining(1, "o", "r", 7, marker), 101, "found on a later page");
-assert.equal(await findReviewContaining(1, "o", "r", 7, "<!-- octopus-attempt:none -->"), null);
+const listed = await listPullRequestReviewsStrict(1, "o", "r", 7);
+assert.equal(listed.length, 102, "every page is read");
+assert.deepEqual(listed[100], { id: 101, user: "octopus-review[bot]", state: "CHANGES_REQUESTED", commitId: "c".repeat(40), submittedAt: "2026-10-05T00:00:00Z" });
+assert.equal(listed[101].user, "", "a deleted account reads as no author, never as anyone");
 routeFetch((url) => (url.includes("/access_tokens") ? json({ token: "t" }, 201) : json({}, 500)));
-await assert.rejects(findReviewContaining(1, "o", "r", 7, marker), /500/, "an unreadable list is unknown, not empty");
+await assert.rejects(listPullRequestReviewsStrict(1, "o", "r", 7), /500/, "an unreadable list is unknown, not empty");
 
 console.warn = quiet;
-console.log("PASS github review publication reports unknown outcomes and reconciles by marker");
+console.log("PASS github review publication reports unknown outcomes and lists reviews strictly");

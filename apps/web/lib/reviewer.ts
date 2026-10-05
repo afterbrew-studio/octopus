@@ -38,7 +38,6 @@ import {
   createPullRequestComment as ghCreatePullRequestComment,
   createPullRequestReview as ghCreatePullRequestReview,
   createSingleReviewComment as ghCreateSingleReviewComment,
-  findReviewContaining as ghFindReviewContaining,
   checkStateFor,
   createCheckRun as ghCreateCheckRun,
   updateCheckRun as ghUpdateCheckRun,
@@ -73,9 +72,9 @@ import type { ReviewComment } from "@/lib/github";
 import { eventBus } from "@/lib/events";
 import { attemptOutcomeForStatus, resolveReviewConfig } from "@/lib/review-attempt";
 import { DeferralEnqueueError } from "@/lib/review-deferral-error";
-import { acquireClaimLease, type ClaimLease } from "@/lib/claim-fence";
-import { ClaimLostError, claimWhere, updateUnderClaim, writeUnderClaim, WHILE_FINISHING, type ClaimIdentity } from "@/lib/review-claim";
-import { attemptMarker, publicationCallTimeoutMs, publishOnce, PublicationOutcomeUnknownError } from "@/lib/review-publication";
+import { ClaimLostError, claimWhere, reserveClaim, updateUnderClaim, writeUnderClaim, WHILE_FINISHING, type ClaimIdentity } from "@/lib/review-claim";
+import { submitVerdict } from "@/lib/review-verdict";
+import { publicationCallTimeoutMs } from "@/lib/review-publication";
 import {
   touchesSharedFiles,
   countFindings,
@@ -1157,8 +1156,6 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
     }
   }
 
-  // Held from the publication fence until the terminal status write.
-  let publicationLease: ClaimLease | null = null;
   try {
     if (!isForgejoConnector) reviewCommentId = await publishMainComment("> 🐙 **Octopus Review** — Preparing review...");
     // Phase 0: Ensure the repository is indexed before preparing review context
@@ -2563,28 +2560,39 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
       // branches publish: a clean review has no inline comments and so takes the
       // summary path, which is exactly the review that can carry APPROVE. A
       // fence that guards only the inline branch leaves the approval unfenced.
-      // A lease, not a read: renewed until the terminal status write, so the row
-      // cannot be reclaimed while a publication that outlasts the stale window is
-      // still running. Each call below is bounded under it and reconciled by this
-      // attempt's marker when its outcome is unknown.
-      const lease = await acquireClaimLease(pr.id, claimToken);
-      if (!lease) {
+      // Reserved by a write, not checked by a read, and again before every provider
+      // call below. Each call is bounded to a quarter of the stale window, so the
+      // reservation that precedes it covers it without any renewal.
+      if (!(await reserveClaim(claim))) {
         console.log(
           `[reviewer] PR ${pr.id} was re-claimed while this worker was running; not publishing`,
         );
         return;
       }
-      publicationLease = lease;
-      const callSignal = () => lease.signal(publicationCallTimeoutMs());
-      const marker = attemptMarker(attemptId);
-      const submitReview = (body: string, comments: ReviewComment[]): Promise<number> => publishOnce({
-        send: () => ghCreatePullRequestReview(
-          installationId, owner, repoName, pr.number,
-          `${marker}\n${body}`, reviewEvent, comments, undefined, coverage.headSha ?? undefined, callSignal(),
-        ),
-        find: () => ghFindReviewContaining(installationId, owner, repoName, pr.number, marker, callSignal()),
-        assertHeld: () => { if (lease.lost) throw new ClaimLostError(); },
-      });
+      const callMs = publicationCallTimeoutMs(computeStaleReclaimMs(queueConfig.reviewTimeoutSeconds));
+      // A verdict whose outcome is unknown is never sent again here: the delayed
+      // reconcile finds it, and withdraws it if its request has been replaced.
+      const submitReview = async (body: string, comments: ReviewComment[]): Promise<number | null> => {
+        const result = await submitVerdict({
+          event: reviewEvent,
+          reserve: () => reserveClaim(claim),
+          record: {
+            runId: reviewRunId ?? null, pullRequestId: pr.id, installationId, owner, repo: repoName, prNumber: pr.number,
+            headSha: claim.headSha, reviewRequestVersion: claim.reviewRequestVersion, commitId: coverage.headSha ?? null,
+          },
+          send: () => ghCreatePullRequestReview(
+            installationId, owner, repoName, pr.number,
+            body, reviewEvent, comments, undefined, coverage.headSha ?? undefined, AbortSignal.timeout(callMs),
+          ),
+        });
+        if (result.kind === "published") return result.reviewId;
+        if (result.kind === "not-reserved") throw new ClaimLostError();
+        if (result.kind === "unresolved") {
+          console.warn(`[reviewer] PR ${pr.id}: review outcome unknown; it will be reconciled, not resent`);
+          return null;
+        }
+        throw result.error;
+      };
 
       // GitHub: use the PR review API for inline comments
       if (inlineComments.length > 0) {
@@ -2624,12 +2632,13 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
           assertProcessingActive();
           const reviewId = await submitReview(summaryLine, dedupedComments);
           inlineReviewSucceeded = true;
-          console.log(`[reviewer] PR review submitted with ${dedupedComments.length} inline comments, ${nonInlineWithUnmappable.length} in summary (${reviewEvent}), reviewId: ${reviewId}`);
+          console.log(`[reviewer] PR review submitted with ${dedupedComments.length} inline comments, ${nonInlineWithUnmappable.length} in summary (${reviewEvent}), reviewId: ${reviewId ?? "unresolved"}`);
 
           // Match GitHub review comments to ReviewIssue records by file+line
           try {
+            if (reviewId === null) throw new Error("review outcome unresolved");
             const ghComments = await ghListReviewComments(
-              installationId, owner, repoName, pr.number, reviewId, callSignal(),
+              installationId, owner, repoName, pr.number, reviewId, AbortSignal.timeout(callMs),
             );
             const issueRecords = await prisma.reviewIssue.findMany({
               where: { pullRequestId: pr.id },
@@ -2653,20 +2662,20 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
             console.error("[reviewer] Failed to match GitHub comment IDs:", matchErr);
           }
         } catch (err) {
-          if (err instanceof ReviewProcessingExpiredError || err instanceof ClaimLostError || err instanceof PublicationOutcomeUnknownError) throw err;
+          if (err instanceof ReviewProcessingExpiredError || err instanceof ClaimLostError) throw err;
           console.error("[reviewer] Failed to submit inline review, retrying comments individually:", err);
           // The review endpoint rejects the whole batch when one line will not resolve, so a
           // review with real findings arrives showing none. Posted one at a time, an
           // unresolvable line costs only itself and the rest still reach the author.
           if (coverage.headSha) {
             for (const comment of dedupedComments) {
-              if (lease.lost) throw new ClaimLostError();
+              if (!(await reserveClaim(claim))) throw new ClaimLostError();
               try {
                 await ghCreateSingleReviewComment(
                   installationId, owner, repoName, pr.number,
                   { path: comment.path, line: comment.line, side: comment.side, body: comment.body },
                   coverage.headSha,
-                  callSignal(),
+                  AbortSignal.timeout(callMs),
                 );
                 postedIndividually.push(`${comment.path}:${comment.line}`);
               } catch (single) {
@@ -2695,11 +2704,10 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
         const summaryBody = buildReviewSummary(findingsBlock, allSummaryFindings.length);
         try {
           assertProcessingActive();
-          if (lease.lost) throw new ClaimLostError();
           await submitReview(summaryBody, []);
           console.log(`[reviewer] PR review submitted without inline comments, ${allSummaryFindings.length} in summary (${reviewEvent})`);
         } catch (err) {
-          if (err instanceof ReviewProcessingExpiredError || err instanceof ClaimLostError || err instanceof PublicationOutcomeUnknownError) throw err;
+          if (err instanceof ReviewProcessingExpiredError || err instanceof ClaimLostError) throw err;
           console.error("[reviewer] Failed to submit PR review, falling back to comment:", err);
           // Publish fallback findings with the archived result and final summary guards below.
           mainCommentBody += `\n\n${findingsBlock}`;
@@ -2850,7 +2858,6 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
     // the PR still the one reviewed); this gates a worker that lost the claim to
     // another server instance, so it doesn't continue to check-run updates,
     // merge-gating and notifications below for a review that isn't its own.
-    publicationLease?.stop();
     const finalised = await prisma.pullRequest.updateMany({
       where: claimWhere(claim, WHILE_FINISHING),
       data: {
@@ -3110,7 +3117,5 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
       prTitle: pr.title,
       error: errorMessage,
     });
-  } finally {
-    publicationLease?.stop();
   }
 }

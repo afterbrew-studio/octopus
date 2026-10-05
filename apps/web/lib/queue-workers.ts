@@ -16,6 +16,8 @@ import { reconcileAutoReloadAttempts } from "./credits";
 import { syncMarketingConversions } from "./marketing-outbox";
 import { runOllamaPull } from "./ollama-admin";
 import { reapStuckReviews } from "./reap-stuck-reviews";
+import { reconcileReviewPublication, requeueUnresolvedPublications } from "./review-publication-reconcile";
+import type { PublicationRecord } from "./review-verdict";
 import { discoverRepositories } from "./discover-repositories";
 import { processRepositoryIndex, type RepositoryIndexJob } from "./repository-index-job";
 import type { QueueConfig } from "./queue";
@@ -223,6 +225,9 @@ export async function registerWorkers(boss: PgBoss, config: QueueConfig): Promis
   await boss.work("reap-stuck-reviews", async (jobs) => {
     for (const job of jobs) {
       try {
+        // A verdict whose reconcile job was lost (a crash between the record and the
+        // job, or retries exhausted) is picked up here from the record on its run.
+        await requeueUnresolvedPublications();
         const { requeued, failed, unpublished } = await reapStuckReviews();
         if (requeued || failed || unpublished) {
           // `unpublished` counts attempts that were written and never enqueued.
@@ -286,5 +291,16 @@ export async function registerWorkers(boss: PgBoss, config: QueueConfig): Promis
     }
   });
 
-  console.log("[queue] Workers registered: welcome-email, process-review, post-large-review-result, community-review, enforce-audit-retention, enforce-activity-retention, refresh-release-cache, reap-stuck-reviews, discover-repositories, subscription-renewals, reconcile-auto-reloads, pull-ollama-model");
+  await boss.work<PublicationRecord>("reconcile-review-publication", async (jobs) => {
+    for (const job of jobs) {
+      try {
+        await reconcileReviewPublication(job.data);
+      } catch (err) {
+        console.error(`[queue] reconcile-review-publication failed (job ${job.id}):`, err);
+        throw err;
+      }
+    }
+  });
+
+  console.log("[queue] Workers registered: welcome-email, process-review, post-large-review-result, community-review, enforce-audit-retention, enforce-activity-retention, refresh-release-cache, reap-stuck-reviews, reconcile-review-publication, discover-repositories, subscription-renewals, reconcile-auto-reloads, pull-ollama-model");
 }
