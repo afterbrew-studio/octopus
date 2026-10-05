@@ -39,12 +39,15 @@ function makeClient(prHolder: { current: Row | null }, runs: Run[]) {
     reviewAttempt: { findFirst: async () => null },
     pullRequest: {
       findUnique: async () => (prHolder.current ? { ...prHolder.current, attempts: [] } : null),
-      create: async ({ data }: { data: Record<string, unknown> }) => {
+      createManyAndReturn: async ({ data, skipDuplicates }: { data: Record<string, unknown>[]; skipDuplicates?: boolean }) => {
         // The unique (repositoryId, number) constraint a concurrent create
         // would violate -- the same identity is being admitted twice.
-        if (prHolder.current) throw Object.assign(new Error("unique repository/PR"), { code: "P2002" });
-        prHolder.current = { ...data, createdAt: new Date(), updatedAt: new Date() } as Row;
-        return { ...prHolder.current };
+        if (prHolder.current) {
+          if (skipDuplicates) return [];
+          throw Object.assign(new Error("unique repository/PR"), { code: "P2002" });
+        }
+        prHolder.current = { ...data[0], createdAt: new Date(), updatedAt: new Date() } as Row;
+        return [{ ...prHolder.current }];
       },
       updateManyAndReturn: async ({ where, data }: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
         if (!prHolder.current || !matches(prHolder.current, where)) return [];

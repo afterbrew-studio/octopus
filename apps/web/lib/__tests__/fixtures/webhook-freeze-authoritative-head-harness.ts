@@ -26,9 +26,9 @@ const db = {
   reviewAttempt: { findFirst: async () => null },
   pullRequest: {
     findUnique: async () => (current ? { ...current, attempts: [] } : null),
-    create: async ({ data }: { data: Record<string, unknown> }) => {
-      current = { ...data, id: "pr-1", reviewRequestVersion: 1, createdAt: new Date(), updatedAt: new Date() } as Row;
-      return { ...current };
+    createManyAndReturn: async ({ data }: { data: Record<string, unknown>[] }) => {
+      current = { ...data[0], id: "pr-1", reviewRequestVersion: 1, createdAt: new Date(), updatedAt: new Date() } as Row;
+      return [{ ...current }];
     },
   },
   reviewRun: {
