@@ -59,16 +59,17 @@ export function resolveReviewConfig(
  *
  * Derived rather than threaded. `processReview` is one 2,100-line function with
  * around a dozen exits -- completion, failure, delegation to the large-review
- * pipeline, "reviews are paused", "already completed", a low-balance deferral --
+ * pipeline, "reviews are paused", "already completed", a deferral --
  * and marking the run at each of them means every future exit somebody adds
  * silently leaves the run `pending`. The pull request's status is already
  * written at each of those exits, so reading it afterwards answers the same
  * question without depending on anyone remembering.
  *
  * `null` means the run is NOT terminal: work is still in flight. `queued` is
- * that case -- both the large-review handoff and the low-balance deferral park a
- * pull request there with something else due to pick it up, and terminalising the
- * run would claim a review ended when it had only moved.
+ * that case -- the large-review handoff parks a pull request there with the
+ * internal-cli job due to pick it up, and terminalising the run would claim a
+ * review ended when it had only moved. Deferrals park at `pending` instead and
+ * are kept alive by `processReview` skipping finalization on a "deferred" outcome.
  */
 export function attemptOutcomeForStatus(
   status: string | null | undefined,

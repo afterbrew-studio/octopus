@@ -45,9 +45,9 @@ const db = {
     },
     pullRequest: {
       findUnique: async () => prRow,
-      create: async ({ data }: { data: Record<string, unknown> }) => {
-        prRow = { id: "pr_1", status: "pending", reviewRequestVersion: 1, updatedAt: new Date(), createdAt: new Date(), ...data } as PrRow;
-        return prRow;
+      createManyAndReturn: async ({ data }: { data: Record<string, unknown>[] }) => {
+        prRow = { id: "pr_1", status: "pending", reviewRequestVersion: 1, updatedAt: new Date(), createdAt: new Date(), ...data[0] } as PrRow;
+        return [prRow];
       },
       updateManyAndReturn: async ({ where, data }: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
         if (!matches(where)) return [];

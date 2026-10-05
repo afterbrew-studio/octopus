@@ -177,23 +177,20 @@ async function admitReviewRequestInternal(params: ReviewRequestParams, client: P
       // address it by id -- `create()`'s own generated id isn't known
       // until after, and the write must not be split into two.
       const pullRequestId = crypto.randomUUID();
-      try {
-        const { pullRequest, reviewRun } = await withRunCreated(client, async (write) => {
-          const pullRequest = await write.pullRequest.create({ data: {
-            id: pullRequestId, ...data, repositoryId: params.repoId, number: params.prNumber, reviewRequestVersion: 1,
-          } });
-          const reviewRun = await createRun(write, pullRequest.id, headSha, 1);
-          return { pullRequest, reviewRun };
+      // `skipDuplicates` is ON CONFLICT DO NOTHING: a concurrent first request
+      // yields an empty result instead of a unique violation, which would abort
+      // an ambient transaction (Forgejo's) and fail every later statement in it.
+      const { pullRequest, reviewRun } = await withRunCreated(client, async (write) => {
+        const [pullRequest] = await write.pullRequest.createManyAndReturn({
+          data: [{ id: pullRequestId, ...data, repositoryId: params.repoId, number: params.prNumber, reviewRequestVersion: 1 }],
+          skipDuplicates: true,
         });
-        return { started: true, pullRequest, reviewRun };
-      } catch (error) {
-        // A concurrent first request created the unique repository/PR row.
-        // The short transaction above rolled back cleanly on this error --
-        // `client` (used for the retry read next iteration) was never part
-        // of it, so it is not the aborted transaction a nested one would be.
-        if (error && typeof error === "object" && "code" in error && error.code === "P2002") continue;
-        throw error;
-      }
+        if (!pullRequest) return { pullRequest: undefined, reviewRun: undefined };
+        const reviewRun = await createRun(write, pullRequest.id, headSha, 1);
+        return { pullRequest, reviewRun };
+      });
+      if (pullRequest) return { started: true, pullRequest, reviewRun: reviewRun! };
+      continue;
     }
 
     // UPDATE ... RETURNING keeps the accepted snapshot and its version

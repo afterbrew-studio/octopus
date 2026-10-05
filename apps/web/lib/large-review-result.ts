@@ -24,7 +24,7 @@ import {
   mergeReviewConfigs,
   MAX_FINDINGS_PER_REVIEW,
   shouldFailReviewCheck,
-  isCleanReview,
+  mayApprove,
   type ReviewConfig,
 } from "@/lib/review-helpers";
 import { eventBus } from "@/lib/events";
@@ -178,12 +178,23 @@ export async function handleLargeReviewResult(
     { hasCritical, hasHigh, hasMedium },
     threshold,
   );
-  // Same rule as the ordinary path: APPROVE only when the org opted in and the
-  // review found nothing at any severity. A large PR is not a reason to hold
-  // approval back, nor to grant it more easily.
+  // Same predicate as the ordinary path. Severities come from every parsed
+  // finding, not the confidence-filtered set, so a filtered HIGH cannot read as
+  // clean. This job carries no diff, so the change shape is never assessed and
+  // the coverage stays unknown: the only outcomes here are COMMENT and
+  // REQUEST_CHANGES until a producer supplies verified input.
+  const approvable = mayApprove({
+    optedIn: org.approveWhenClean,
+    found: {
+      hasCritical: parsedFindings.some((f) => f.severity === "🔴"),
+      hasHigh: parsedFindings.some((f) => f.severity === "🟠"),
+      hasMedium: parsedFindings.some((f) => f.severity === "🟡"),
+    },
+    coverage,
+  });
   const reviewEvent: "COMMENT" | "REQUEST_CHANGES" | "APPROVE" = shouldRequestChanges
     ? "REQUEST_CHANGES"
-    : org.approveWhenClean && isCleanReview({ hasCritical, hasHigh, hasMedium })
+    : approvable
       ? "APPROVE"
       : "COMMENT";
 

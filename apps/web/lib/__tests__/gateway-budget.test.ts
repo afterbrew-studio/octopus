@@ -4,6 +4,28 @@ mock.module("server-only", () => ({}));
 
 const sent: Record<string, unknown>[] = [];
 const constructedWith: Record<string, unknown>[] = [];
+type AgentOptions = {
+  headersTimeout?: number;
+  bodyTimeout?: number;
+  keepAliveTimeout?: number;
+  keepAliveMaxTimeout?: number;
+  connect?: { keepAlive?: boolean; keepAliveInitialDelay?: number };
+};
+const agentsBuilt: AgentOptions[] = [];
+
+// undici does not expose an Agent's options, so a subclass records them. The
+// real module is restored once the gateway has been imported, so no other file
+// in the run sees the stand-in.
+const realUndici = await import("undici");
+mock.module("undici", () => ({
+  ...realUndici,
+  Agent: class extends realUndici.Agent {
+    constructor(opts: AgentOptions) {
+      super(opts);
+      agentsBuilt.push(opts);
+    }
+  },
+}));
 
 mock.module("openai", () => ({
   default: class {
@@ -21,7 +43,15 @@ mock.module("openai", () => ({
   },
 }));
 
+// Read once at import. A value that is not the default shows the agent derives
+// its limits from it rather than repeating the default.
+const CONFIGURED_TIMEOUT_MS = 123_456;
+const savedTimeout = process.env.GATEWAY_TIMEOUT_MS;
+process.env.GATEWAY_TIMEOUT_MS = String(CONFIGURED_TIMEOUT_MS);
 const { callOpenAiGateway } = await import("@/lib/providers/openai-gateway");
+mock.module("undici", () => realUndici);
+if (savedTimeout === undefined) delete process.env.GATEWAY_TIMEOUT_MS;
+else process.env.GATEWAY_TIMEOUT_MS = savedTimeout;
 
 /**
  * OpenAI-compatible is a shape, not a contract. Z.AI accepts
@@ -73,11 +103,19 @@ describe("the client a gateway call is made with", () => {
     expect(constructedWith[0]!.maxRetries).toBe(0);
   });
 
-  it("raises undici's own 300s header ceiling, which is the real limit", async () => {
+  it("raises undici's own 300s header and body ceilings to the gateway timeout", async () => {
     // A non-streaming review sends no response header until the model has
     // finished. undici defaults headersTimeout AND bodyTimeout to 300s, so five
     // minutes bounded every call regardless of what the SDK timeout said - and
     // undici reports it with the same "Request timed out." text.
+    await call();
+    expect(constructedWith[0]!.timeout).toBe(CONFIGURED_TIMEOUT_MS);
+    expect(agentsBuilt).toHaveLength(1);
+    expect(agentsBuilt[0]!.headersTimeout).toBe(CONFIGURED_TIMEOUT_MS);
+    expect(agentsBuilt[0]!.bodyTimeout).toBe(CONFIGURED_TIMEOUT_MS);
+  });
+
+  it("hands the SDK the agent it configured", async () => {
     const { Agent } = await import("undici");
     await call();
     const opts = constructedWith[0]!.fetchOptions as { dispatcher?: unknown } | undefined;
@@ -90,8 +128,10 @@ describe("the client a gateway call is made with", () => {
     // `Connection error` when it fails fast and `Request timed out` when the
     // drop is silent - both seen on GLM reviews, neither on the vendor reached
     // through a proxy that already sets this.
-    await call();
-    const opts = constructedWith[0]!.fetchOptions as { dispatcher?: unknown } | undefined;
-    expect(opts?.dispatcher).toBeDefined();
+    const { connect, keepAliveTimeout, keepAliveMaxTimeout } = agentsBuilt[0]!;
+    expect(connect?.keepAlive).toBe(true);
+    expect(connect?.keepAliveInitialDelay).toBeGreaterThan(0);
+    expect(keepAliveTimeout).toBeGreaterThan(0);
+    expect(keepAliveMaxTimeout).toBeGreaterThanOrEqual(keepAliveTimeout!);
   });
 });

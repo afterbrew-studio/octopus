@@ -16,7 +16,7 @@ import {
   searchReviewChunks,
 } from "@/lib/qdrant";
 import { extractAllMermaidBlocks, extractNodeLabels, DIAGRAM_TYPE_LABELS } from "@/lib/mermaid-utils";
-import { loadQueueConfig, computeStaleReclaimMs, enqueue, enqueueAfter } from "@/lib/queue";
+import { loadQueueConfig, computeStaleReclaimMs, enqueue } from "@/lib/queue";
 import { createEmbeddings } from "@/lib/embeddings";
 import { suppressFindingsFromFeedback } from "@/lib/feedback-suppression";
 import { generateSparseVector } from "@/lib/sparse-vector";
@@ -72,6 +72,7 @@ import type { ReviewComment } from "@/lib/github";
 import { eventBus } from "@/lib/events";
 import { attemptOutcomeForStatus, resolveReviewConfig } from "@/lib/review-attempt";
 import { stillOurs } from "@/lib/claim-fence";
+import { DeferralEnqueueError } from "@/lib/review-deferral-error";
 import {
   touchesSharedFiles,
   countFindings,
@@ -90,6 +91,8 @@ import {
   shouldFailReviewCheck,
   isCleanReview,
   mayApprove,
+  assessmentVerified,
+  readWholeDiff,
   assessChangeShape,
   formatPastReviews,
   formatPrIntent,
@@ -679,26 +682,35 @@ export async function processReview(
 
   if (!reviewRunId) { await dispatch(); return; }
 
-  // Guarded on `pending`, so a replayed job cannot restart a run that already
-  // reached a terminal state. A deferred run coming back round is already
-  // `running` and matches nothing here, which is correct: it never stopped.
-  await prisma.reviewRun.updateMany({
-    where: { id: reviewRunId, state: "pending" },
+  // A run is acquired by one execution at a time: the conditional `pending` ->
+  // `running` transition is won by exactly one of any number of overlapping jobs.
+  // An execution that misses it neither dispatches nor finalizes: the run is
+  // either held by the one that won, or finished, and in both cases it is not this
+  // execution's to touch. A deferral hands the run back to `pending` before it
+  // schedules the retry, so only that retry can take it again.
+  const acquired = await prisma.reviewRun.updateMany({
+    where: { id: reviewRunId, state: "pending", terminalAt: null },
     data: { state: "running" },
   });
+  if (!acquired.count) {
+    console.log(`[reviewer] Run ${reviewRunId} is held or finished; skipping this job for PR ${pullRequestId}`);
+    return;
+  }
 
   let dispatchOutcome: ReviewInternalOutcome;
   try {
     dispatchOutcome = await dispatch();
   } catch (err) {
-    await finalizeAttempt(reviewRunId, "failed", `review threw: ${String(err)}`);
+    // A deferral that could not schedule its retry leaves the pull request pending
+    // and the run alive, for the queue's retry and the reconciler to recover.
+    if (!(err instanceof DeferralEnqueueError)) await finalizeAttempt(reviewRunId, "failed", `review threw: ${String(err)}`);
     throw err;
   }
   // A deferral re-enqueues the same run to retry once its prerequisite is
   // ready -- it never stopped, so it is not finalized here. A superseded run
   // already finalized itself inside `processReviewInternal`, before this
   // execution's pull-request read below would find someone else's request.
-  if (dispatchOutcome === "deferred" || dispatchOutcome === "superseded") return;
+  if (dispatchOutcome === "deferred" || dispatchOutcome === "superseded" || dispatchOutcome === "lost") return;
 
   const finished = await prisma.pullRequest.findUnique({
     where: { id: pullRequestId },
@@ -751,11 +763,13 @@ function runBindingMismatch(
  * run-binding check, or a deferral whose guarded update missed because the
  * pull request moved) -- `processReview` must not try to finalize it again
  * from the pull request's status, which by then belongs to a different
- * request. Every other `return` really is the run finishing without
+ * request. `"lost"` marks an execution whose claim was taken from it while it
+ * deferred: the row and the run belong to whoever holds them now, so neither is
+ * written. Every other `return` really is the run finishing without
  * executing (paused, blocked, already completed by this same run on a
  * replayed job), which the pull request's status already answers correctly.
  */
-type ReviewInternalOutcome = "deferred" | "superseded" | undefined;
+type ReviewInternalOutcome = "deferred" | "superseded" | "lost" | undefined;
 
 async function processReviewInternal(pullRequestId: string, reviewRunId?: string, executionWindow?: ReviewExecutionWindow, expected?: { headSha: string | null; reviewRequestVersion: number }): Promise<ReviewInternalOutcome> {
   // Load PR with repo and org info
@@ -805,6 +819,11 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
   // deferred, so it must not be reported "deferred" (which would leave it
   // non-terminal forever with nothing left to retry it); it is superseded.
   const finalizeSupersededDefer = async (): Promise<ReviewInternalOutcome> => {
+    // A miss is also what losing the claim looks like, and then the row still holds
+    // this run's own request: another execution of it is live, and finalizing the
+    // run here would end that one too.
+    const current = await prisma.pullRequest.findUnique({ where: { id: pullRequestId }, select: { headSha: true, reviewRequestVersion: true } });
+    if (current && current.headSha === pr.headSha && current.reviewRequestVersion === pr.reviewRequestVersion) return "lost";
     if (reviewRunId) {
       await finalizeAttempt(reviewRunId, "superseded", "pull request moved before repository preparation could defer this run");
     }
@@ -1175,7 +1194,7 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
               "> 🐙 **Octopus Review** — Repository indexing is in progress.\n>\n> This review has been re-queued and will start automatically once indexing completes.",
             );
           }
-          if (await deferReviewForRepository(pullRequestId, pr.headSha, pr.reviewRequestVersion, reviewRunId)) return "deferred";
+          if (await deferReviewForRepository(pullRequestId, pr.headSha, pr.reviewRequestVersion, reviewRunId, claimToken)) return "deferred";
           return finalizeSupersededDefer();
         } else {
           // Peer failed -- attempt conditional reclaim
@@ -1374,18 +1393,12 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
       });
       if (!admitted) {
         console.log(
-          `[reviewer] Low balance + in-flight review for org ${org.id} — re-queuing PR ${pr.id}`,
+          `[reviewer] Low balance + in-flight review for org ${org.id} — deferring PR ${pr.id}`,
         );
-        await updateCurrentReview(pr.id, pr.headSha, pr.reviewRequestVersion, { status: "queued", updatedAt: new Date() });
-        // The run travels with the deferral. This re-queue is the same
-        // approved review waiting for capacity, not a new decision, so dropping
-        // the id here would let it come back re-merged against live config.
-        await enqueueAfter(
-          "process-review",
-          reviewRunId ? { pullRequestId: pr.id, reviewRunId } : { pullRequestId: pr.id },
-          30,
-        );
-        return;
+        // Same deferral as repository preparation: parked at `pending` so the
+        // retry's claim can take it, run kept alive by the "deferred" outcome.
+        if (await deferReviewForRepository(pullRequestId, pr.headSha, pr.reviewRequestVersion, reviewRunId, claimToken)) return "deferred";
+        return finalizeSupersededDefer();
       }
     }
 
@@ -1404,7 +1417,7 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
           "> 🐙 **Octopus Review** — Repository indexing or analysis is in progress.\n>\n> This review will retry automatically once repository preparation completes.",
         );
       }
-      if (await deferReviewForRepository(pullRequestId, pr.headSha, pr.reviewRequestVersion, reviewRunId)) return "deferred";
+      if (await deferReviewForRepository(pullRequestId, pr.headSha, pr.reviewRequestVersion, reviewRunId, claimToken)) return "deferred";
       return finalizeSupersededDefer();
     }
     if (isForgejoConnector) {
@@ -2285,6 +2298,18 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
     // Inline vs summary are both derived from the validated union from here on.
     findings = [...allParsedFindings];
 
+    // What the model found once validated, BEFORE anything below removes a
+    // finding from view: prior-comment dedup hides a finding because it was
+    // already raised, and the re-review filter hides everything non-critical.
+    // Both decide what to SHOW. Neither may decide whether the review found
+    // anything, or a re-review that repeats an unresolved HIGH reads as clean
+    // and approves the new head. Every review after the first is a re-review.
+    const foundBeforeDedup = {
+      hasCritical: allParsedFindings.some((f) => f.severity === "🔴"),
+      hasHigh: allParsedFindings.some((f) => f.severity === "🟠"),
+      hasMedium: allParsedFindings.some((f) => f.severity === "🟡"),
+    };
+
     // Hard dedup: remove findings that match prior bot comments, summary table findings,
     // or dismissed DB findings by file proximity + keyword overlap.
     if (isReReview && (botComments.length > 0 || priorSummaryTableFindings.length > 0 || dismissedDbFindings.length > 0)) {
@@ -2324,17 +2349,6 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
         );
       }
     }
-
-    // What the model actually found, BEFORE the re-review filter below discards
-    // everything non-critical. The filter decides what to SHOW on a follow-up
-    // review; it must not decide whether the review found anything, or a
-    // re-review carrying a HIGH finding reads as clean and can be approved.
-    // Every review after the first is a re-review, so that is the common case.
-    const foundBeforeReReviewFilter = {
-      hasCritical: allParsedFindings.some((f) => f.severity === "🔴"),
-      hasHigh: allParsedFindings.some((f) => f.severity === "🟠"),
-      hasMedium: allParsedFindings.some((f) => f.severity === "🟡"),
-    };
 
     // Re-review filter: only keep critical findings on follow-up reviews.
     // This is a hard filter — prompt instructions alone are not reliable enough.
@@ -2450,25 +2464,15 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
     // reason NOT to emit it. Each answers a different way this review could be
     // wrong rather than clean.
     //
-    //  - severities come from `foundBeforeReReviewFilter`, not from the filtered
-    //    `findings`, so a re-review that found a HIGH cannot read as clean.
-    //  - a review whose model output produced no parseable findings block is
-    //    UNKNOWN, not clean: `parseFindings` returns [] for a truncated response
-    //    exactly as it does for a genuinely clean one.
+    //  - severities come from `foundBeforeDedup`, not from the filtered
+    //    `findings`, so a re-review that found a HIGH, new or repeated, cannot
+    //    read as clean.
+    //  - a review without a verified assessment is UNKNOWN, not clean:
+    //    `parseFindings` returns [] for a malformed or truncated response
+    //    exactly as it does for a genuinely clean one, so only the recorded
+    //    request, validation and completion evidence counts.
     //  - a diff that was truncated or filtered was only partly read, and
     //    approving it would vouch for files the model never saw.
-    // A findings block that opened and never closed is a response cut off
-    // mid-emission - `parseFindings` returns [] for that exactly as it does for
-    // a genuinely clean review, so without this the two are the same value.
-    const truncatedModelOutput =
-      reviewBody.includes(FINDINGS_START_MARKER) && !reviewBody.includes(FINDINGS_END_MARKER);
-    const parsedSomething = reviewBody.trim().length > 0 && !truncatedModelOutput;
-    // Whether the model saw the WHOLE change: an approval vouches for the diff,
-    // and a partly-read diff (truncated, filtered, or with any excluded file) is
-    // a partly-read vouch. Read off per-file coverage state rather than the
-    // reporting-oriented `coverage.complete`, which treats an excluded binary
-    // asset as complete input -- too permissive for what an auto-approval needs.
-    const readWholeDiff = coverage.inventoryComplete && coverage.files.every((f) => f.state === "supplied");
     // Counted from the diff the model actually read, so a truncated diff cannot
     // make a large change look small enough to wave through.
     const addedLines = diff.split('\n').filter((l) => l.startsWith('+') && !l.startsWith('+++')).length;
@@ -2481,9 +2485,8 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
     });
     const approvable = mayApprove({
       optedIn: org.approveWhenClean,
-      found: foundBeforeReReviewFilter,
-      parsedOutput: parsedSomething,
-      readWholeDiff,
+      found: foundBeforeDedup,
+      coverage,
       shape,
     });
     if (org.approveWhenClean && !shape.mergeableUnattended) {
@@ -2496,7 +2499,7 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
         : "COMMENT";
     if (org.approveWhenClean && !approvable && !shouldRequestChanges) {
       console.log(
-        `[reviewer] not approving PR ${pr.number}: clean=${isCleanReview(foundBeforeReReviewFilter)} parsed=${parsedSomething} wholeDiff=${readWholeDiff}`,
+        `[reviewer] not approving PR ${pr.number}: clean=${isCleanReview(foundBeforeDedup)} verified=${assessmentVerified(coverage)} wholeDiff=${readWholeDiff(coverage)}`,
       );
     }
 
@@ -2971,6 +2974,12 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
 
     console.log(`[reviewer] Review completed for PR #${pr.number}`);
   } catch (err) {
+    // Not a review failure: the pull request is already parked for a retry that
+    // could not be scheduled, and recording a failure here would end the run.
+    if (err instanceof DeferralEnqueueError) {
+      console.error(`[reviewer] PR ${pr.id} deferred but its retry was not scheduled:`, err);
+      throw err;
+    }
     if (adaptiveProcessingWindow
       && (adaptiveProcessingWindow.signal.aborted || adaptiveProcessingWindow.remainingMs() <= 0)) {
       err = new ReviewProcessingExpiredError();

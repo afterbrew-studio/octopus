@@ -43,6 +43,10 @@ import assert from "node:assert/strict";
  *      `attemptId` job whose row predates this check entirely) is unbound
  *      AND unsafe -- fail-safe, not "whatever head is current" -- so it must
  *      supersede without ever claiming, exactly like any other mismatch.
+ *   I. a low-balance deferral (another review of the organization is in
+ *      flight) parks the pull request at "pending" and reports "deferred",
+ *      exactly like a repository-preparation deferral, so the retry the
+ *      deferral enqueues can claim the row and the frozen run survives.
  *   G. the run-binding check and the claim are separate operations; a newer
  *      request landing in between must not let the claim take that newer
  *      request's head under this run's stale configuration. The run's own
@@ -71,6 +75,13 @@ const repos: Record<string, { id: string; fullName: string; reviewConfig: object
   "repo-f": { id: "repo-f", fullName: "fixture/repo-f", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
   "repo-g": { id: "repo-g", fullName: "fixture/repo-g", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
   "repo-h": { id: "repo-h", fullName: "fixture/repo-h", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
+  "repo-i": { id: "repo-i", fullName: "fixture/repo-i", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
+  "repo-k": { id: "repo-k", fullName: "fixture/repo-k", reviewConfig: {}, provider: "forgejo", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
+  "repo-q": { id: "repo-q", fullName: "fixture/repo-q", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
+  "repo-t": { id: "repo-t", fullName: "fixture/repo-t", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
+  "repo-u": { id: "repo-u", fullName: "fixture/repo-u", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
+  "repo-v": { id: "repo-v", fullName: "fixture/repo-v", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
+  "repo-i2": { id: "repo-i2", fullName: "fixture/repo-i2", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
 };
 
 type Row = Record<string, unknown> & { id: string; repositoryId: string; status: string; headSha: string | null; reviewRequestVersion: number; updatedAt: Date };
@@ -112,6 +123,35 @@ const prs: Record<string, Row> = {
     id: "pr-h", repositoryId: "repo-h", number: 8, title: "Title", author: "author", url: "https://example.test/pr/8",
     headSha: B, reviewRequestVersion: 1, status: "pending", reviewBody: null, claimToken: null, updatedAt: new Date(),
   },
+  "pr-i": {
+    id: "pr-i", repositoryId: "repo-i", number: 9, title: "Title", author: "author", url: "https://example.test/pr/9",
+    headSha: A, reviewRequestVersion: 1, status: "pending", reviewBody: null, claimToken: null, updatedAt: new Date(),
+  },
+  "pr-k": {
+    id: "pr-k", repositoryId: "repo-k", number: 12, title: "Title", author: "author", url: "https://example.test/pr/12",
+    headSha: A, reviewRequestVersion: 1, status: "completed", reviewBody: null, claimToken: null, updatedAt: new Date(),
+  },
+  "pr-q": {
+    id: "pr-q", repositoryId: "repo-q", number: 18, title: "Title", author: "author", url: "https://example.test/pr/18",
+    headSha: A, reviewRequestVersion: 1, status: "pending", reviewBody: null, claimToken: null, updatedAt: new Date(),
+  },
+  "pr-t": {
+    id: "pr-t", repositoryId: "repo-t", number: 21, title: "Title", author: "author", url: "https://example.test/pr/21",
+    headSha: A, reviewRequestVersion: 1, status: "pending", reviewBody: null, claimToken: null, updatedAt: new Date(),
+  },
+  "pr-u": {
+    id: "pr-u", repositoryId: "repo-u", number: 22, title: "Title", author: "author", url: "https://example.test/pr/22",
+    headSha: A, reviewRequestVersion: 1, status: "pending", reviewBody: null, claimToken: null, updatedAt: new Date(),
+  },
+  "pr-v": {
+    id: "pr-v", repositoryId: "repo-v", number: 23, title: "Title", author: "author", url: "https://example.test/pr/23",
+    headSha: A, reviewRequestVersion: 1, status: "pending", reviewBody: null, claimToken: null, updatedAt: new Date(),
+  },
+  // Another review of the same organization, already in flight.
+  "pr-i2": {
+    id: "pr-i2", repositoryId: "repo-i2", number: 10, title: "Title", author: "author", url: "https://example.test/pr/10",
+    headSha: A, reviewRequestVersion: 1, status: "reviewing", reviewBody: null, claimToken: "other-worker", updatedAt: new Date(),
+  },
 };
 // `headSha`/`reviewRequestVersion` are what the run was frozen for -- the
 // binding `processReviewInternal` checks its execution against, independent
@@ -128,6 +168,12 @@ const runs: Record<string, Run> = {
   "run-f": { id: "run-f", state: "pending", terminalAt: null, terminalDetail: null, headSha: null, reviewRequestVersion: null },
   "run-g": { id: "run-g", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: 1 },
   "run-h": { id: "run-h", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: null },
+  "run-k": { id: "run-k", state: "succeeded", terminalAt: new Date(), terminalDetail: "review completed", headSha: A, reviewRequestVersion: 1 },
+  "run-q": { id: "run-q", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: 1 },
+  "run-t": { id: "run-t", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: 1 },
+  "run-u": { id: "run-u", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: 1 },
+  "run-v": { id: "run-v", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: 1 },
+  "run-i": { id: "run-i", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: 1 },
 };
 
 // Real staleness semantics, not a simplified stand-in: this is exactly what
@@ -154,6 +200,23 @@ function apply(row: Row, data: Record<string, unknown>) {
   Object.assign(row, structuredClone(data), { updatedAt: data.updatedAt ?? new Date() });
 }
 
+const pullRequestDb = {
+  findUnique: async ({ where }: { where: { id: string } }) => {
+    const row = prs[where.id];
+    return row ? { ...structuredClone(row), repository: { ...repos[row.repositoryId], organization: org } } : null;
+  },
+  count: async ({ where }: { where: { status: string; id: { not: string } } }) =>
+    Object.values(prs).filter((row) => row.status === where.status && row.id !== where.id.not).length,
+  updateMany: async ({ where, data }: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
+    const row = prs[where.id as string];
+    if (!row || !whereMatches(row, where)) return { count: 0 };
+    apply(row, data);
+    return { count: 1 };
+  },
+};
+
+// Scenario Q: the queue refuses the retry a deferral schedules.
+let failDeferralEnqueue = false;
 const enqueuedAfter: Array<{ pullRequestId: string; data: Record<string, unknown>; delay: number }> = [];
 mock.module("@octopus/db", () => ({
   Prisma: { DbNull: null },
@@ -186,18 +249,12 @@ mock.module("@octopus/db", () => ({
         return { count: 1 };
       },
     },
-    pullRequest: {
-      findUnique: async ({ where }: { where: { id: string } }) => {
-        const row = prs[where.id];
-        return row ? { ...structuredClone(row), repository: { ...repos[row.repositoryId], organization: org } } : null;
-      },
-      updateMany: async ({ where, data }: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
-        const row = prs[where.id as string];
-        if (!row || !whereMatches(row, where)) return { count: 0 };
-        apply(row, data);
-        return { count: 1 };
-      },
-    },
+    pullRequest: pullRequestDb,
+    // The low-balance admission transaction: advisory lock, in-flight count, guarded mark.
+    $transaction: async (run: (tx: unknown) => Promise<unknown>) => run({
+      $executeRaw: async () => 0,
+      pullRequest: pullRequestDb,
+    }),
   },
 }));
 mock.module("@/lib/queue", () => ({
@@ -205,6 +262,8 @@ mock.module("@/lib/queue", () => ({
   computeStaleReclaimMs: (s: number) => (s + 300) * 1000,
   enqueue: async () => "job",
   enqueueAfter: async (_name: string, data: Record<string, unknown>, delay: number) => {
+    if (failDeferralEnqueue) throw new Error("queue unavailable");
+    if (failDeferralEnqueue) throw new Error("queue unavailable");
     enqueuedAfter.push({ pullRequestId: data.pullRequestId as string, data, delay });
     return "job-1";
   },
@@ -214,6 +273,12 @@ mock.module("@/lib/queue", () => ({
 // which is stubbed below).
 mock.module("@/lib/summarizer", () => ({ summarizeRepository: async () => { throw new Error("not used by this fixture"); } }));
 mock.module("@/lib/analyzer", () => ({ analyzeRepository: async () => { throw new Error("not used by this fixture"); } }));
+// Scenario K: provider setup for the pull request's repository is unavailable.
+let providerDispatches = 0;
+mock.module("@/lib/forgejo", () => ({
+  usesForgejoConnector: () => false,
+  runWithForgejoRepository: async () => { providerDispatches++; throw new Error("Forgejo connection unavailable"); },
+}));
 mock.module("@/lib/pubby", () => ({ pubby: { trigger: async () => {} } }));
 mock.module("@/lib/events", () => ({ eventBus: { emit: () => {} } }));
 
@@ -221,9 +286,9 @@ const { deferReviewForRepository } = await import("@/lib/review-repository-prepa
 // Keyed by repository, matching the real function's own signature -- each
 // scenario's repository starts "waiting" independently of the other's.
 const analysisReady: Record<string, boolean> = {
-  "repo-a": false, "repo-b": false, "repo-c": false, "repo-d": false,
+  "repo-a": false, "repo-b": false, "repo-v": false, "repo-t": false, "repo-u": false, "repo-q": false, "repo-q": false, "repo-c": false, "repo-d": false,
   // E/F/G need no deferral; their repository is ready from the start.
-  "repo-e": true, "repo-f": true, "repo-g": true, "repo-h": true,
+  "repo-e": true, "repo-f": true, "repo-g": true, "repo-h": true, "repo-i": true, "repo-i2": true,
 };
 let interleaveNewAdmissionAfterBindingRead = false;
 // Scenario D: simulates the pull request moving WHILE this (slow, real AI)
@@ -233,6 +298,8 @@ let interleaveNewAdmissionAfterBindingRead = false;
 let mutatePrDOnAnalysisCheck = false;
 mock.module("@/lib/review-repository-preparation", () => ({
   ensureRepositoryAnalysis: async (repositoryId: string) => {
+    // Scenario V: the claim is taken while the repository is being prepared.
+    if (repositoryId === "repo-v") Object.assign(prs["pr-v"], { claimToken: "worker-b" });
     if (repositoryId === "repo-d" && mutatePrDOnAnalysisCheck) {
       prs["pr-d"] = { ...prs["pr-d"], headSha: B, reviewRequestVersion: 2 };
     }
@@ -241,13 +308,16 @@ mock.module("@/lib/review-repository-preparation", () => ({
   deferReviewForRepository,
 }));
 
-mock.module("@/lib/cost", () => ({ getOrgSpendLimitStatus: async () => ({ blocked: false }), shouldGuardConcurrency: async () => false }));
+// Scenario I only: the organization is nearly out of credit, so reviews serialize.
+let guardConcurrency = false;
+mock.module("@/lib/cost", () => ({ getOrgSpendLimitStatus: async () => ({ blocked: false }), shouldGuardConcurrency: async () => guardConcurrency }));
 const diff = "diff --git a/src/check.ts b/src/check.ts\n--- a/src/check.ts\n+++ b/src/check.ts\n@@ -1 +1 @@\n-return value;\n+return value.name;\n";
 let failDiffFetch = false;
 // Proves scenario C's "nothing published for A": incremented by every
 // comment/review/summary call, regardless of which pull request it targets --
 // a superseded execution must never reach any of them.
 let publishCalls = 0;
+let reviewPosts = 0;
 mock.module("@/lib/github", () => ({
   LargePrError: class LargePrError extends Error {},
   getPullRequestReviewInput: async () => {
@@ -261,7 +331,7 @@ mock.module("@/lib/github", () => ({
   getPullRequestDetails: async () => ({ body: "Title" }),
   createPullRequestComment: async () => { publishCalls++; return 123; },
   updatePullRequestComment: async () => { publishCalls++; },
-  createPullRequestReview: async (..._args: unknown[]) => { publishCalls++; return 456; },
+  createPullRequestReview: async (..._args: unknown[]) => { publishCalls++; reviewPosts++; return 456; },
   createCheckRun: async () => 789,
   updateCheckRun: async () => {},
   getRepositoryTree: async () => ["src/check.ts"],
@@ -332,10 +402,32 @@ mock.module("@/lib/review-attempt", () => ({
 
 const { processReview } = await import("@/lib/reviewer");
 
+// I. Low balance with another review of the organization in flight. Runs first:
+// the in-flight count spans the organization, and later scenarios leave rows 'reviewing'. The retry
+// is evaluated against the claim's real `where`: parked at "queued" it would
+// not match for the large-review stale window, and nothing would run it.
+guardConcurrency = true;
+await processReview("pr-i", undefined, "run-i");
+assert.equal(prs["pr-i"].status, "pending", "a low-balance deferral must leave the pull request claimable");
+assert.equal(runs["run-i"].state, "pending", "the run is handed back so only the retry can take it, and it is not finalized");
+assert.equal(runs["run-i"].terminalAt, null);
+const lowBalanceRetries = enqueuedAfter.filter((e) => e.pullRequestId === "pr-i");
+assert.equal(lowBalanceRetries.length, 1);
+assert.equal(lowBalanceRetries[0]!.data.reviewRunId, "run-i", "the retry must carry the same frozen run forward");
+assert.equal(prs["pr-i2"].claimToken, "other-worker", "the in-flight review must be untouched");
+
+// The in-flight review finishes; the 30-second retry then runs.
+prs["pr-i2"].status = "completed";
+await processReview("pr-i", undefined, "run-i");
+assert.equal(prs["pr-i"].status, "completed", "the low-balance retry must actually claim the row and complete the review");
+assert.equal(runs["run-i"].state, "succeeded");
+assert.ok(runs["run-i"].terminalAt);
+guardConcurrency = false;
+
 // A. First dispatch: repository analysis is not ready, so the review defers.
 await processReview("pr-a", undefined, "run-a");
 assert.equal(prs["pr-a"].status, "pending", "a deferral must leave the pull request claimable ('pending'), not 'queued'");
-assert.equal(runs["run-a"].state, "running", "the run must stay non-terminal across a deferral, not be finalized");
+assert.equal(runs["run-a"].state, "pending", "the run is handed back so only the retry can take it, and it is not finalized");
 assert.equal(runs["run-a"].terminalAt, null);
 assert.equal(enqueuedAfter.filter((e) => e.pullRequestId === "pr-a").length, 1);
 assert.equal(enqueuedAfter.find((e) => e.pullRequestId === "pr-a")?.data.reviewRunId, "run-a", "the retry must carry the same frozen run forward");
@@ -357,7 +449,7 @@ assert.ok(runs["run-a"].terminalAt, "the run must be terminal exactly once, at t
 // status, not stuck "running" because the earlier deferral suppressed
 // finalization once already.
 await processReview("pr-b", undefined, "run-b");
-assert.equal(runs["run-b"].state, "running");
+assert.equal(runs["run-b"].state, "pending");
 analysisReady["repo-b"] = true;
 failDiffFetch = true;
 await processReview("pr-b", undefined, "run-b");
@@ -370,7 +462,7 @@ assert.ok(runs["run-b"].terminalAt);
 // version) is admitted and reviewed to completion. A's delayed retry must
 // find its run bound to a request that no longer exists.
 await processReview("pr-c", undefined, "run-c");
-assert.equal(runs["run-c"].state, "running");
+assert.equal(runs["run-c"].state, "pending");
 
 // Simulate B's admission: a fresh request at a new head/version, exactly as
 // `startReviewFlowInternal` would leave the row after admitting it.
@@ -443,4 +535,61 @@ assert.ok(runs["run-g"].terminalAt);
 assert.equal(prs["pr-g"].status, "pending", "the claim must never have taken effect -- the newer request's own job must still be able to claim this row");
 assert.equal(prs["pr-g"].claimToken, null, "the row must be untouched by a superseded claim attempt");
 
-console.log("PASS repository-preparation deferral stays claimable, preserves the run across defer-then-succeed and defer-then-fail, finalizes superseded runs on a cross-request race or a missed guarded update, treats only reviewRequestVersion (never headSha) as a legacy wildcard, and closes the binding-check-to-claim race");
+// K. A pg-boss retry of a run that already finished. The run is terminal, so the
+// job must resolve without dispatching to the provider -- here provider setup
+// fails, which would otherwise make the retry fail and be retried again.
+const replayError = await processReview("pr-k", undefined, "run-k").then(() => null, (error: unknown) => error);
+assert.equal(replayError, null, "a replayed job for a finished run must resolve, not fail and be retried again");
+assert.equal(providerDispatches, 0, "a replayed job for a finished run must not dispatch");
+assert.equal(runs["run-k"].state, "succeeded", "a finished run must stay as it ended");
+assert.equal(prs["pr-k"].status, "completed");
+
+// Q. A deferral whose retry cannot be scheduled. The job fails so pg-boss retries it,
+// and the run must stay alive: the pending-row reconciler only recovers a pending row
+// that still has a live run, and a finished run turns every retry into a no-op.
+failDeferralEnqueue = true;
+const enqueueFailure = await processReview("pr-q", undefined, "run-q").then(() => null, (error: unknown) => error);
+failDeferralEnqueue = false;
+assert.ok(enqueueFailure, "a deferral that could not be scheduled must fail the job so it is retried");
+assert.equal(runs["run-q"].terminalAt, null, "the run must stay alive so the retry and the reconciler can recover it");
+assert.equal(prs["pr-q"].status, "pending");
+analysisReady["repo-q"] = true;
+await processReview("pr-q", undefined, "run-q");
+assert.equal(prs["pr-q"].status, "completed", "the retried job must actually run the review");
+assert.equal(runs["run-q"].state, "succeeded");
+
+// T. Two jobs overlap on one deferred run. The run is taken from `pending` by exactly
+// one of them; the other neither dispatches nor finalizes, so it cannot cancel the
+// run out from under the one that is reviewing.
+await processReview("pr-t", undefined, "run-t");
+assert.equal(runs["run-t"].state, "pending", "a deferred run waits for its retry");
+analysisReady["repo-t"] = true;
+const reviewsBeforeOverlap = reviewPosts;
+await Promise.all([processReview("pr-t", undefined, "run-t"), processReview("pr-t", undefined, "run-t")]);
+assert.equal(prs["pr-t"].status, "completed");
+assert.equal(runs["run-t"].state, "succeeded", "the overlapping job that lost the run must not cancel it");
+assert.equal(reviewPosts - reviewsBeforeOverlap, 1, "one review, from the one execution that held the run");
+
+// U. The same overlap, where the execution that holds the run defers. The loser
+// must leave the run alone, so the retry can still take it.
+const retriesBefore = enqueuedAfter.filter((job) => job.pullRequestId === "pr-u").length;
+await Promise.all([processReview("pr-u", undefined, "run-u"), processReview("pr-u", undefined, "run-u")]);
+assert.equal(runs["run-u"].terminalAt, null, "a run that deferred must stay alive for its retry");
+assert.equal(runs["run-u"].state, "pending");
+assert.equal(prs["pr-u"].status, "pending");
+assert.equal(enqueuedAfter.filter((job) => job.pullRequestId === "pr-u").length - retriesBefore, 1, "exactly one retry is scheduled");
+analysisReady["repo-u"] = true;
+await processReview("pr-u", undefined, "run-u");
+assert.equal(runs["run-u"].state, "succeeded", "and that retry runs the review");
+
+// V. A worker is overtaken while it prepares the repository, and then has to defer.
+// The row now belongs to the worker that took it: resetting it to pending would make
+// it claimable by a third, so a miss is lost ownership and releases nothing.
+const retriesBeforeLoss = enqueuedAfter.filter((job) => job.pullRequestId === "pr-v").length;
+await processReview("pr-v", undefined, "run-v");
+assert.equal(prs["pr-v"].status, "reviewing", "a worker that lost its claim must not reset the new owner's row");
+assert.equal(prs["pr-v"].claimToken, "worker-b");
+assert.equal(enqueuedAfter.filter((job) => job.pullRequestId === "pr-v").length, retriesBeforeLoss, "and must schedule no retry");
+assert.equal(runs["run-v"].terminalAt, null, "nor end a run another execution may hold");
+
+console.log("PASS repository-preparation and low-balance deferrals stay claimable, a replayed job for a finished run does not dispatch, a deferral that cannot be scheduled leaves the run recoverable, overlapping jobs cannot cancel a run that one of them holds, a worker that lost its claim cannot release the new owner's row, preserves the run across defer-then-succeed and defer-then-fail, finalizes superseded runs on a cross-request race or a missed guarded update, treats only reviewRequestVersion (never headSha) as a legacy wildcard, and closes the binding-check-to-claim race");

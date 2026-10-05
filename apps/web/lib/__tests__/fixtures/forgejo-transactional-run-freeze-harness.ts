@@ -61,7 +61,7 @@ mock.module("@octopus/db", () => ({
     },
     pullRequest: {
       findUnique: async () => null,
-      create: async () => pr,
+      createManyAndReturn: async () => [pr],
       updateManyAndReturn: async () => [pr],
     },
   },
@@ -97,7 +97,7 @@ const fakeTransaction = {
   $queryRawUnsafe: async () => [],
   pullRequest: {
     findUnique: async () => null,
-    create: async () => pr,
+    createManyAndReturn: async () => [pr],
     updateManyAndReturn: async () => [pr],
   },
   organization: { findUnique: async () => ({ reviewsPaused: false, blockedAuthors: [], defaultReviewConfig: null }) },
