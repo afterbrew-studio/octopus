@@ -61,7 +61,15 @@ describe("reapStuckReviews", () => {
     const res = await reapStuckReviews(NOW);
     expect(res).toEqual({ requeued: 1, failed: 0, unpublished: 0 });
     expect(updateMany).toHaveBeenCalledWith({
-      where: { id: "pr_recent", status: { in: ["reviewing", "queued"] } },
+      // The same staleness the scan used, so a worker that renewed its claim
+      // between the scan and this write is not failed.
+      where: {
+        id: "pr_recent",
+        OR: [
+          { status: "reviewing", updatedAt: { lt: new Date(NOW.getTime() - 1200_000) } },
+          { status: "queued", updatedAt: { lt: new Date(NOW.getTime() - 2100_000) } },
+        ],
+      },
       data: { status: "failed", errorMessage: REAP_FAILED_MESSAGE },
     });
     expect(enqueue).toHaveBeenCalledWith(

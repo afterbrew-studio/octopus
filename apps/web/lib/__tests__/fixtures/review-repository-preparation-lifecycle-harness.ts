@@ -76,6 +76,7 @@ const repos: Record<string, { id: string; fullName: string; reviewConfig: object
   "repo-g": { id: "repo-g", fullName: "fixture/repo-g", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
   "repo-h": { id: "repo-h", fullName: "fixture/repo-h", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
   "repo-i": { id: "repo-i", fullName: "fixture/repo-i", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
+  "repo-j": { id: "repo-j", fullName: "fixture/repo-j", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
   "repo-i2": { id: "repo-i2", fullName: "fixture/repo-i2", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
 };
 
@@ -122,6 +123,10 @@ const prs: Record<string, Row> = {
     id: "pr-i", repositoryId: "repo-i", number: 9, title: "Title", author: "author", url: "https://example.test/pr/9",
     headSha: A, reviewRequestVersion: 1, status: "pending", reviewBody: null, claimToken: null, updatedAt: new Date(),
   },
+  "pr-j": {
+    id: "pr-j", repositoryId: "repo-j", number: 11, title: "Title", author: "author", url: "https://example.test/pr/11",
+    headSha: A, reviewRequestVersion: 1, status: "pending", reviewBody: null, claimToken: null, updatedAt: new Date(),
+  },
   // Another review of the same organization, already in flight.
   "pr-i2": {
     id: "pr-i2", repositoryId: "repo-i2", number: 10, title: "Title", author: "author", url: "https://example.test/pr/10",
@@ -143,6 +148,8 @@ const runs: Record<string, Run> = {
   "run-f": { id: "run-f", state: "pending", terminalAt: null, terminalDetail: null, headSha: null, reviewRequestVersion: null },
   "run-g": { id: "run-g", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: 1 },
   "run-h": { id: "run-h", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: null },
+  "run-j": { id: "run-j", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: 1 },
+  "run-j2": { id: "run-j2", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: 1 },
   "run-i": { id: "run-i", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: 1 },
 };
 
@@ -184,6 +191,29 @@ const pullRequestDb = {
     return { count: 1 };
   },
 };
+
+// Scenario J: the row is taken from a worker immediately after it checks that it
+// still owns it. Whatever the check is -- a read of `claimToken` or a write
+// conditioned on it -- the first such operation on "pr-j" is followed by a rival
+// worker's whole execution. Just before it, the row's last write is aged past
+// the reclaim window, as after a model call that outlived the pg-boss timeout.
+let racingWorker: (() => Promise<void>) | null = null;
+type FenceArgs = { where?: Record<string, unknown> & { id?: string }; select?: { claimToken?: boolean }; data?: Record<string, unknown> };
+const isFenceOperation = (args: FenceArgs) =>
+  args.where?.id === "pr-j" && racingWorker !== null && args.data?.claimToken === undefined
+  && (args.select?.claimToken === true || (args.where !== undefined && "claimToken" in args.where));
+async function raced<T>(args: FenceArgs, operation: () => Promise<T>): Promise<T> {
+  if (!isFenceOperation(args)) return operation();
+  const rival = racingWorker!;
+  racingWorker = null;
+  prs["pr-j"].updatedAt = new Date(Date.now() - 3600_000);
+  const result = await operation();
+  await rival();
+  return result;
+}
+const findUnique = pullRequestDb.findUnique, updateMany = pullRequestDb.updateMany;
+pullRequestDb.findUnique = (args: { where: { id: string } }) => raced(args as FenceArgs, () => findUnique(args)) as ReturnType<typeof findUnique>;
+pullRequestDb.updateMany = (args: { where: Record<string, unknown>; data: Record<string, unknown> }) => raced(args as FenceArgs, () => updateMany(args)) as ReturnType<typeof updateMany>;
 
 const enqueuedAfter: Array<{ pullRequestId: string; data: Record<string, unknown>; delay: number }> = [];
 mock.module("@octopus/db", () => ({
@@ -248,7 +278,7 @@ const { deferReviewForRepository } = await import("@/lib/review-repository-prepa
 const analysisReady: Record<string, boolean> = {
   "repo-a": false, "repo-b": false, "repo-c": false, "repo-d": false,
   // E/F/G need no deferral; their repository is ready from the start.
-  "repo-e": true, "repo-f": true, "repo-g": true, "repo-h": true, "repo-i": true, "repo-i2": true,
+  "repo-e": true, "repo-f": true, "repo-g": true, "repo-h": true, "repo-i": true, "repo-i2": true, "repo-j": true,
 };
 let interleaveNewAdmissionAfterBindingRead = false;
 // Scenario D: simulates the pull request moving WHILE this (slow, real AI)
@@ -275,6 +305,7 @@ let failDiffFetch = false;
 // comment/review/summary call, regardless of which pull request it targets --
 // a superseded execution must never reach any of them.
 let publishCalls = 0;
+const publishedReviews: string[] = [];
 mock.module("@/lib/github", () => ({
   LargePrError: class LargePrError extends Error {},
   getPullRequestReviewInput: async () => {
@@ -288,7 +319,7 @@ mock.module("@/lib/github", () => ({
   getPullRequestDetails: async () => ({ body: "Title" }),
   createPullRequestComment: async () => { publishCalls++; return 123; },
   updatePullRequestComment: async () => { publishCalls++; },
-  createPullRequestReview: async (..._args: unknown[]) => { publishCalls++; return 456; },
+  createPullRequestReview: async (..._args: unknown[]) => { publishCalls++; publishedReviews.push(String(_args[5])); return 456; },
   createCheckRun: async () => 789,
   updateCheckRun: async () => {},
   getRepositoryTree: async () => ["src/check.ts"],
@@ -492,4 +523,16 @@ assert.ok(runs["run-g"].terminalAt);
 assert.equal(prs["pr-g"].status, "pending", "the claim must never have taken effect -- the newer request's own job must still be able to claim this row");
 assert.equal(prs["pr-g"].claimToken, null, "the row must be untouched by a superseded claim attempt");
 
-console.log("PASS repository-preparation and low-balance deferrals stay claimable, preserves the run across defer-then-succeed and defer-then-fail, finalizes superseded runs on a cross-request race or a missed guarded update, treats only reviewRequestVersion (never headSha) as a legacy wildcard, and closes the binding-check-to-claim race");
+// J. A rival worker claims the row right after this one checks that it owns it.
+// The rival's claim is evaluated against the real `where`, staleness included, so
+// it succeeds only if the check left the row reclaimable. Exactly one review may
+// reach the provider, and it must be the one whose claim held.
+const reviewsBeforeRace = publishedReviews.length;
+racingWorker = async () => { await processReview("pr-j", undefined, "run-j2"); };
+await processReview("pr-j", undefined, "run-j");
+assert.equal(racingWorker, null, "the race must have been exercised");
+assert.equal(publishedReviews.length - reviewsBeforeRace, 1, "a worker whose claim was taken must not also publish");
+assert.equal(prs["pr-j"].status, "completed");
+assert.equal(runs["run-j"].state, "succeeded", "the worker that held the claim finishes its own run");
+
+console.log("PASS repository-preparation and low-balance deferrals stay claimable, a claim taken after the publication check cannot produce a second review, preserves the run across defer-then-succeed and defer-then-fail, finalizes superseded runs on a cross-request race or a missed guarded update, treats only reviewRequestVersion (never headSha) as a legacy wildcard, and closes the binding-check-to-claim race");

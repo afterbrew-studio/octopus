@@ -11,40 +11,33 @@ mock.module("server-only", () => ({}));
  * both workers post a review and both write a terminal status: two paid reviews,
  * two comments, and a `completed` row whose attempt says `failed`. rayf#124.
  *
- * The fence is a claim token written when a worker claims the row. These assert
- * the two shapes it takes: an advisory read before the irreversible half, and a
- * conditional write that cannot be raced.
+ * The fence is a claim token written when a worker claims the row. Before the
+ * irreversible half the worker reserves its claim with a conditional write, so
+ * the row cannot be taken between the check and the publication; the terminal
+ * write is conditioned on the token as well. The interleaving itself is covered
+ * by the review lifecycle harness, which evaluates the real claim query.
  */
 
 describe("the claim fence", () => {
-  it("recognises the row as ours while the token matches", async () => {
-    const findUnique = mock(async () => ({ claimToken: "tok-a" }));
-    mock.module("@octopus/db", () => ({ Prisma: { DbNull: null }, prisma: { pullRequest: { findUnique } } }));
-    const { stillOurs } = await import("@/lib/claim-fence");
-    expect(await stillOurs("pr_1", "tok-a")).toBe(true);
+  it("reserves the row while the token matches, conditioning the write on the claim", async () => {
+    const updateMany = mock(async () => ({ count: 1 }));
+    mock.module("@octopus/db", () => ({ Prisma: { DbNull: null }, prisma: { pullRequest: { updateMany } } }));
+    const { reserveClaim } = await import("@/lib/claim-fence");
+    expect(await reserveClaim("pr_1", "tok-a")).toBe(true);
+    const call = updateMany.mock.calls[0] as unknown as [{ where: unknown; data: { updatedAt: Date } }];
+    // The token, the status and the refreshed `updatedAt` are the whole fence:
+    // drop any one and a lost row is reserved, or a reserved row stays reclaimable.
+    expect(call[0].where).toEqual({ id: "pr_1", claimToken: "tok-a", status: "reviewing" });
+    expect(call[0].data.updatedAt).toBeInstanceOf(Date);
   });
 
-  it("recognises a re-claimed row as not ours", async () => {
-    const findUnique = mock(async () => ({ claimToken: "tok-b" }));
-    mock.module("@octopus/db", () => ({ prisma: { pullRequest: { findUnique } } }));
-    const { stillOurs } = await import("@/lib/claim-fence");
-    expect(await stillOurs("pr_1", "tok-a")).toBe(false);
-  });
-
-  it("treats a row with no token as not ours", async () => {
-    // Every row predating the fence has a null token. "Unknown" must read as
-    // "not mine": a worker that assumed ownership on a null would be exempt from
-    // the fence for exactly the rows that never had one.
-    const findUnique = mock(async () => ({ claimToken: null }));
-    mock.module("@octopus/db", () => ({ prisma: { pullRequest: { findUnique } } }));
-    const { stillOurs } = await import("@/lib/claim-fence");
-    expect(await stillOurs("pr_1", "tok-a")).toBe(false);
-  });
-
-  it("treats a vanished row as not ours", async () => {
-    const findUnique = mock(async () => null);
-    mock.module("@octopus/db", () => ({ prisma: { pullRequest: { findUnique } } }));
-    const { stillOurs } = await import("@/lib/claim-fence");
-    expect(await stillOurs("pr_1", "tok-a")).toBe(false);
+  it("does not reserve a row another worker re-claimed, reaped or deleted", async () => {
+    // A null token (every row predating the fence), a different token, a reaped
+    // `failed` row and a vanished row all match nothing, so "unknown" reads as
+    // "not mine".
+    const updateMany = mock(async () => ({ count: 0 }));
+    mock.module("@octopus/db", () => ({ prisma: { pullRequest: { updateMany } } }));
+    const { reserveClaim } = await import("@/lib/claim-fence");
+    expect(await reserveClaim("pr_1", "tok-a")).toBe(false);
   });
 });

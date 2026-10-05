@@ -71,7 +71,7 @@ import { publishReviewSummary } from "@/lib/review-summary-comment";
 import type { ReviewComment } from "@/lib/github";
 import { eventBus } from "@/lib/events";
 import { attemptOutcomeForStatus, resolveReviewConfig } from "@/lib/review-attempt";
-import { stillOurs } from "@/lib/claim-fence";
+import { reserveClaim } from "@/lib/claim-fence";
 import {
   touchesSharedFiles,
   countFindings,
@@ -2544,7 +2544,9 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
       // branches publish: a clean review has no inline comments and so takes the
       // summary path, which is exactly the review that can carry APPROVE. A
       // fence that guards only the inline branch leaves the approval unfenced.
-      if (!(await stillOurs(pr.id, claimToken))) {
+      // A reservation, not a read: it also keeps the row from being reclaimed
+      // while the publication below is in flight.
+      if (!(await reserveClaim(pr.id, claimToken))) {
         console.log(
           `[reviewer] PR ${pr.id} was re-claimed while this worker was running; not publishing`,
         );
@@ -2812,9 +2814,8 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
 
     // Step 7: guard against a stale worker acting past this point.
     //
-    // Conditional on the claim, not a plain update. The check above is advisory --
-    // the row can be taken between it and here -- and only a write that carries
-    // the condition cannot be raced. `saveReviewAttempt` already promotes the PR
+    // Conditional on the claim, not a plain update: only a write that carries the
+    // condition cannot be raced. `saveReviewAttempt` already promotes the PR
     // to "completed" gated on headSha/reviewRequestVersion (a different race: is
     // the PR still the one reviewed); this gates a worker that lost the claim to
     // another server instance, so it doesn't continue to check-run updates,

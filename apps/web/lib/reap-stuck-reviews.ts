@@ -72,9 +72,16 @@ export async function reapStuckReviews(
   let failed = 0;
 
   for (const pr of orphans) {
-    // Guard on status so we never clobber a review a live worker just finished.
+    // Guard on status and staleness so we never clobber a review a live worker
+    // just finished, or one that renewed its claim after the read above.
     const updated = await prisma.pullRequest.updateMany({
-      where: { id: pr.id, status: { in: ["reviewing", "queued"] } },
+      where: {
+        id: pr.id,
+        OR: [
+          { status: "reviewing", updatedAt: { lt: reviewingStale } },
+          { status: "queued", updatedAt: { lt: queuedStale } },
+        ],
+      },
       data: { status: "failed", errorMessage: REAP_FAILED_MESSAGE },
     });
     if (updated.count === 0) continue;
