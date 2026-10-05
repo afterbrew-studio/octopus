@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { assessChangeShape, UNATTENDED_MAX_FILES, UNATTENDED_MAX_LINES, mayApprove, isCleanReview, shouldFailReviewCheck, formatPastReviews, formatPrIntent, buildRetrievalQuery, cappedConfidence, UNCITED_HIGH_SEV_CAP, filterByConfidence, resolveConfidenceThreshold, type PastReviewHit } from "@/lib/review-helpers";
+import { assessChangeShape, UNATTENDED_MAX_FILES, UNATTENDED_MAX_LINES, mayApprove, isModelOutputComplete, readWholeDiff, isCleanReview, shouldFailReviewCheck, formatPastReviews, formatPrIntent, buildRetrievalQuery, cappedConfidence, UNCITED_HIGH_SEV_CAP, filterByConfidence, resolveConfidenceThreshold, type PastReviewHit } from "@/lib/review-helpers";
 
 describe("formatPastReviews", () => {
   const hit = (o: Partial<PastReviewHit> = {}): PastReviewHit => ({
@@ -202,7 +202,8 @@ describe("isCleanReview", () => {
 
 describe("mayApprove", () => {
   const clean = { hasCritical: false, hasHigh: false, hasMedium: false };
-  const ok = { optedIn: true, found: clean, parsedOutput: true, readWholeDiff: true };
+  const goodShape = assessChangeShape({ filesChanged: 3, linesAdded: 40, linesRemoved: 10, statedPurpose: "Restores the regulatory phrase the rename sweep altered." });
+  const ok = { optedIn: true, found: clean, parsedOutput: true, readWholeDiff: true, shape: goodShape };
 
   it("approves only a clean, complete review of the whole diff, when opted in", () => {
     expect(mayApprove(ok)).toBe(true);
@@ -234,10 +235,41 @@ describe("mayApprove", () => {
     expect(mayApprove({ ...ok, readWholeDiff: false })).toBe(false);
   });
 
+  it("refuses when the change shape was never assessed", () => {
+    const { shape: _shape, ...unassessed } = ok;
+    expect(mayApprove(unassessed)).toBe(false);
+  });
+
   it("needs every condition, not a majority of them", () => {
     for (const key of ["optedIn", "parsedOutput", "readWholeDiff"] as const) {
       expect(mayApprove({ ...ok, [key]: false })).toBe(false);
     }
+  });
+});
+
+describe("isModelOutputComplete", () => {
+  it("rejects an empty response and a findings block that never closed", () => {
+    expect(isModelOutputComplete("  ")).toBe(false);
+    expect(isModelOutputComplete("score\n<!-- OCTOPUS_FINDINGS_START -->\n[{\"sev")).toBe(false);
+  });
+
+  it("accepts prose without a block and a closed block", () => {
+    expect(isModelOutputComplete("Overall 5/5")).toBe(true);
+    expect(isModelOutputComplete("<!-- OCTOPUS_FINDINGS_START -->\n[]\n<!-- OCTOPUS_FINDINGS_END -->")).toBe(true);
+  });
+});
+
+describe("readWholeDiff", () => {
+  const file = (state: string) => ({ state }) as never;
+
+  it("needs a complete inventory with every file supplied", () => {
+    expect(readWholeDiff({ inventoryComplete: true, files: [file("supplied")] })).toBe(true);
+    expect(readWholeDiff({ inventoryComplete: false, files: [file("supplied")] })).toBe(false);
+    expect(readWholeDiff({ inventoryComplete: true, files: [file("supplied"), file("excluded")] })).toBe(false);
+  });
+
+  it("treats an unknown inventory as unread", () => {
+    expect(readWholeDiff({ inventoryComplete: false, files: [] })).toBe(false);
   });
 });
 
@@ -281,7 +313,7 @@ describe("assessChangeShape", () => {
     // the second one has no other asker.
     const clean = { hasCritical: false, hasHigh: false, hasMedium: false };
     const base = { optedIn: true, found: clean, parsedOutput: true, readWholeDiff: true };
-    expect(mayApprove(base)).toBe(true);
+    expect(mayApprove({ ...base, shape: assessChangeShape(ok) })).toBe(true);
     expect(mayApprove({ ...base, shape: assessChangeShape({ ...ok, statedPurpose: "" }) })).toBe(false);
   });
 });
