@@ -72,6 +72,7 @@ import { publishReviewSummary } from "@/lib/review-summary-comment";
 import type { ReviewComment } from "@/lib/github";
 import { eventBus } from "@/lib/events";
 import { attemptOutcomeForStatus, resolveReviewConfig } from "@/lib/review-attempt";
+import { DeferralEnqueueError } from "@/lib/review-deferral-error";
 import { acquireClaimLease, holdsClaim, ClaimLostError, type ClaimLease } from "@/lib/claim-fence";
 import { attemptMarker, publicationCallTimeoutMs, AmbiguousPublicationError, PublicationOutcomeUnknownError } from "@/lib/review-publication";
 import {
@@ -704,7 +705,9 @@ export async function processReview(
   try {
     dispatchOutcome = await dispatch();
   } catch (err) {
-    await finalizeAttempt(reviewRunId, "failed", `review threw: ${String(err)}`);
+    // A deferral that could not schedule its retry leaves the pull request pending
+    // and the run alive, for the queue's retry and the reconciler to recover.
+    if (!(err instanceof DeferralEnqueueError)) await finalizeAttempt(reviewRunId, "failed", `review threw: ${String(err)}`);
     throw err;
   }
   // A deferral re-enqueues the same run to retry once its prerequisite is
@@ -2999,6 +3002,12 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
 
     console.log(`[reviewer] Review completed for PR #${pr.number}`);
   } catch (err) {
+    // Not a review failure: the pull request is already parked for a retry that
+    // could not be scheduled, and recording a failure here would end the run.
+    if (err instanceof DeferralEnqueueError) {
+      console.error(`[reviewer] PR ${pr.id} deferred but its retry was not scheduled:`, err);
+      throw err;
+    }
     if (adaptiveProcessingWindow
       && (adaptiveProcessingWindow.signal.aborted || adaptiveProcessingWindow.remainingMs() <= 0)) {
       err = new ReviewProcessingExpiredError();

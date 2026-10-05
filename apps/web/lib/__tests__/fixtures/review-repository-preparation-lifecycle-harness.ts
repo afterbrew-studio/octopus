@@ -83,6 +83,7 @@ const repos: Record<string, { id: string; fullName: string; reviewConfig: object
   "repo-n": { id: "repo-n", fullName: "fixture/repo-n", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
   "repo-o": { id: "repo-o", fullName: "fixture/repo-o", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
   "repo-p": { id: "repo-p", fullName: "fixture/repo-p", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
+  "repo-q": { id: "repo-q", fullName: "fixture/repo-q", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
   "repo-i2": { id: "repo-i2", fullName: "fixture/repo-i2", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
 };
 
@@ -157,6 +158,10 @@ const prs: Record<string, Row> = {
     id: "pr-p", repositoryId: "repo-p", number: 17, title: "Title", author: "author", url: "https://example.test/pr/17",
     headSha: A, reviewRequestVersion: 1, status: "pending", reviewBody: null, claimToken: null, updatedAt: new Date(),
   },
+  "pr-q": {
+    id: "pr-q", repositoryId: "repo-q", number: 18, title: "Title", author: "author", url: "https://example.test/pr/18",
+    headSha: A, reviewRequestVersion: 1, status: "pending", reviewBody: null, claimToken: null, updatedAt: new Date(),
+  },
   // Another review of the same organization, already in flight.
   "pr-i2": {
     id: "pr-i2", repositoryId: "repo-i2", number: 10, title: "Title", author: "author", url: "https://example.test/pr/10",
@@ -187,6 +192,7 @@ const runs: Record<string, Run> = {
   "run-n": { id: "run-n", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: 1 },
   "run-o": { id: "run-o", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: 1 },
   "run-p": { id: "run-p", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: 1 },
+  "run-q": { id: "run-q", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: 1 },
   "run-i": { id: "run-i", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: 1 },
 };
 
@@ -255,6 +261,8 @@ pullRequestDb.updateMany = (args: { where: Record<string, unknown>; data: Record
 const attemptRows = new Map<string, { id: string }>();
 // Scenarios M-P: a window short enough for a publication to outlast it.
 let staleWindowMs: number | null = null;
+// Scenario Q: the queue refuses the retry a deferral schedules.
+let failDeferralEnqueue = false;
 const enqueuedAfter: Array<{ pullRequestId: string; data: Record<string, unknown>; delay: number }> = [];
 mock.module("@octopus/db", () => ({
   Prisma: { DbNull: null },
@@ -310,6 +318,7 @@ mock.module("@/lib/queue", () => ({
   computeStaleReclaimMs: (s: number) => staleWindowMs ?? (s + 300) * 1000,
   enqueue: async () => "job",
   enqueueAfter: async (_name: string, data: Record<string, unknown>, delay: number) => {
+    if (failDeferralEnqueue) throw new Error("queue unavailable");
     enqueuedAfter.push({ pullRequestId: data.pullRequestId as string, data, delay });
     return "job-1";
   },
@@ -334,7 +343,7 @@ const { deferReviewForRepository } = await import("@/lib/review-repository-prepa
 // Keyed by repository, matching the real function's own signature -- each
 // scenario's repository starts "waiting" independently of the other's.
 const analysisReady: Record<string, boolean> = {
-  "repo-a": false, "repo-b": false, "repo-c": false, "repo-d": false,
+  "repo-a": false, "repo-b": false, "repo-q": false, "repo-c": false, "repo-d": false,
   // E/F/G need no deferral; their repository is ready from the start.
   "repo-e": true, "repo-f": true, "repo-g": true, "repo-h": true, "repo-i": true, "repo-i2": true, "repo-j": true, "repo-m": true, "repo-n": true, "repo-o": true, "repo-p": true, "repo-l": true,
 };
@@ -698,4 +707,18 @@ assert.equal(lossOutcome, "done", "a worker that lost its claim mid-publication 
 assert.equal(publishCalls, publishedBeforeLoss, "and must send nothing further");
 assert.equal(prs["pr-p"].claimToken, "worker-b");
 
-console.log("PASS repository-preparation and low-balance deferrals stay claimable, a claim taken after the publication check cannot produce a second review, a replayed job for a finished run does not dispatch, a worker that lost its claim cannot publish or persist its failure, a long publication keeps its claim and an ambiguous one is reconciled before any retry, preserves the run across defer-then-succeed and defer-then-fail, finalizes superseded runs on a cross-request race or a missed guarded update, treats only reviewRequestVersion (never headSha) as a legacy wildcard, and closes the binding-check-to-claim race");
+// Q. A deferral whose retry cannot be scheduled. The job fails so pg-boss retries it,
+// and the run must stay alive: the pending-row reconciler only recovers a pending row
+// that still has a live run, and a finished run turns every retry into a no-op.
+failDeferralEnqueue = true;
+const enqueueFailure = await processReview("pr-q", undefined, "run-q").then(() => null, (error: unknown) => error);
+failDeferralEnqueue = false;
+assert.ok(enqueueFailure, "a deferral that could not be scheduled must fail the job so it is retried");
+assert.equal(runs["run-q"].terminalAt, null, "the run must stay alive so the retry and the reconciler can recover it");
+assert.equal(prs["pr-q"].status, "pending");
+analysisReady["repo-q"] = true;
+await processReview("pr-q", undefined, "run-q");
+assert.equal(prs["pr-q"].status, "completed", "the retried job must actually run the review");
+assert.equal(runs["run-q"].state, "succeeded");
+
+console.log("PASS repository-preparation and low-balance deferrals stay claimable, a claim taken after the publication check cannot produce a second review, a replayed job for a finished run does not dispatch, a worker that lost its claim cannot publish or persist its failure, a long publication keeps its claim and an ambiguous one is reconciled before any retry, a deferral that cannot be scheduled leaves the run recoverable, preserves the run across defer-then-succeed and defer-then-fail, finalizes superseded runs on a cross-request race or a missed guarded update, treats only reviewRequestVersion (never headSha) as a legacy wildcard, and closes the binding-check-to-claim race");
