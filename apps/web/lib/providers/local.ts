@@ -89,6 +89,8 @@ export const localProvider: Provider = {
     }
 
     const usage = (result.resultUsage as Record<string, number> | null) ?? {};
+    // No `completion`: the agent reports a result, not why the model stopped, so
+    // there is nothing to distinguish a finished answer from a truncated one.
     return {
       text: result.resultText ?? "",
       provider: "local" as never,

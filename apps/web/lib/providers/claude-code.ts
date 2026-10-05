@@ -274,7 +274,13 @@ async function runClaudeCli(params: AiCreateParams): Promise<AiResponse> {
     };
     if (typeof parsed.content === "string") text = parsed.content;
     else if (typeof parsed.result === "string") text = parsed.result;
-    completion = completionEvidence(parsed.is_error || parsed.subtype !== "success" ? undefined : parsed.stop_reason, ["end_turn"]);
+    // The CLI's own terminal result is the evidence: a successful one is completion,
+    // unless it also names a stop reason that is not a natural end. Anything else
+    // (an error result, output that is not a result) is no evidence at all.
+    const succeeded = !parsed.is_error && parsed.subtype === "success";
+    completion = !succeeded ? completionEvidence(undefined, [])
+      : parsed.stop_reason ? completionEvidence(parsed.stop_reason, ["end_turn"])
+        : { state: "completed", reason: "result:success" };
     inputTokens = parsed.usage?.input_tokens ?? 0;
     outputTokens = parsed.usage?.output_tokens ?? 0;
   } catch {

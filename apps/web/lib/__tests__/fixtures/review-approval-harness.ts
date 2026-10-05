@@ -13,6 +13,9 @@ mock.module("server-only", () => ({}));
  */
 
 let reply = "";
+// Which adapter carries the request: the OpenAI provider, the OpenAI-compatible gateway production
+// uses, or an adapter that reports no completion evidence at all (as the local agent does).
+let adapter: "openai" | "gateway" | "no-completion" = "openai";
 let prior: ReviewCoverage | null = null;
 let priorComments: { id: number; user: string; path: string; line: number; body: string; inReplyToId: null }[] = [];
 const events: string[] = [];
@@ -68,8 +71,14 @@ mock.module("@/lib/ai-usage", () => ({ logAiUsage: async () => {} }));
 mock.module("@/lib/ai-router", () => ({
   getProviderForModel: async () => { throw new Error("Legacy fixture must not resolve adaptive capacity"); },
   createAiMessage: async (params: AiCreateParams) => {
+    if (adapter === "gateway") {
+      const { callOpenAiGateway } = await import("@/lib/providers/openai-gateway");
+      return callOpenAiGateway(params, { name: "opencode", modelPrefix: "opencode:", apiBase: "https://gateway.example.test/v1", apiKey: "fixture-key" });
+    }
     const { openaiProvider } = await import("@/lib/providers/openai");
-    return openaiProvider.create(params, "fixture-key");
+    const response = await openaiProvider.create(params, "fixture-key");
+    if (adapter === "no-completion") return { ...response, completion: undefined };
+    return response;
   },
 }));
 mock.module("@/lib/review-validation", () => ({
@@ -165,6 +174,17 @@ async function submittedEvent(text: string): Promise<string | undefined> {
 assert.equal(await submittedEvent(report([])), "APPROVE", "a clean, complete review of a small diff must still approve");
 const recorded = archived.at(-1)!.coverage;
 assert.equal(recorded.assessment?.state, "completed");
+
+// The path production reviews take: the OpenAI-compatible gateway reports finish_reason, which is
+// the completion evidence approval needs. A clean, fully covered review through it still approves.
+adapter = "gateway";
+assert.equal(await submittedEvent(report([])), "APPROVE", "a clean review through the gateway adapter must still approve");
+assert.equal(archived.at(-1)!.coverage.assessment?.completion?.state, "completed");
+
+// An adapter that reports no completion evidence cannot approve: absence is not completion.
+adapter = "no-completion";
+assert.equal(await submittedEvent(report([])), "COMMENT", "an adapter without completion evidence must stay fail-safe");
+adapter = "openai";
 
 // Prose that is not the review format yields zero findings; that is unknown, not clean.
 assert.equal(await submittedEvent("Overall 5/5"), "COMMENT", "a malformed reply must not approve");
