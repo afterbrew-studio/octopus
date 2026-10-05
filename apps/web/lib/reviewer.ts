@@ -90,6 +90,8 @@ import {
   shouldFailReviewCheck,
   isCleanReview,
   mayApprove,
+  isModelOutputComplete,
+  readWholeDiff,
   assessChangeShape,
   formatPastReviews,
   formatPrIntent,
@@ -2457,18 +2459,10 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
     //    exactly as it does for a genuinely clean one.
     //  - a diff that was truncated or filtered was only partly read, and
     //    approving it would vouch for files the model never saw.
-    // A findings block that opened and never closed is a response cut off
-    // mid-emission - `parseFindings` returns [] for that exactly as it does for
-    // a genuinely clean review, so without this the two are the same value.
-    const truncatedModelOutput =
-      reviewBody.includes(FINDINGS_START_MARKER) && !reviewBody.includes(FINDINGS_END_MARKER);
-    const parsedSomething = reviewBody.trim().length > 0 && !truncatedModelOutput;
-    // Whether the model saw the WHOLE change: an approval vouches for the diff,
-    // and a partly-read diff (truncated, filtered, or with any excluded file) is
-    // a partly-read vouch. Read off per-file coverage state rather than the
-    // reporting-oriented `coverage.complete`, which treats an excluded binary
-    // asset as complete input -- too permissive for what an auto-approval needs.
-    const readWholeDiff = coverage.inventoryComplete && coverage.files.every((f) => f.state === "supplied");
+    // An approval vouches for the diff, so a partly-read one (truncated,
+    // filtered, or with any excluded file) is a partly-read vouch.
+    const parsedSomething = isModelOutputComplete(reviewBody);
+    const wholeDiffRead = readWholeDiff(coverage);
     // Counted from the diff the model actually read, so a truncated diff cannot
     // make a large change look small enough to wave through.
     const addedLines = diff.split('\n').filter((l) => l.startsWith('+') && !l.startsWith('+++')).length;
@@ -2483,7 +2477,7 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
       optedIn: org.approveWhenClean,
       found: foundBeforeReReviewFilter,
       parsedOutput: parsedSomething,
-      readWholeDiff,
+      readWholeDiff: wholeDiffRead,
       shape,
     });
     if (org.approveWhenClean && !shape.mergeableUnattended) {
@@ -2496,7 +2490,7 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
         : "COMMENT";
     if (org.approveWhenClean && !approvable && !shouldRequestChanges) {
       console.log(
-        `[reviewer] not approving PR ${pr.number}: clean=${isCleanReview(foundBeforeReReviewFilter)} parsed=${parsedSomething} wholeDiff=${readWholeDiff}`,
+        `[reviewer] not approving PR ${pr.number}: clean=${isCleanReview(foundBeforeReReviewFilter)} parsed=${parsedSomething} wholeDiff=${wholeDiffRead}`,
       );
     }
 

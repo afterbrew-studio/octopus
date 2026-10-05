@@ -12,6 +12,7 @@ import {
   extractDiffFiles,
 } from "@/lib/review-dedup";
 import { getCategoryConfidenceThreshold } from "@/lib/review-categories";
+import type { ReviewCoverage } from "@/lib/review-coverage";
 // Re-define the type locally to avoid importing from github.ts (which has side effects in some envs)
 export type ReviewComment = {
   path: string;
@@ -854,12 +855,31 @@ export function assessChangeShape(shape: ChangeShape): SlopVerdict {
   return { mergeableUnattended: reasons.length === 0, reasons };
 }
 
+/**
+ * A findings block that opened and never closed is a response cut off
+ * mid-emission. `parseFindings` returns [] for that exactly as it does for a
+ * genuinely clean review, so completeness has to be read off the markers.
+ */
+export function isModelOutputComplete(reviewBody: string): boolean {
+  const truncated = reviewBody.includes(FINDINGS_START_MARKER) && !reviewBody.includes(FINDINGS_END_MARKER);
+  return reviewBody.trim().length > 0 && !truncated;
+}
+
+/**
+ * Whether the model saw the WHOLE change. Read off per-file state rather than
+ * `coverage.complete`, which counts an excluded binary asset as complete input
+ * -- too permissive for what an auto-approval needs.
+ */
+export function readWholeDiff(coverage: Pick<ReviewCoverage, "inventoryComplete" | "files">): boolean {
+  return coverage.inventoryComplete && coverage.files.every((f) => f.state === "supplied");
+}
+
 export function mayApprove(input: {
   optedIn: boolean;
   found: { hasCritical: boolean; hasHigh: boolean; hasMedium: boolean };
   parsedOutput: boolean;
   readWholeDiff: boolean;
-  /** Absent means the shape was not assessed, which does not block approval. */
+  /** Absent means the shape was not assessed, which blocks approval. */
   shape?: SlopVerdict;
 }): boolean {
   return (
@@ -867,7 +887,7 @@ export function mayApprove(input: {
     isCleanReview(input.found) &&
     input.parsedOutput &&
     input.readWholeDiff &&
-    (input.shape?.mergeableUnattended ?? true)
+    (input.shape?.mergeableUnattended ?? false)
   );
 }
 
