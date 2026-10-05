@@ -19,6 +19,8 @@ let failAt: "summary" | "analysis" | undefined;
 let holdSummary: (() => Promise<void>) | undefined;
 let prStatus = "reviewing";
 let queueFailure = false;
+let runFinished = false;
+const runHandedBack: string[] = [];
 mock.module("@octopus/db", () => ({
   prisma: {
     repository: {
@@ -44,6 +46,15 @@ mock.module("@octopus/db", () => ({
         writes.push(write);
         calls.push("persist-analysis");
         return repo;
+      },
+    },
+    reviewRun: {
+      // Only a run that is not finished can be handed back to `pending`.
+      updateMany: async ({ where, data }: { where: { id: string; terminalAt: null }; data: { state: string } }) => {
+        if (runFinished) return { count: 0 };
+        assert.equal(data.state, "pending");
+        runHandedBack.push(where.id);
+        return { count: 1 };
       },
     },
     pullRequest: {
@@ -157,4 +168,10 @@ prStatus = "reviewing";
 queued.length = 0;
 assert.equal(await deferReviewForRepository("pr-1", "current", undefined, "run-1"), true);
 assert.deepEqual(queued, [["process-review", { pullRequestId: "pr-1", reviewRunId: "run-1" }, 30]]);
+assert.deepEqual(runHandedBack, ["run-1"], "the run goes back to pending so only the retry can take it");
+// A run that already finished has nothing left to retry: nothing is deferred or scheduled.
+runFinished = true;
+queued.length = 0;
+assert.equal(await deferReviewForRepository("pr-1", "current", undefined, "run-1"), false);
+assert.deepEqual(queued, []);
 console.log("Analysis sequencing, empty bases, concurrency, retries and ownership checks passed");
