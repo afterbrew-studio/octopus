@@ -1,4 +1,5 @@
 import "server-only";
+import { DeferralEnqueueError } from "@/lib/review-deferral-error";
 import { prisma } from "@octopus/db";
 import { summarizeRepository } from "@/lib/summarizer";
 import { analyzeRepository } from "@/lib/analyzer";
@@ -98,7 +99,12 @@ export async function deferReviewForRepository(pullRequestId: string, headSha?: 
   // The retry re-executes under the SAME frozen run, not live configuration --
   // dropping this here would let a label-selected model silently change on
   // the retry. rayf P-0007 C3.
-  const jobId = await enqueueAfter("process-review", reviewRunId ? { pullRequestId, reviewRunId } : { pullRequestId }, 30);
-  if (!jobId) throw new Error("Could not enqueue the deferred review");
+  let jobId: string | null;
+  try {
+    jobId = await enqueueAfter("process-review", reviewRunId ? { pullRequestId, reviewRunId } : { pullRequestId }, 30);
+  } catch (error) {
+    throw new DeferralEnqueueError(error);
+  }
+  if (!jobId) throw new DeferralEnqueueError();
   return true;
 }

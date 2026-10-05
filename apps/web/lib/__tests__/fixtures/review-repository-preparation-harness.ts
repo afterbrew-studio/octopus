@@ -147,7 +147,8 @@ assert.deepEqual(queued, [["process-review", { pullRequestId: "pr-1" }, 30]]);
 assert.equal(await deferReviewForRepository("pr-1", "stale"), false);
 assert.equal(queued.length, 1);
 queueFailure = true;
-await assert.rejects(() => deferReviewForRepository("pr-1"), /Could not enqueue/);
+const { DeferralEnqueueError } = await import("@/lib/review-deferral-error");
+await assert.rejects(() => deferReviewForRepository("pr-1"), DeferralEnqueueError);
 queueFailure = false;
 
 // A deferred retry must carry the frozen run forward -- dropping it here
