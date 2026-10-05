@@ -64,8 +64,8 @@ mock.module("@octopus/db", () => ({ prisma: {
   reviewIssue: { findMany: async () => [] },
   reviewAttempt: { findFirst: async () => null },
   pullRequest: { findUnique: async () => pr, updateMany: async ({ data }: { data: Record<string, unknown> }) => {
-    // Only claimToken is tracked: the one write whose value a later read
-    // (`stillOurs`) in the same run checks back against.
+    // Only claimToken is tracked: the one write whose value a later write
+    // (the reservation) in the same run checks back against.
     if (typeof data.claimToken === "string") pr.claimToken = data.claimToken;
     return { count: 1 };
   } },

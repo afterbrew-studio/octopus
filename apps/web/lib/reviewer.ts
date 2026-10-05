@@ -684,21 +684,19 @@ export async function processReview(
 
   if (!reviewRunId) { await dispatch(); return; }
 
-  // Guarded on `pending`, so a replayed job cannot restart a run that already
-  // reached a terminal state. A deferred run coming back round is already
-  // `running` and matches nothing here, which is correct: it never stopped.
-  const started = await prisma.reviewRun.updateMany({
-    where: { id: reviewRunId, state: "pending" },
+  // A run is acquired by one execution at a time: the conditional `pending` ->
+  // `running` transition is won by exactly one of any number of overlapping jobs.
+  // An execution that misses it neither dispatches nor finalizes: the run is
+  // either held by the one that won, or finished, and in both cases it is not this
+  // execution's to touch. A deferral hands the run back to `pending` before it
+  // schedules the retry, so only that retry can take it again.
+  const acquired = await prisma.reviewRun.updateMany({
+    where: { id: reviewRunId, state: "pending", terminalAt: null },
     data: { state: "running" },
   });
-  // A miss is either that deferred run or a finished one. A pg-boss retry of a
-  // finished run must not dispatch: provider setup can fail or publish on its own.
-  if (!started.count) {
-    const run = await prisma.reviewRun.findUnique({ where: { id: reviewRunId }, select: { terminalAt: true } });
-    if (run?.terminalAt) {
-      console.log(`[reviewer] Run ${reviewRunId} already finished, skipping replayed job for PR ${pullRequestId}`);
-      return;
-    }
+  if (!acquired.count) {
+    console.log(`[reviewer] Run ${reviewRunId} is held or finished; skipping this job for PR ${pullRequestId}`);
+    return;
   }
 
   let dispatchOutcome: ReviewInternalOutcome;
@@ -714,7 +712,7 @@ export async function processReview(
   // ready -- it never stopped, so it is not finalized here. A superseded run
   // already finalized itself inside `processReviewInternal`, before this
   // execution's pull-request read below would find someone else's request.
-  if (dispatchOutcome === "deferred" || dispatchOutcome === "superseded") return;
+  if (dispatchOutcome === "deferred" || dispatchOutcome === "superseded" || dispatchOutcome === "lost") return;
 
   const finished = await prisma.pullRequest.findUnique({
     where: { id: pullRequestId },
@@ -767,11 +765,13 @@ function runBindingMismatch(
  * run-binding check, or a deferral whose guarded update missed because the
  * pull request moved) -- `processReview` must not try to finalize it again
  * from the pull request's status, which by then belongs to a different
- * request. Every other `return` really is the run finishing without
+ * request. `"lost"` marks an execution whose claim was taken from it while it
+ * deferred: the row and the run belong to whoever holds them now, so neither is
+ * written. Every other `return` really is the run finishing without
  * executing (paused, blocked, already completed by this same run on a
  * replayed job), which the pull request's status already answers correctly.
  */
-type ReviewInternalOutcome = "deferred" | "superseded" | undefined;
+type ReviewInternalOutcome = "deferred" | "superseded" | "lost" | undefined;
 
 async function processReviewInternal(pullRequestId: string, reviewRunId?: string, executionWindow?: ReviewExecutionWindow, expected?: { headSha: string | null; reviewRequestVersion: number }): Promise<ReviewInternalOutcome> {
   // Load PR with repo and org info
@@ -821,11 +821,11 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
   // deferred, so it must not be reported "deferred" (which would leave it
   // non-terminal forever with nothing left to retry it); it is superseded.
   const finalizeSupersededDefer = async (): Promise<ReviewInternalOutcome> => {
-    // A miss is also what losing the claim looks like, and then the row still
-    // belongs to this run's own request: another execution of it is live, and
-    // finalizing the run here would end that one too.
+    // A miss is also what losing the claim looks like, and then the row still holds
+    // this run's own request: another execution of it is live, and finalizing the
+    // run here would end that one too.
     const current = await prisma.pullRequest.findUnique({ where: { id: pullRequestId }, select: { headSha: true, reviewRequestVersion: true } });
-    if (current && current.headSha === pr.headSha && current.reviewRequestVersion === pr.reviewRequestVersion) return;
+    if (current && current.headSha === pr.headSha && current.reviewRequestVersion === pr.reviewRequestVersion) return "lost";
     if (reviewRunId) {
       await finalizeAttempt(reviewRunId, "superseded", "pull request moved before repository preparation could defer this run");
     }

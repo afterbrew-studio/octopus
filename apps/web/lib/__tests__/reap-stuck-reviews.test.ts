@@ -90,8 +90,13 @@ describe("reapStuckReviews", () => {
       { pullRequestId: "pr_attempt", reviewRunId: "att_1" },
       { singletonKey: "reap:pr_attempt", singletonSeconds: 3600 },
     );
-    // Still trying, so the attempt has not reached a terminal state.
-    expect(attemptUpdateMany).not.toHaveBeenCalled();
+    // Still trying, so the attempt is not finished. It is handed back to `pending`
+    // so the retry can take it: a run is only acquired from there.
+    expect(attemptUpdateMany).toHaveBeenCalledTimes(1);
+    expect(attemptUpdateMany).toHaveBeenCalledWith({
+      where: { id: "att_1", terminalAt: null },
+      data: { state: "pending" },
+    });
   });
 
   it("only considers attempts that have not already finished", async () => {

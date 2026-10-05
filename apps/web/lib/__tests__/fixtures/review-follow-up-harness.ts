@@ -89,7 +89,7 @@ mock.module("@octopus/db", () => ({ prisma: {
       Object.assign(pr, data);
     } else if (typeof data.claimToken === "string") {
       // Not otherwise tracked here (see the else-if above): the claim step's
-      // own write is the one write whose value a later read (`stillOurs`) in
+      // own write is the one write whose value a later conditional write (the reservation) in
       // the same run checks back against, so it alone needs to stick.
       pr.claimToken = data.claimToken;
     }

@@ -25,6 +25,11 @@ const PENDING_ENQUEUE_GRACE_MS =
 export const REAP_FAILED_MESSAGE =
   "Review interrupted by a server restart or timeout. Push a new commit or comment @octopus to retry.";
 
+/** A run is acquired only from `pending`; a retry of an abandoned run must start there. */
+async function markRunRetryable(reviewRunId: string): Promise<void> {
+  await prisma.reviewRun.updateMany({ where: { id: reviewRunId, terminalAt: null }, data: { state: "pending" } });
+}
+
 export async function reapStuckReviews(
   now: Date = new Date(),
 ): Promise<{ requeued: number; failed: number; unpublished: number }> {
@@ -101,6 +106,9 @@ export async function reapStuckReviews(
     const startedAt = attempt?.createdAt ?? pr.createdAt;
 
     if (startedAt > requeueCutoff) {
+      // The dead worker left its run `running`, and a run is only taken from
+      // `pending`. Handing it back first is what lets the retry take it.
+      if (reviewRunId) await markRunRetryable(reviewRunId);
       await enqueue(
         "process-review",
         reviewRunId ? { pullRequestId: pr.id, reviewRunId } : { pullRequestId: pr.id },
@@ -162,6 +170,7 @@ export async function reapStuckReviews(
   for (const pr of unenqueued) {
     const attempt = pr.attempts[0];
     if (!attempt || attempt.createdAt >= pendingStale) continue;
+    await markRunRetryable(attempt.id);
     await enqueue(
       "process-review",
       { pullRequestId: pr.id, reviewRunId: attempt.id },

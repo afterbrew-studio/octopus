@@ -19,6 +19,10 @@ let failAt: "summary" | "analysis" | undefined;
 let holdSummary: (() => Promise<void>) | undefined;
 let prStatus = "reviewing";
 let queueFailure = false;
+let runFinished = false;
+const ownerToken = "tok-a";
+const claimOf = (claimToken: string) => ({ pullRequestId: "pr-1", claimToken, headSha: "current", reviewRequestVersion: 1 });
+const runHandedBack: string[] = [];
 mock.module("@octopus/db", () => ({
   prisma: {
     repository: {
@@ -46,9 +50,24 @@ mock.module("@octopus/db", () => ({
         return repo;
       },
     },
+    reviewRun: {
+      // Only a run that is not finished can be handed back to `pending`.
+      updateMany: async ({ where, data }: { where: { id: string; terminalAt: null }; data: { state: string } }) => {
+        if (runFinished) return { count: 0 };
+        assert.equal(data.state, "pending");
+        runHandedBack.push(where.id);
+        return { count: 1 };
+      },
+    },
     pullRequest: {
-      updateMany: async ({ data, where }: { data: { status: string }; where: { headSha?: string | null } }) => {
-        if (where.headSha !== undefined && where.headSha !== "current") return { count: 0 };
+      updateMany: async ({ data, where }: { data: { status: string; claimToken?: null }; where: { headSha?: string | null; status?: string | { in: string[] }; claimToken?: string; AND?: { headSha?: string | null; status?: { in: string[] }; claimToken?: string }[] } }) => {
+        // A claimed release carries the identity inside an AND clause.
+        const condition = where.AND?.[0] ?? where;
+        if (condition.headSha !== undefined && condition.headSha !== "current") return { count: 0 };
+        // A claimed release only lands on a row this worker still owns.
+        const owned = typeof condition.status === "object" ? condition.status.in : [condition.status];
+        if (condition.claimToken !== undefined && (condition.claimToken !== ownerToken || !owned.includes(prStatus))) return { count: 0 };
+        if (condition.claimToken !== undefined) assert.equal(data.claimToken, null, "releasing the row releases the claim");
         prStatus = data.status; return { count: 1 };
       },
     },
@@ -157,4 +176,21 @@ prStatus = "reviewing";
 queued.length = 0;
 assert.equal(await deferReviewForRepository("pr-1", "current", undefined, "run-1"), true);
 assert.deepEqual(queued, [["process-review", { pullRequestId: "pr-1", reviewRunId: "run-1" }, 30]]);
+assert.deepEqual(runHandedBack, ["run-1"], "the run goes back to pending so only the retry can take it");
+// A run that already finished has nothing left to retry: nothing is deferred or scheduled.
+runFinished = true;
+queued.length = 0;
+assert.equal(await deferReviewForRepository("pr-1", "current", undefined, "run-1"), false);
+assert.deepEqual(queued, []);
+// Under a claim the release is conditional on owning the row: a worker that lost it
+// (another token holds it) releases nothing, schedules nothing, and reports no deferral.
+runFinished = false;
+prStatus = "reviewing";
+queued.length = 0;
+runHandedBack.length = 0;
+assert.equal(await deferReviewForRepository("pr-1", "current", undefined, "run-1", claimOf("tok-stale")), false);
+assert.equal(prStatus, "reviewing", "the new owner's row is untouched");
+assert.deepEqual([queued, runHandedBack], [[], []]);
+assert.equal(await deferReviewForRepository("pr-1", "current", undefined, "run-1", claimOf("tok-a")), true);
+assert.equal(prStatus, "pending");
 console.log("Analysis sequencing, empty bases, concurrency, retries and ownership checks passed");
