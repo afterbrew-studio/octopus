@@ -9,8 +9,11 @@ import { prisma, type Prisma } from "@octopus/db";
 import { pubby } from "@/lib/pubby";
 import {
   createPullRequestReview as ghCreatePullRequestReview,
+  dismissPullRequestReview as ghDismissPullRequestReview,
+  findReviewContaining as ghFindReviewContaining,
   updateCheckRun as ghUpdateCheckRun,
 } from "@/lib/github";
+import { attemptMarker, publicationCallTimeoutMs, publishOnce, PublicationOutcomeUnknownError } from "@/lib/review-publication";
 import { parseFindings } from "@/lib/review-dedup";
 import { findingSignature, mergeFindingsBySignature, inheritReviewIssueTriage } from "@/lib/finding-merge";
 import {
@@ -236,6 +239,13 @@ export async function handleLargeReviewResult(
     const latest = await prisma.pullRequest.findUnique({ where: { id: pr.id }, select: { headSha: true, reviewRequestVersion: true, reviewBody: true } });
     return latest?.headSha === coverage.headSha && latest.reviewRequestVersion === coverage.reviewRequestVersion && latest.reviewBody === reviewBody;
   };
+  // Writes `updatedAt` only while the request this result belongs to is still the
+  // current one, which is what `stillCurrent` can only report.
+  const reserveCurrentRequest = async () => {
+    if (!correlated || !isReviewRequestVersion(coverage.reviewRequestVersion)) return false;
+    const reserved = await updateCurrentReview(pr.id, coverage.headSha, coverage.reviewRequestVersion, { updatedAt: new Date() }, reviewBody);
+    return reserved.count === 1;
+  };
   if (!await stillCurrent()) return;
 
   // Archive existence does not mean that remote delivery completed. Persist
@@ -276,22 +286,31 @@ export async function handleLargeReviewResult(
         .filter(Boolean)
         .join("\n\n");
 
+      // Reserved by a conditional write rather than checked by a read: a request
+      // admitted after a read would still be published over.
+      if (!await reserveCurrentRequest()) return;
+      const marker = attemptMarker(attemptId);
+      const callSignal = () => AbortSignal.timeout(publicationCallTimeoutMs());
+      let reviewId: number | null = null;
       try {
-        await ghCreatePullRequestReview(
-          installationId,
-          owner,
-          repoName,
-          pr.number,
-          summaryBody,
-          reviewEvent,
-          [],
-          undefined,
-          coverage.headSha ?? undefined,
-        );
+        // Delivery is retried, so an earlier attempt's review is looked for first.
+        try {
+          reviewId = await ghFindReviewContaining(installationId, owner, repoName, pr.number, marker, callSignal());
+        } catch (lookup) {
+          throw new PublicationOutcomeUnknownError(lookup);
+        }
+        reviewId ??= await publishOnce({
+          send: () => ghCreatePullRequestReview(
+            installationId, owner, repoName, pr.number,
+            `${marker}\n${summaryBody}`, reviewEvent, [], undefined, coverage.headSha ?? undefined, callSignal(),
+          ),
+          find: () => ghFindReviewContaining(installationId, owner, repoName, pr.number, marker, callSignal()),
+        });
         console.log(
           `[large-review-result] PR review submitted (${reviewEvent}, ${findings.length} findings in summary)`,
         );
       } catch (err) {
+        if (err instanceof PublicationOutcomeUnknownError) throw err;
         console.error(
           "[large-review-result] Failed to submit review, falling back to comment:",
           err,
@@ -300,6 +319,14 @@ export async function handleLargeReviewResult(
           reviewRequestVersion: coverage.reviewRequestVersion, installationId, owner, repo: repoName,
           prNumber: pr.number, body: normalizeLastReviewedCommit(`${stripDetailedFindings(reviewBody)}\n\n${summaryBody}`, coverage.headSha),
           expectedReviewBody: reviewBody }) === null) return;
+      }
+      // A request admitted while the POST was in flight leaves this verdict naming a
+      // head nobody will merge. A comment holds nothing in force; a blocking review
+      // does, until it is dismissed.
+      if (reviewId !== null && reviewEvent !== "COMMENT" && !await stillCurrent()) {
+        await ghDismissPullRequestReview(installationId, owner, repoName, pr.number, reviewId,
+          "Superseded by a newer review request for this pull request.")
+          .catch((err) => console.error("[large-review-result] Failed to dismiss a superseded review:", err));
       }
       await checkpoint({ summaryPublished: true });
     }

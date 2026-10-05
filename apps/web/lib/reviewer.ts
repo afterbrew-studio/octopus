@@ -74,7 +74,7 @@ import { eventBus } from "@/lib/events";
 import { attemptOutcomeForStatus, resolveReviewConfig } from "@/lib/review-attempt";
 import { DeferralEnqueueError } from "@/lib/review-deferral-error";
 import { acquireClaimLease, holdsClaim, ClaimLostError, type ClaimLease } from "@/lib/claim-fence";
-import { attemptMarker, publicationCallTimeoutMs, AmbiguousPublicationError, PublicationOutcomeUnknownError } from "@/lib/review-publication";
+import { attemptMarker, publicationCallTimeoutMs, publishOnce, PublicationOutcomeUnknownError } from "@/lib/review-publication";
 import {
   touchesSharedFiles,
   countFindings,
@@ -2572,30 +2572,14 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
       publicationLease = lease;
       const callSignal = () => lease.signal(publicationCallTimeoutMs());
       const marker = attemptMarker(attemptId);
-      const submitReview = async (body: string, comments: ReviewComment[]): Promise<number> => {
-        for (let attempt = 0; ; attempt++) {
-          try {
-            return await ghCreatePullRequestReview(
-              installationId, owner, repoName, pr.number,
-              `${marker}\n${body}`, reviewEvent, comments, undefined, coverage.headSha ?? undefined, callSignal(),
-            );
-          } catch (err) {
-            if (lease.lost) throw new ClaimLostError();
-            if (!(err instanceof AmbiguousPublicationError)) throw err;
-            // The request may have been applied. Look for it before anything is sent again.
-            let published: number | null;
-            try {
-              published = await ghFindReviewContaining(installationId, owner, repoName, pr.number, marker, callSignal());
-            } catch (lookup) {
-              throw new PublicationOutcomeUnknownError(lookup);
-            }
-            if (published !== null) return published;
-            if (attempt >= 1) throw err;
-            await new Promise((resolve) => setTimeout(resolve, 1000));
-            if (lease.lost) throw new ClaimLostError();
-          }
-        }
-      };
+      const submitReview = (body: string, comments: ReviewComment[]): Promise<number> => publishOnce({
+        send: () => ghCreatePullRequestReview(
+          installationId, owner, repoName, pr.number,
+          `${marker}\n${body}`, reviewEvent, comments, undefined, coverage.headSha ?? undefined, callSignal(),
+        ),
+        find: () => ghFindReviewContaining(installationId, owner, repoName, pr.number, marker, callSignal()),
+        assertHeld: () => { if (lease.lost) throw new ClaimLostError(); },
+      });
 
       // GitHub: use the PR review API for inline comments
       if (inlineComments.length > 0) {

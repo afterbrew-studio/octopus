@@ -1162,6 +1162,31 @@ export async function listPullRequestReviews(
 }
 
 /**
+ * Dismisses one of this app's reviews. A REQUEST_CHANGES or APPROVE stays in force
+ * on the commit it names until dismissed, so one that was published for a request
+ * that has since been replaced has to be withdrawn.
+ */
+export async function dismissPullRequestReview(
+  installationId: number,
+  owner: string,
+  repo: string,
+  prNumber: number,
+  reviewId: number,
+  message: string,
+): Promise<void> {
+  const token = await getInstallationToken(installationId);
+  const res = await fetchWithRetry(
+    `${GITHUB_API}/repos/${owner}/${repo}/pulls/${prNumber}/reviews/${reviewId}/dismissals`,
+    {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" },
+      body: JSON.stringify({ message }),
+    },
+  );
+  if (!res.ok) throw new Error(`Failed to dismiss PR review: ${res.status} ${await res.text()}`);
+}
+
+/**
  * The id of a review on this pull request whose body contains `marker`, or null
  * when none does. Unlike `listPullRequestReviews` it throws when the answer is
  * unknown: reconciliation reads "not found" as "not published", so a failed read
