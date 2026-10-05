@@ -67,6 +67,9 @@ export async function ensureRepositoryAnalysis(
 }
 
 /**
+ * Parks a review for a later retry. Used wherever a review must wait for
+ * something (repository preparation, spend serialization) rather than run.
+ *
  * @returns `true` once both the guarded status update and the retry enqueue
  * have actually happened -- the only case in which this pull request truly
  * deferred. `false` means the guarded update matched nothing (the pull
@@ -96,6 +99,6 @@ export async function deferReviewForRepository(pullRequestId: string, headSha?: 
   // dropping this here would let a label-selected model silently change on
   // the retry. rayf P-0007 C3.
   const jobId = await enqueueAfter("process-review", reviewRunId ? { pullRequestId, reviewRunId } : { pullRequestId }, 30);
-  if (!jobId) throw new Error("Could not enqueue review after repository preparation");
+  if (!jobId) throw new Error("Could not enqueue the deferred review");
   return true;
 }

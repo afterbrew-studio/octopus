@@ -16,7 +16,7 @@ import {
   searchReviewChunks,
 } from "@/lib/qdrant";
 import { extractAllMermaidBlocks, extractNodeLabels, DIAGRAM_TYPE_LABELS } from "@/lib/mermaid-utils";
-import { loadQueueConfig, computeStaleReclaimMs, enqueue, enqueueAfter } from "@/lib/queue";
+import { loadQueueConfig, computeStaleReclaimMs, enqueue } from "@/lib/queue";
 import { createEmbeddings } from "@/lib/embeddings";
 import { suppressFindingsFromFeedback } from "@/lib/feedback-suppression";
 import { generateSparseVector } from "@/lib/sparse-vector";
@@ -1376,18 +1376,12 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
       });
       if (!admitted) {
         console.log(
-          `[reviewer] Low balance + in-flight review for org ${org.id} — re-queuing PR ${pr.id}`,
+          `[reviewer] Low balance + in-flight review for org ${org.id} — deferring PR ${pr.id}`,
         );
-        await updateCurrentReview(pr.id, pr.headSha, pr.reviewRequestVersion, { status: "queued", updatedAt: new Date() });
-        // The run travels with the deferral. This re-queue is the same
-        // approved review waiting for capacity, not a new decision, so dropping
-        // the id here would let it come back re-merged against live config.
-        await enqueueAfter(
-          "process-review",
-          reviewRunId ? { pullRequestId: pr.id, reviewRunId } : { pullRequestId: pr.id },
-          30,
-        );
-        return;
+        // Same deferral as repository preparation: parked at `pending` so the
+        // retry's claim can take it, run kept alive by the "deferred" outcome.
+        if (await deferReviewForRepository(pullRequestId, pr.headSha, pr.reviewRequestVersion, reviewRunId)) return "deferred";
+        return finalizeSupersededDefer();
       }
     }
 
