@@ -58,7 +58,7 @@ Evidence column points to the code, doc, or operational artefact that backs the 
 
 | # | Control | Status | Evidence |
 |---|---|---|---|
-| CC5.1 | Control activities for technology | ✅ | CI (lint, typecheck, build, security review) gates every PR |
+| CC5.1 | Control activities for technology | ✅ | CI (lint, typecheck, build) gates every PR |
 | CC5.2 | Policies and procedures | 🟡 | Most processes are documented but not formal "policies" |
 | CC5.3 | Policies enforced | ✅ | Octopus reviewer + CI block non-compliant PRs |
 
@@ -71,7 +71,7 @@ Evidence column points to the code, doc, or operational artefact that backs the 
 | CC6.3 | Authorization for system access | ✅ | Role-checked at every authenticated endpoint via `authenticateApiToken` / session middleware |
 | CC6.4 | Restrict physical access | ✅ | AWS-managed datacentre access; self-hosters control their own |
 | CC6.5 | Secure data transmission | ✅ | TLS 1.2+ everywhere |
-| CC6.6 | Vulnerability management | 🟡 | Dependabot + CodeQL + automated security review on PRs; no scheduled pen tests |
+| CC6.6 | Vulnerability management | 🟡 | Dependabot + CodeQL; no scheduled pen tests |
 | CC6.7 | Restrict data transmission to trusted parties | ✅ | Sub-processor list enumerates all egress points |
 | CC6.8 | Prevent unauthorised software | ✅ | Self-hosters control their own; hosted Octopus runs only the published image |
 
@@ -90,7 +90,7 @@ Evidence column points to the code, doc, or operational artefact that backs the 
 | # | Control | Status | Evidence |
 |---|---|---|---|
 | CC8.1 | Changes follow defined process | ✅ | All changes via PR with required CI and Octopus 4+/5 gates; see [PR review policy](../../GOVERNANCE.md#pr-review) |
-| CC8.2 | Changes tested before deployment | ✅ | CI (lint + typecheck + build + tests + security review) blocks merge on failure |
+| CC8.2 | Changes tested before deployment | ✅ | CI (lint + typecheck + build + tests) blocks merge on failure |
 | CC8.3 | Emergency change process | 🟡 | Hot-fix path exists but undocumented |
 
 ## CC9 — Risk Mitigation
