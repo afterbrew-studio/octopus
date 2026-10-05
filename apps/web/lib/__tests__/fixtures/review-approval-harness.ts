@@ -108,6 +108,7 @@ mock.module("@/lib/github", () => ({
   getCommentReactions: async () => ({ thumbsUp: 0, thumbsDown: 0 }),
   listOwnUnresolvedThreads: async () => [],
   resolveReviewThread: async () => {},
+  findReviewContaining: async () => null,
   createSingleReviewComment: async () => 999,
   checkStateFor: async () => "success",
 }));

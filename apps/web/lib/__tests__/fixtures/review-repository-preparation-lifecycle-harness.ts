@@ -79,6 +79,10 @@ const repos: Record<string, { id: string; fullName: string; reviewConfig: object
   "repo-j": { id: "repo-j", fullName: "fixture/repo-j", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
   "repo-k": { id: "repo-k", fullName: "fixture/repo-k", reviewConfig: {}, provider: "forgejo", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
   "repo-l": { id: "repo-l", fullName: "fixture/repo-l", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
+  "repo-m": { id: "repo-m", fullName: "fixture/repo-m", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
+  "repo-n": { id: "repo-n", fullName: "fixture/repo-n", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
+  "repo-o": { id: "repo-o", fullName: "fixture/repo-o", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
+  "repo-p": { id: "repo-p", fullName: "fixture/repo-p", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
   "repo-i2": { id: "repo-i2", fullName: "fixture/repo-i2", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
 };
 
@@ -137,6 +141,22 @@ const prs: Record<string, Row> = {
     id: "pr-l", repositoryId: "repo-l", number: 13, title: "Title", author: "author", url: "https://example.test/pr/13",
     headSha: A, reviewRequestVersion: 1, status: "pending", reviewBody: null, claimToken: null, updatedAt: new Date(),
   },
+  "pr-m": {
+    id: "pr-m", repositoryId: "repo-m", number: 14, title: "Title", author: "author", url: "https://example.test/pr/14",
+    headSha: A, reviewRequestVersion: 1, status: "pending", reviewBody: null, claimToken: null, updatedAt: new Date(),
+  },
+  "pr-n": {
+    id: "pr-n", repositoryId: "repo-n", number: 15, title: "Title", author: "author", url: "https://example.test/pr/15",
+    headSha: A, reviewRequestVersion: 1, status: "pending", reviewBody: null, claimToken: null, updatedAt: new Date(),
+  },
+  "pr-o": {
+    id: "pr-o", repositoryId: "repo-o", number: 16, title: "Title", author: "author", url: "https://example.test/pr/16",
+    headSha: A, reviewRequestVersion: 1, status: "pending", reviewBody: null, claimToken: null, updatedAt: new Date(),
+  },
+  "pr-p": {
+    id: "pr-p", repositoryId: "repo-p", number: 17, title: "Title", author: "author", url: "https://example.test/pr/17",
+    headSha: A, reviewRequestVersion: 1, status: "pending", reviewBody: null, claimToken: null, updatedAt: new Date(),
+  },
   // Another review of the same organization, already in flight.
   "pr-i2": {
     id: "pr-i2", repositoryId: "repo-i2", number: 10, title: "Title", author: "author", url: "https://example.test/pr/10",
@@ -162,6 +182,11 @@ const runs: Record<string, Run> = {
   "run-j2": { id: "run-j2", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: 1 },
   "run-k": { id: "run-k", state: "succeeded", terminalAt: new Date(), terminalDetail: "review completed", headSha: A, reviewRequestVersion: 1 },
   "run-l": { id: "run-l", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: 1 },
+  "run-m": { id: "run-m", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: 1 },
+  "run-m2": { id: "run-m2", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: 1 },
+  "run-n": { id: "run-n", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: 1 },
+  "run-o": { id: "run-o", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: 1 },
+  "run-p": { id: "run-p", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: 1 },
   "run-i": { id: "run-i", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: 1 },
 };
 
@@ -228,6 +253,8 @@ pullRequestDb.findUnique = (args: { where: { id: string } }) => raced(args as Fe
 pullRequestDb.updateMany = (args: { where: Record<string, unknown>; data: Record<string, unknown> }) => raced(args as FenceArgs, () => updateMany(args)) as ReturnType<typeof updateMany>;
 
 const attemptRows = new Map<string, { id: string }>();
+// Scenarios M-P: a window short enough for a publication to outlast it.
+let staleWindowMs: number | null = null;
 const enqueuedAfter: Array<{ pullRequestId: string; data: Record<string, unknown>; delay: number }> = [];
 mock.module("@octopus/db", () => ({
   Prisma: { DbNull: null },
@@ -280,7 +307,7 @@ mock.module("@octopus/db", () => ({
 }));
 mock.module("@/lib/queue", () => ({
   loadQueueConfig: async () => ({ reviewTimeoutSeconds: 900, reviewConcurrency: 2, largeReviewTimeoutSeconds: 1800 }),
-  computeStaleReclaimMs: (s: number) => (s + 300) * 1000,
+  computeStaleReclaimMs: (s: number) => staleWindowMs ?? (s + 300) * 1000,
   enqueue: async () => "job",
   enqueueAfter: async (_name: string, data: Record<string, unknown>, delay: number) => {
     enqueuedAfter.push({ pullRequestId: data.pullRequestId as string, data, delay });
@@ -309,7 +336,7 @@ const { deferReviewForRepository } = await import("@/lib/review-repository-prepa
 const analysisReady: Record<string, boolean> = {
   "repo-a": false, "repo-b": false, "repo-c": false, "repo-d": false,
   // E/F/G need no deferral; their repository is ready from the start.
-  "repo-e": true, "repo-f": true, "repo-g": true, "repo-h": true, "repo-i": true, "repo-i2": true, "repo-j": true, "repo-l": true,
+  "repo-e": true, "repo-f": true, "repo-g": true, "repo-h": true, "repo-i": true, "repo-i2": true, "repo-j": true, "repo-m": true, "repo-n": true, "repo-o": true, "repo-p": true, "repo-l": true,
 };
 let interleaveNewAdmissionAfterBindingRead = false;
 // Scenario D: simulates the pull request moving WHILE this (slow, real AI)
@@ -337,6 +364,15 @@ let failDiffFetch = false;
 // a superseded execution must never reach any of them.
 let publishCalls = 0;
 const publishedReviews: string[] = [];
+const reviewBodies: string[] = [];
+let singleComments = 0;
+// Applies a review the way GitHub does, whatever the caller then observes.
+const recordReview = async (args: unknown[]) => { publishCalls++; publishedReviews.push(String(args[5])); reviewBodies.push(String(args[4])); return 456; };
+// Replaces the review POST for one scenario.
+let reviewPost: ((args: unknown[]) => Promise<number>) | null = null;
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+// A bound on how long a scenario may wait; unref'd so it never keeps the process alive.
+const giveUpAfter = (ms: number) => new Promise<symbol>((resolve) => { setTimeout(() => resolve(Symbol("hung")), ms).unref(); });
 let checkRunUpdates = 0;
 mock.module("@/lib/github", () => ({
   LargePrError: class LargePrError extends Error {},
@@ -351,7 +387,10 @@ mock.module("@/lib/github", () => ({
   getPullRequestDetails: async () => ({ body: "Title" }),
   createPullRequestComment: async () => { publishCalls++; return 123; },
   updatePullRequestComment: async () => { publishCalls++; },
-  createPullRequestReview: async (..._args: unknown[]) => { publishCalls++; publishedReviews.push(String(_args[5])); return 456; },
+  createPullRequestReview: async (...args: unknown[]) => (reviewPost ?? recordReview)(args),
+  // Models GitHub for reconciliation: a review is found if one that carries the marker was committed.
+  findReviewContaining: async (_i: number, _o: string, _r: string, _n: number, marker: string) =>
+    reviewBodies.some((body) => body.includes(marker)) ? 456 : null,
   createCheckRun: async () => 789,
   updateCheckRun: async () => { checkRunUpdates++; },
   getRepositoryTree: async () => ["src/check.ts"],
@@ -363,7 +402,7 @@ mock.module("@/lib/github", () => ({
   getCommentReactions: async () => ({ thumbsUp: 0, thumbsDown: 0 }),
   listOwnUnresolvedThreads: async () => [],
   resolveReviewThread: async () => {},
-  createSingleReviewComment: async () => 999,
+  createSingleReviewComment: async () => { singleComments++; publishCalls++; return 999; },
   checkStateFor: async () => "success",
 }));
 mock.module("@/lib/bitbucket", () => ({}));
@@ -598,4 +637,65 @@ assert.equal(prs["pr-l"].reviewBody, "B is still reviewing", "nor replace the ot
 assert.equal(publishCalls, overtakenAt.publishCalls, "nor publish its failure over the other worker's review");
 assert.equal(checkRunUpdates, overtakenAt.checkRunUpdates, "nor fail the other worker's check run");
 
-console.log("PASS repository-preparation and low-balance deferrals stay claimable, a claim taken after the publication check cannot produce a second review, a replayed job for a finished run does not dispatch, a worker that lost its claim cannot publish or persist its failure, preserves the run across defer-then-succeed and defer-then-fail, finalizes superseded runs on a cross-request race or a missed guarded update, treats only reviewRequestVersion (never headSha) as a legacy wildcard, and closes the binding-check-to-claim race");
+// M. A review POST that outlasts the stale window. A rival worker tries to claim
+// the row well after the reservation was made but while the POST is in flight; the
+// claim is evaluated against the real `where`, so it only succeeds if nothing kept
+// the row fresh.
+const { AmbiguousPublicationError } = await import("@/lib/review-publication");
+staleWindowMs = 150;
+process.env.OCTOPUS_CLAIM_RENEW_MS = "20";
+let slowPosts = 0;
+reviewPost = async (args) => { if (slowPosts++ === 0) await sleep(600); return recordReview(args); };
+const reviewsBeforeSlowPost = publishedReviews.length;
+const rivalClaim = sleep(400).then(() => processReview("pr-m", undefined, "run-m2"));
+await processReview("pr-m", undefined, "run-m");
+await rivalClaim;
+reviewPost = null; staleWindowMs = null; delete process.env.OCTOPUS_CLAIM_RENEW_MS;
+assert.equal(publishedReviews.length - reviewsBeforeSlowPost, 1, "a publication that outlasts the stale window must not be reclaimed and repeated");
+assert.equal(runs["run-m"].state, "succeeded");
+
+// N. A review POST whose answer is lost after GitHub applied it. The review is
+// found by this attempt's marker, so nothing is posted a second time.
+const reviewsBeforeLostAnswer = publishedReviews.length, singlesBeforeLostAnswer = singleComments;
+reviewPost = async (args) => { await recordReview(args); throw new AmbiguousPublicationError("gateway timeout"); };
+await processReview("pr-n", undefined, "run-n");
+reviewPost = null;
+assert.equal(publishedReviews.length - reviewsBeforeLostAnswer, 1, "an applied review whose answer was lost must be found, not posted again");
+assert.equal(singleComments - singlesBeforeLostAnswer, 0, "nor replaced by individually posted comments");
+assert.equal(prs["pr-n"].status, "completed");
+
+// O. A call that never answers. It is bounded, and the retry that follows is only
+// sent after reconciliation found nothing.
+process.env.OCTOPUS_PUBLICATION_CALL_TIMEOUT_MS = "100";
+let hungPosts = 0;
+reviewPost = (args) => {
+  if (hungPosts++ > 0) return recordReview(args);
+  const signal = args[9] as AbortSignal | undefined;
+  return new Promise<number>((_, reject) => {
+    signal?.addEventListener("abort", () => reject(new AmbiguousPublicationError("request timed out")));
+  });
+};
+const reviewsBeforeHang = publishedReviews.length;
+const outcome = await Promise.race([processReview("pr-o", undefined, "run-o").then(() => "done" as const), giveUpAfter(4000)]);
+reviewPost = null; delete process.env.OCTOPUS_PUBLICATION_CALL_TIMEOUT_MS;
+assert.equal(outcome, "done", "a publication call must be bounded, not wait forever");
+assert.equal(publishedReviews.length - reviewsBeforeHang, 1, "the review is published once, after the bounded call gave up");
+
+// P. The claim is taken while the POST is in flight. The call is aborted and nothing else is sent.
+process.env.OCTOPUS_CLAIM_RENEW_MS = "20";
+let publishedBeforeLoss = 0;
+reviewPost = (args) => {
+  const signal = args[9] as AbortSignal | undefined;
+  publishedBeforeLoss = publishCalls;
+  setTimeout(() => Object.assign(prs["pr-p"], { claimToken: "worker-b" }), 60);
+  return new Promise<number>((_, reject) => {
+    signal?.addEventListener("abort", () => reject(new AmbiguousPublicationError("aborted")));
+  });
+};
+const lossOutcome = await Promise.race([processReview("pr-p", undefined, "run-p").then(() => "done" as const), giveUpAfter(4000)]);
+reviewPost = null; delete process.env.OCTOPUS_CLAIM_RENEW_MS;
+assert.equal(lossOutcome, "done", "a worker that lost its claim mid-publication must stop");
+assert.equal(publishCalls, publishedBeforeLoss, "and must send nothing further");
+assert.equal(prs["pr-p"].claimToken, "worker-b");
+
+console.log("PASS repository-preparation and low-balance deferrals stay claimable, a claim taken after the publication check cannot produce a second review, a replayed job for a finished run does not dispatch, a worker that lost its claim cannot publish or persist its failure, a long publication keeps its claim and an ambiguous one is reconciled before any retry, preserves the run across defer-then-succeed and defer-then-fail, finalizes superseded runs on a cross-request race or a missed guarded update, treats only reviewRequestVersion (never headSha) as a legacy wildcard, and closes the binding-check-to-claim race");

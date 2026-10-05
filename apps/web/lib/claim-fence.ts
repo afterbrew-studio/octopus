@@ -37,3 +37,76 @@ export async function holdsClaim(pullRequestId: string, claimToken: string): Pro
   });
   return count === 1;
 }
+
+/** The claim was taken from this worker while it was publishing. */
+export class ClaimLostError extends Error {
+  constructor() {
+    super("The review claim was taken by another worker");
+    this.name = "ClaimLostError";
+  }
+}
+
+/**
+ * How often a publishing worker renews its claim. Far below the stale window
+ * every reclaim path requires (the review timeout plus five minutes).
+ */
+export function claimRenewMs(): number {
+  const configured = Number(process.env.OCTOPUS_CLAIM_RENEW_MS);
+  return Number.isFinite(configured) && configured > 0 ? configured : 30_000;
+}
+
+export type ClaimLease = {
+  /** True once a renewal found the claim gone, or could not be confirmed. */
+  readonly lost: boolean;
+  /** Aborts when the lease is lost or after `callMs`, whichever comes first. */
+  signal(callMs: number): AbortSignal;
+  stop(): void;
+};
+
+const MAX_UNCONFIRMED_RENEWALS = 3;
+
+/**
+ * Reserves the claim and keeps it renewed until `stop()`, so a publication that
+ * outlasts the stale window cannot be reclaimed while it is still running.
+ *
+ * One renewal is not enough: a provider call can run longer than the window. A
+ * renewal that finds the claim gone, or that cannot be confirmed several times
+ * in a row, marks the lease lost and aborts every signal handed out, so nothing
+ * further is sent on a claim that may belong to someone else. Returns null when
+ * the claim is not held to begin with.
+ */
+export async function acquireClaimLease(pullRequestId: string, claimToken: string): Promise<ClaimLease | null> {
+  if (!(await reserveClaim(pullRequestId, claimToken))) return null;
+  const controller = new AbortController();
+  let lost = false;
+  let stopped = false;
+  let unconfirmed = 0;
+  let renewal = Promise.resolve();
+  const loseLease = () => {
+    lost = true;
+    controller.abort(new ClaimLostError());
+  };
+  const timer = setInterval(() => {
+    renewal = renewal.then(async () => {
+      if (stopped || lost) return;
+      let held: boolean;
+      try {
+        held = await reserveClaim(pullRequestId, claimToken);
+      } catch {
+        if (++unconfirmed >= MAX_UNCONFIRMED_RENEWALS && !stopped) loseLease();
+        return;
+      }
+      unconfirmed = 0;
+      if (!held && !stopped) loseLease();
+    });
+  }, claimRenewMs());
+  timer.unref();
+  return {
+    get lost() { return lost; },
+    signal: (callMs) => AbortSignal.any([controller.signal, AbortSignal.timeout(callMs)]),
+    stop() {
+      stopped = true;
+      clearInterval(timer);
+    },
+  };
+}

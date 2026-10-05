@@ -205,6 +205,7 @@ mock.module("@/lib/github", () => ({
   // Auto-resolve-our-own-threads on a clean re-review: not under test here.
   listOwnUnresolvedThreads: async () => [],
   resolveReviewThread: async () => {},
+  findReviewContaining: async () => null,
   createSingleReviewComment: async (_installation: number, _owner: string, _repo: string, _number: number, comment: { path: string; line: number; body: string }) => {
     individualComments.push(comment);
     return 999;

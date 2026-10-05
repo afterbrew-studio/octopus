@@ -1,4 +1,5 @@
 import { reviewPublicationSignal, type ReviewExecutionWindow } from "./review-capacity";
+import { AmbiguousPublicationError } from "./review-publication";
 import { readReviewJson } from "@/lib/review-fetch";
 import { fetchGitHubReviewInput } from "@/lib/github-review-input";
 import crypto from "node:crypto";
@@ -14,16 +15,17 @@ const RETRY_BASE_DELAY_MS = 1000;
 async function fetchWithRetry(
   url: string,
   init?: RequestInit,
+  maxRetries = MAX_RETRIES,
 ): Promise<Response> {
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
     init?.signal?.throwIfAborted();
     const res = await fetch(url, init);
-    if (!RETRYABLE_STATUSES.has(res.status) || attempt === MAX_RETRIES) {
+    if (!RETRYABLE_STATUSES.has(res.status) || attempt === maxRetries) {
       return res;
     }
     const delay = RETRY_BASE_DELAY_MS * 2 ** attempt;
     console.warn(
-      `[github] ${init?.method ?? "GET"} ${url} returned ${res.status}, retrying in ${delay}ms (attempt ${attempt + 1}/${MAX_RETRIES})`,
+      `[github] ${init?.method ?? "GET"} ${url} returned ${res.status}, retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})`,
     );
     await new Promise((r) => setTimeout(r, delay));
   }
@@ -566,11 +568,13 @@ export async function createSingleReviewComment(
   prNumber: number,
   comment: { path: string; line: number; side?: string; body: string },
   commitId: string,
+  signal?: AbortSignal,
 ): Promise<number> {
   const token = await getInstallationToken(installationId);
   const res = await fetchWithRetry(
     `${GITHUB_API}/repos/${owner}/${repo}/pulls/${prNumber}/comments`,
     {
+      signal,
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" },
       body: JSON.stringify({
@@ -611,32 +615,47 @@ export async function createPullRequestReview(
    * value that means the opposite.
    */
   commitId?: string,
+  /**
+   * Bounds the request. A caller that passes one owns retry: the POST is then not
+   * retried here, because a gateway error can follow a write that was applied, and
+   * the failure surfaces as `AmbiguousPublicationError` to be reconciled first.
+   */
+  signal?: AbortSignal,
 ): Promise<number> {
   // The review-record `body` is subject to the same 65,536-char limit as
   // issue/PR comments; without this the standard-pipeline review path can
   // 422 even when the issue-comment path is safe.
   const safeBody = truncateForGithubComment(body);
   const token = providedToken ?? await getInstallationToken(installationId);
-  const res = await fetchWithRetry(
-    `${GITHUB_API}/repos/${owner}/${repo}/pulls/${prNumber}/reviews`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: "application/vnd.github+json",
+  let res: Response;
+  try {
+    res = await fetchWithRetry(
+      `${GITHUB_API}/repos/${owner}/${repo}/pulls/${prNumber}/reviews`,
+      {
+        signal,
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/vnd.github+json",
+        },
+        body: JSON.stringify({
+          body: safeBody,
+          event,
+          comments,
+          ...(commitId ? { commit_id: commitId } : {}),
+        }),
       },
-      body: JSON.stringify({
-        body: safeBody,
-        event,
-        comments,
-        ...(commitId ? { commit_id: commitId } : {}),
-      }),
-    },
-  );
+      signal ? 0 : MAX_RETRIES,
+    );
+  } catch (error) {
+    if (!signal) throw error;
+    throw new AmbiguousPublicationError(`PR review request did not complete: ${error instanceof Error ? error.message : String(error)}`);
+  }
 
   if (!res.ok) {
     const errBody = await res.text();
-    throw new Error(`Failed to create PR review: ${res.status} ${errBody}`);
+    const message = `Failed to create PR review: ${res.status} ${errBody}`;
+    throw signal && res.status >= 500 ? new AmbiguousPublicationError(message) : new Error(message);
   }
 
   const data = await res.json();
@@ -1142,17 +1161,48 @@ export async function listPullRequestReviews(
   }));
 }
 
+/**
+ * The id of a review on this pull request whose body contains `marker`, or null
+ * when none does. Unlike `listPullRequestReviews` it throws when the answer is
+ * unknown: reconciliation reads "not found" as "not published", so a failed read
+ * must not look like one.
+ */
+export async function findReviewContaining(
+  installationId: number,
+  owner: string,
+  repo: string,
+  prNumber: number,
+  marker: string,
+  signal?: AbortSignal,
+): Promise<number | null> {
+  const token = await getInstallationToken(installationId);
+  for (let page = 1; page <= 10; page++) {
+    const res = await fetchWithRetry(
+      `${GITHUB_API}/repos/${owner}/${repo}/pulls/${prNumber}/reviews?per_page=100&page=${page}`,
+      { signal, headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" } },
+    );
+    if (!res.ok) throw new Error(`Failed to list PR reviews: ${res.status}`);
+    const reviews = (await res.json()) as { id: number; body: string | null }[];
+    const match = reviews.find((r) => r.body?.includes(marker));
+    if (match) return match.id;
+    if (reviews.length < 100) return null;
+  }
+  throw new Error("Review list exceeded the pages searched");
+}
+
 export async function listReviewComments(
   installationId: number,
   owner: string,
   repo: string,
   prNumber: number,
   reviewId: number,
+  signal?: AbortSignal,
 ): Promise<ReviewCommentWithReactions[]> {
   const token = await getInstallationToken(installationId);
   const res = await fetchWithRetry(
     `${GITHUB_API}/repos/${owner}/${repo}/pulls/${prNumber}/reviews/${reviewId}/comments?per_page=100`,
     {
+      signal,
       headers: {
         Authorization: `Bearer ${token}`,
         Accept: "application/vnd.github+json",

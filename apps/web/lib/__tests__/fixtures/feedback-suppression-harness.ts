@@ -140,6 +140,7 @@ mock.module("@/lib/github", () => ({
   // Auto-resolve-our-own-threads on a clean re-review: not under test here.
   listOwnUnresolvedThreads: async () => [],
   resolveReviewThread: async () => {},
+  findReviewContaining: async () => null,
   createSingleReviewComment: async () => 999,
   // Never "failing": the CI gate (org.reviewOnlyWhenCiPasses) is not under test here.
   checkStateFor: async () => "success",
