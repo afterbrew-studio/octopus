@@ -27,9 +27,9 @@ const db = {
   pullRequest: {
     // Always "not yet admitted": admitReviewRequest takes the create branch.
     findUnique: async () => null,
-    create: async ({ data }: { data: Record<string, unknown> }) => ({
-      id: "pr_1", number: 646, reviewCommentId: 7, createdAt: new Date(), ...data,
-    }),
+    createManyAndReturn: async ({ data }: { data: Record<string, unknown>[] }) => [{
+      id: "pr_1", number: 646, reviewCommentId: 7, createdAt: new Date(), ...data[0],
+    }],
     update: async () => ({}),
   },
   reviewRun: {

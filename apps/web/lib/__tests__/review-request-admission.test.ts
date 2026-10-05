@@ -10,6 +10,7 @@ const scenarios = {
   fetch_race: "refreshes provider state when B is admitted during the A head fetch",
   write_race: "refreshes provider state when B wins immediately before the A write",
   create_race: "refreshes provider state after a competing first-row creation",
+  ambient_create_race: "reports an in-progress review, rather than failing, when a competing first-row creation lands inside the caller's transaction",
   same_head_race: "coalesces a same-head request accepted during the provider read",
   contended: "bounds repeated contention without clearing the current report",
   initial: "admits the first provider-confirmed request with version one",
@@ -32,6 +33,7 @@ for (const provider of ["github", "bitbucket", "gitlab", "forgejo"]) {
   describe(`${provider} review request admission`, () => {
     for (const [scenario, description] of Object.entries(scenarios)) {
       if (provider !== "github" && scenario.endsWith("_org_installation")) continue;
+      if (provider !== "forgejo" && scenario.startsWith("ambient_")) continue;
       it(description, async () => {
         const fixture = fileURLToPath(new URL("./fixtures/review-request-admission-harness.ts", import.meta.url));
         const child = Bun.spawn([process.execPath, fixture, provider, scenario], {

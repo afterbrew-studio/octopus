@@ -52,12 +52,15 @@ const db = {
         const { runState, ...row } = structuredClone(current);
         return { ...row, repository, attempts: runState !== undefined ? [{ state: runState }] : [] };
       },
-      create: async ({ data }: { data: Record<string, unknown> }) => {
+      createManyAndReturn: async ({ data, skipDuplicates }: { data: Record<string, unknown>[]; skipDuplicates?: boolean }) => {
         const callback = beforeWrite; beforeWrite = undefined; await callback?.();
-        if (current) throw Object.assign(new Error("unique repository/PR"), { code: "P2002" });
-        current = { ...completed(), ...structuredClone(data), reviewBody: null } as Row;
+        if (current) {
+          if (skipDuplicates) return [];
+          throw Object.assign(new Error("unique repository/PR"), { code: "P2002" });
+        }
+        current = { ...completed(), ...structuredClone(data[0]), reviewBody: null } as Row;
         writes++;
-        return structuredClone(current);
+        return [structuredClone(current)];
       },
       updateManyAndReturn: async ({ where, data }: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
         const callback = beforeWrite; beforeWrite = undefined; await callback?.();
@@ -91,6 +94,19 @@ mock.module("@octopus/db", () => ({
     $transaction: async (callback: (tx: typeof db) => Promise<unknown>) => callback(db),
   },
 }));
+// A transaction the caller already holds, as Postgres treats it: once any
+// statement fails the whole transaction is aborted, and every later statement is
+// refused until it ends. Forgejo's webhook admits inside one of these.
+function ambientTransaction() {
+  let aborted = false;
+  const guarded = (statement: (...args: never[]) => Promise<unknown>) => async (...args: never[]) => {
+    if (aborted) throw Object.assign(new Error("current transaction is aborted, commands ignored until end of transaction block"), { code: "25P02" });
+    try { return await statement(...args); } catch (error) { aborted = true; throw error; }
+  };
+  return Object.fromEntries(Object.entries(db).map(([model, methods]) => [
+    model, Object.fromEntries(Object.entries(methods).map(([name, statement]) => [name, guarded(statement)])),
+  ]));
+}
 for (const name of ["github", "bitbucket", "gitlab", "forgejo"]) {
   mock.module(`@/lib/${name}`, () => ({
     runWithForgejoRepository: async (_id: string, callback: () => Promise<unknown>) => callback(),
@@ -173,6 +189,19 @@ if (scenario === "enqueue_retry") {
   assert.equal(writes, 1);
   assert.equal(comments, 1);
   assert.equal(enqueued, 1);
+} else if (scenario === "ambient_create_race") {
+  // Two deliveries for a pull request nobody has seen yet. The winner's row
+  // commits while this one is between its read and its insert.
+  assert.equal(provider, "forgejo");
+  current = null;
+  providerHead = A;
+  beforeWrite = async () => { current = { ...completed(A, 1), status: "pending", reviewBody: null, updatedAt: new Date() }; };
+  const outcome = await startReviewFlow(params, ambientTransaction() as never).then((result) => result, (error: Error) => ({ error }));
+  assert.ok(!("error" in outcome), `the losing delivery must not fail: ${"error" in outcome ? outcome.error.message : ""}`);
+  assert.equal(outcome.started, false);
+  if (!outcome.started) assert.equal(outcome.reason, "already_in_progress");
+  assert.equal(current!.reviewRequestVersion, 1, "the winner's request must be untouched");
+  assert.equal(enqueued, 0, "the loser must not enqueue a second review");
 } else if (scenario === "same_head") {
   const result = await startReviewFlow({ ...params, headSha: B });
   assert.equal(result.started, true);
