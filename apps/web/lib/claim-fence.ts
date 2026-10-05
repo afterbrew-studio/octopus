@@ -21,3 +21,19 @@ export async function reserveClaim(pullRequestId: string, claimToken: string): P
   });
   return count === 1;
 }
+
+/**
+ * Whether this worker still holds the row, whatever its status. For the failure
+ * path, which runs after a row may legitimately have left `reviewing`.
+ *
+ * A write for the same reason as `reserveClaim`, but conditioned on the claim
+ * token alone: it must not be refused because the review already reached
+ * `completed` or `failed` under this worker.
+ */
+export async function holdsClaim(pullRequestId: string, claimToken: string): Promise<boolean> {
+  const { count } = await prisma.pullRequest.updateMany({
+    where: { id: pullRequestId, claimToken },
+    data: { updatedAt: new Date() },
+  });
+  return count === 1;
+}

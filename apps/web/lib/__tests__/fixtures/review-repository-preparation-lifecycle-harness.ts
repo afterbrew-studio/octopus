@@ -78,6 +78,7 @@ const repos: Record<string, { id: string; fullName: string; reviewConfig: object
   "repo-i": { id: "repo-i", fullName: "fixture/repo-i", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
   "repo-j": { id: "repo-j", fullName: "fixture/repo-j", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
   "repo-k": { id: "repo-k", fullName: "fixture/repo-k", reviewConfig: {}, provider: "forgejo", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
+  "repo-l": { id: "repo-l", fullName: "fixture/repo-l", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
   "repo-i2": { id: "repo-i2", fullName: "fixture/repo-i2", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
 };
 
@@ -132,6 +133,10 @@ const prs: Record<string, Row> = {
     id: "pr-k", repositoryId: "repo-k", number: 12, title: "Title", author: "author", url: "https://example.test/pr/12",
     headSha: A, reviewRequestVersion: 1, status: "completed", reviewBody: null, claimToken: null, updatedAt: new Date(),
   },
+  "pr-l": {
+    id: "pr-l", repositoryId: "repo-l", number: 13, title: "Title", author: "author", url: "https://example.test/pr/13",
+    headSha: A, reviewRequestVersion: 1, status: "pending", reviewBody: null, claimToken: null, updatedAt: new Date(),
+  },
   // Another review of the same organization, already in flight.
   "pr-i2": {
     id: "pr-i2", repositoryId: "repo-i2", number: 10, title: "Title", author: "author", url: "https://example.test/pr/10",
@@ -156,6 +161,7 @@ const runs: Record<string, Run> = {
   "run-j": { id: "run-j", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: 1 },
   "run-j2": { id: "run-j2", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: 1 },
   "run-k": { id: "run-k", state: "succeeded", terminalAt: new Date(), terminalDetail: "review completed", headSha: A, reviewRequestVersion: 1 },
+  "run-l": { id: "run-l", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: 1 },
   "run-i": { id: "run-i", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: 1 },
 };
 
@@ -221,6 +227,7 @@ const findUnique = pullRequestDb.findUnique, updateMany = pullRequestDb.updateMa
 pullRequestDb.findUnique = (args: { where: { id: string } }) => raced(args as FenceArgs, () => findUnique(args)) as ReturnType<typeof findUnique>;
 pullRequestDb.updateMany = (args: { where: Record<string, unknown>; data: Record<string, unknown> }) => raced(args as FenceArgs, () => updateMany(args)) as ReturnType<typeof updateMany>;
 
+const attemptRows = new Map<string, { id: string }>();
 const enqueuedAfter: Array<{ pullRequestId: string; data: Record<string, unknown>; delay: number }> = [];
 mock.module("@octopus/db", () => ({
   Prisma: { DbNull: null },
@@ -258,6 +265,16 @@ mock.module("@octopus/db", () => ({
     $transaction: async (run: (tx: unknown) => Promise<unknown>) => run({
       $executeRaw: async () => 0,
       pullRequest: pullRequestDb,
+      // The immutable attempt record and the current findings, written by the real `saveReviewAttempt`.
+      reviewAttempt: {
+        createMany: async ({ data }: { data: { id: string }[] }) => {
+          let count = 0;
+          for (const row of data) if (!attemptRows.has(row.id)) { attemptRows.set(row.id, row); count++; }
+          return { count };
+        },
+        findUnique: async ({ where }: { where: { id: string } }) => attemptRows.get(where.id) ?? null,
+      },
+      reviewIssue: { deleteMany: async () => ({ count: 0 }), createMany: async () => ({ count: 0 }) },
     }),
   },
 }));
@@ -275,6 +292,8 @@ mock.module("@/lib/queue", () => ({
 // which is stubbed below).
 mock.module("@/lib/summarizer", () => ({ summarizeRepository: async () => { throw new Error("not used by this fixture"); } }));
 mock.module("@/lib/analyzer", () => ({ analyzeRepository: async () => { throw new Error("not used by this fixture"); } }));
+// Scenario L: runs inside the model call, where a worker that is still running can be overtaken.
+let onModelCall: (() => Promise<void> | void) | null = null;
 // Scenario K: provider setup for the pull request's repository is unavailable.
 let providerDispatches = 0;
 mock.module("@/lib/forgejo", () => ({
@@ -290,7 +309,7 @@ const { deferReviewForRepository } = await import("@/lib/review-repository-prepa
 const analysisReady: Record<string, boolean> = {
   "repo-a": false, "repo-b": false, "repo-c": false, "repo-d": false,
   // E/F/G need no deferral; their repository is ready from the start.
-  "repo-e": true, "repo-f": true, "repo-g": true, "repo-h": true, "repo-i": true, "repo-i2": true, "repo-j": true,
+  "repo-e": true, "repo-f": true, "repo-g": true, "repo-h": true, "repo-i": true, "repo-i2": true, "repo-j": true, "repo-l": true,
 };
 let interleaveNewAdmissionAfterBindingRead = false;
 // Scenario D: simulates the pull request moving WHILE this (slow, real AI)
@@ -318,6 +337,7 @@ let failDiffFetch = false;
 // a superseded execution must never reach any of them.
 let publishCalls = 0;
 const publishedReviews: string[] = [];
+let checkRunUpdates = 0;
 mock.module("@/lib/github", () => ({
   LargePrError: class LargePrError extends Error {},
   getPullRequestReviewInput: async () => {
@@ -333,7 +353,7 @@ mock.module("@/lib/github", () => ({
   updatePullRequestComment: async () => { publishCalls++; },
   createPullRequestReview: async (..._args: unknown[]) => { publishCalls++; publishedReviews.push(String(_args[5])); return 456; },
   createCheckRun: async () => 789,
-  updateCheckRun: async () => {},
+  updateCheckRun: async () => { checkRunUpdates++; },
   getRepositoryTree: async () => ["src/check.ts"],
   getFileContent: async () => "return value.name;",
   listReviewComments: async () => [],
@@ -373,10 +393,10 @@ const finding = {
 };
 mock.module("@/lib/ai-router", () => ({
   getProviderForModel: async () => { throw new Error("Legacy fixture must not resolve adaptive capacity"); },
-  createAiMessage: async () => ({
+  createAiMessage: async () => { await onModelCall?.(); return {
     provider: "fixture", text: `Summary\n<!-- OCTOPUS_FINDINGS_START -->\n${JSON.stringify([finding])}\n<!-- OCTOPUS_FINDINGS_END -->`,
     usage: { inputTokens: 1, outputTokens: 1 },
-  }),
+  }; },
 }));
 mock.module("@/lib/review-validation", () => ({
   gatherCrossFileContext: async () => "",
@@ -390,12 +410,15 @@ mock.module("@/lib/review-summary-comment", () => ({ publishReviewSummary: async
 // interaction with `deferReviewForRepository`. Only the immutable-evidence-record
 // side (irrelevant to the `ReviewRun` lifecycle under test) is stubbed.
 const real = await import("@/lib/review-attempt");
+let saveForReal = false;
 mock.module("@/lib/review-attempt", () => ({
   attemptOutcomeForStatus: real.attemptOutcomeForStatus,
   updateCurrentReview: real.updateCurrentReview,
   resolveReviewConfig: real.resolveReviewConfig,
   createReviewAttemptComment: async (_id: string, _head: string, _version: number, create: () => Promise<number>) => create(),
-  saveReviewAttempt: async () => false, // stop right after the "completed" write; irrelevant to this fixture
+  // Stops right after the "completed" write, which is irrelevant to the run lifecycle -- except
+  // for scenario L, which is about what a failed worker may persist.
+  saveReviewAttempt: async (...args: Parameters<typeof real.saveReviewAttempt>) => (saveForReal ? real.saveReviewAttempt(...args) : false),
   recordFirstReviewCompletion: async () => { throw new Error("must not be reached: saveReviewAttempt stops before it"); },
   withForgejoReviewPublication: async () => { throw new Error("unexpected Forgejo publication"); },
 }));
@@ -556,4 +579,23 @@ assert.equal(providerDispatches, 0, "a replayed job for a finished run must not 
 assert.equal(runs["run-k"].state, "succeeded", "a finished run must stay as it ended");
 assert.equal(prs["pr-k"].status, "completed");
 
-console.log("PASS repository-preparation and low-balance deferrals stay claimable, a claim taken after the publication check cannot produce a second review, a replayed job for a finished run does not dispatch, preserves the run across defer-then-succeed and defer-then-fail, finalizes superseded runs on a cross-request race or a missed guarded update, treats only reviewRequestVersion (never headSha) as a legacy wildcard, and closes the binding-check-to-claim race");
+// L. A worker that was overtaken by a reclaim, and then fails. The row now belongs to
+// the other worker, so nothing this worker does on its way out may touch it.
+let overtakenAt: { publishCalls: number; checkRunUpdates: number } | null = null;
+onModelCall = () => {
+  Object.assign(prs["pr-l"], { claimToken: "worker-b", status: "reviewing", reviewBody: "B is still reviewing" });
+  overtakenAt = { publishCalls, checkRunUpdates };
+  throw new Error("model unavailable");
+};
+saveForReal = true;
+const quiet = console.error;
+console.error = () => {};
+try { await processReview("pr-l", undefined, "run-l"); } finally { console.error = quiet; saveForReal = false; onModelCall = null; }
+assert.ok(overtakenAt, "the failure must have been exercised");
+assert.equal(prs["pr-l"].claimToken, "worker-b");
+assert.equal(prs["pr-l"].status, "reviewing", "a worker that lost its claim must not change the status of the row that now belongs to another");
+assert.equal(prs["pr-l"].reviewBody, "B is still reviewing", "nor replace the other worker's report");
+assert.equal(publishCalls, overtakenAt.publishCalls, "nor publish its failure over the other worker's review");
+assert.equal(checkRunUpdates, overtakenAt.checkRunUpdates, "nor fail the other worker's check run");
+
+console.log("PASS repository-preparation and low-balance deferrals stay claimable, a claim taken after the publication check cannot produce a second review, a replayed job for a finished run does not dispatch, a worker that lost its claim cannot publish or persist its failure, preserves the run across defer-then-succeed and defer-then-fail, finalizes superseded runs on a cross-request race or a missed guarded update, treats only reviewRequestVersion (never headSha) as a legacy wildcard, and closes the binding-check-to-claim race");

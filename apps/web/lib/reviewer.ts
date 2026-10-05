@@ -71,7 +71,7 @@ import { publishReviewSummary } from "@/lib/review-summary-comment";
 import type { ReviewComment } from "@/lib/github";
 import { eventBus } from "@/lib/events";
 import { attemptOutcomeForStatus, resolveReviewConfig } from "@/lib/review-attempt";
-import { reserveClaim } from "@/lib/claim-fence";
+import { reserveClaim, holdsClaim } from "@/lib/claim-fence";
 import {
   touchesSharedFiles,
   countFindings,
@@ -2993,8 +2993,16 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
     }
     const failureBody = attemptCoverage?.assessment && !attemptSaved
       ? applyReviewCoverage("## 🐙 Octopus Review\n\nAssessment failed or was interrupted. No complete assessment is available.", attemptCoverage, failureAttemptId) : null;
+    // The row may have been reclaimed while this worker was failing. The archive
+    // below is evidence and stays append-only, but everything after it publishes
+    // or writes the shared row, which then belongs to the other worker.
+    const ownsClaim = await holdsClaim(pr.id, claimToken).catch(() => false);
     if (failureBody && attemptCoverage) {
-      await saveReviewAttempt(failureAttemptId, pr.id, attemptCoverage, failureBody).catch(e => console.error("[reviewer] Failed to archive interrupted assessment:", e));
+      await saveReviewAttempt(failureAttemptId, pr.id, attemptCoverage, failureBody, undefined, claimToken).catch(e => console.error("[reviewer] Failed to archive interrupted assessment:", e));
+    }
+    if (!ownsClaim) {
+      console.log(`[reviewer] PR ${pr.id} was re-claimed; not publishing or recording this worker's failure`);
+      return;
     }
 
     // Update placeholder comment with error if possible
@@ -3047,7 +3055,7 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
     const failedUpdate = await updateCurrentReview(pr.id, pr.headSha, pr.reviewRequestVersion, {
       status: "failed",
       errorMessage,
-    })
+    }, undefined, claimToken)
       .catch((e) => console.error("[reviewer] Failed to update PR status:", e));
     if (!failedUpdate?.count) return;
 

@@ -94,9 +94,10 @@ export function attemptOutcomeForStatus(
   }
 }
 
-export async function updateCurrentReview(pullRequestId: string, headSha: string | null, reviewRequestVersion: number | undefined, data: Prisma.PullRequestUpdateManyMutationInput, expectedReviewBody?: string) {
+/** `claimToken` binds the write to one worker's claim, so a worker that lost the row writes nothing. */
+export async function updateCurrentReview(pullRequestId: string, headSha: string | null, reviewRequestVersion: number | undefined, data: Prisma.PullRequestUpdateManyMutationInput, expectedReviewBody?: string, claimToken?: string) {
   if (!headSha || !isReviewRequestVersion(reviewRequestVersion)) return { count: 0 };
-  return prisma.pullRequest.updateMany({ where: { id: pullRequestId, headSha, reviewRequestVersion, ...(expectedReviewBody !== undefined ? { reviewBody: expectedReviewBody } : {}) }, data });
+  return prisma.pullRequest.updateMany({ where: { id: pullRequestId, headSha, reviewRequestVersion, ...(expectedReviewBody !== undefined ? { reviewBody: expectedReviewBody } : {}), ...(claimToken !== undefined ? { claimToken } : {}) }, data });
 }
 
 /** Call only after the final report has been published successfully. Never infer this from an archived result. */
@@ -153,6 +154,8 @@ export async function saveReviewAttempt(
   coverage: ReviewCoverage,
   reviewBody: string,
   issues?: Prisma.ReviewIssueCreateManyInput[],
+  /** When given, the archive is still written but the current view is only replaced while this claim holds. */
+  claimToken?: string,
 ) {
   const coverageJson = JSON.parse(JSON.stringify(coverage)) as Prisma.InputJsonValue;
   return prisma.$transaction(async tx => {
@@ -165,7 +168,7 @@ export async function saveReviewAttempt(
       return false;
     }
     if (!coverage.headSha || !isReviewRequestVersion(coverage.reviewRequestVersion)) return false;
-    const promoted = await tx.pullRequest.updateMany({ where: { id: pullRequestId, headSha: coverage.headSha, reviewRequestVersion: coverage.reviewRequestVersion }, data: {
+    const promoted = await tx.pullRequest.updateMany({ where: { id: pullRequestId, headSha: coverage.headSha, reviewRequestVersion: coverage.reviewRequestVersion, ...(claimToken !== undefined ? { claimToken } : {}) }, data: {
       status: "completed", reviewBody, reviewCoverage: coverageJson, errorMessage: null,
     } });
     if (!promoted.count) return false;
