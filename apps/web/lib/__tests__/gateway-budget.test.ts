@@ -13,10 +13,15 @@ type AgentOptions = {
 };
 const agentsBuilt: AgentOptions[] = [];
 
-// undici does not expose an Agent's options, so the constructor records them.
+// undici does not expose an Agent's options, so a subclass records them. The
+// real module is restored once the gateway has been imported, so no other file
+// in the run sees the stand-in.
+const realUndici = await import("undici");
 mock.module("undici", () => ({
-  Agent: class {
+  ...realUndici,
+  Agent: class extends realUndici.Agent {
     constructor(opts: AgentOptions) {
+      super(opts);
       agentsBuilt.push(opts);
     }
   },
@@ -44,6 +49,7 @@ const CONFIGURED_TIMEOUT_MS = 123_456;
 const savedTimeout = process.env.GATEWAY_TIMEOUT_MS;
 process.env.GATEWAY_TIMEOUT_MS = String(CONFIGURED_TIMEOUT_MS);
 const { callOpenAiGateway } = await import("@/lib/providers/openai-gateway");
+mock.module("undici", () => realUndici);
 if (savedTimeout === undefined) delete process.env.GATEWAY_TIMEOUT_MS;
 else process.env.GATEWAY_TIMEOUT_MS = savedTimeout;
 
