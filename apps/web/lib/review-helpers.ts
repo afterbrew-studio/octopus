@@ -856,16 +856,6 @@ export function assessChangeShape(shape: ChangeShape): SlopVerdict {
 }
 
 /**
- * A findings block that opened and never closed is a response cut off
- * mid-emission. `parseFindings` returns [] for that exactly as it does for a
- * genuinely clean review, so completeness has to be read off the markers.
- */
-export function isModelOutputComplete(reviewBody: string): boolean {
-  const truncated = reviewBody.includes(FINDINGS_START_MARKER) && !reviewBody.includes(FINDINGS_END_MARKER);
-  return reviewBody.trim().length > 0 && !truncated;
-}
-
-/**
  * Whether the model saw the WHOLE change. Read off per-file state rather than
  * `coverage.complete`, which counts an excluded binary asset as complete input
  * -- too permissive for what an auto-approval needs.
@@ -874,19 +864,37 @@ export function readWholeDiff(coverage: Pick<ReviewCoverage, "inventoryComplete"
   return coverage.inventoryComplete && coverage.files.every((f) => f.state === "supplied");
 }
 
+/**
+ * Positive evidence that the model's reply was a complete, well-formed review of
+ * the supplied input: the request was observed reaching the provider with its
+ * input preserved, the reply passed format validation, and the provider reported
+ * a finished completion. `parseFindings` returns [] for a malformed or truncated
+ * reply exactly as it does for a clean one, so completeness is never inferred
+ * from the text. A `not-required` assessment ran no model, so it vouches for
+ * nothing.
+ */
+export function assessmentVerified(coverage: Pick<ReviewCoverage, "complete" | "assessment">): boolean {
+  const assessment = coverage.assessment;
+  return coverage.complete === true
+    && assessment?.state === "completed"
+    && assessment.responseValidation?.state === "valid"
+    && assessment.completion?.state === "completed"
+    && assessment.requests.length === 1
+    && assessment.requests[0].inputPreserved === true;
+}
+
 export function mayApprove(input: {
   optedIn: boolean;
   found: { hasCritical: boolean; hasHigh: boolean; hasMedium: boolean };
-  parsedOutput: boolean;
-  readWholeDiff: boolean;
+  coverage: Pick<ReviewCoverage, "complete" | "inventoryComplete" | "files" | "assessment">;
   /** Absent means the shape was not assessed, which blocks approval. */
   shape?: SlopVerdict;
 }): boolean {
   return (
     input.optedIn &&
     isCleanReview(input.found) &&
-    input.parsedOutput &&
-    input.readWholeDiff &&
+    assessmentVerified(input.coverage) &&
+    readWholeDiff(input.coverage) &&
     (input.shape?.mergeableUnattended ?? false)
   );
 }

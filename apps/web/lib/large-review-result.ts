@@ -25,8 +25,6 @@ import {
   MAX_FINDINGS_PER_REVIEW,
   shouldFailReviewCheck,
   mayApprove,
-  isModelOutputComplete,
-  readWholeDiff,
   type ReviewConfig,
 } from "@/lib/review-helpers";
 import { eventBus } from "@/lib/events";
@@ -192,8 +190,7 @@ export async function handleLargeReviewResult(
       hasHigh: parsedFindings.some((f) => f.severity === "🟠"),
       hasMedium: parsedFindings.some((f) => f.severity === "🟡"),
     },
-    parsedOutput: isModelOutputComplete(reviewBody),
-    readWholeDiff: readWholeDiff(coverage),
+    coverage,
   });
   const reviewEvent: "COMMENT" | "REQUEST_CHANGES" | "APPROVE" = shouldRequestChanges
     ? "REQUEST_CHANGES"
