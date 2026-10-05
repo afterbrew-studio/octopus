@@ -710,7 +710,7 @@ export async function processReview(
   // ready -- it never stopped, so it is not finalized here. A superseded run
   // already finalized itself inside `processReviewInternal`, before this
   // execution's pull-request read below would find someone else's request.
-  if (dispatchOutcome === "deferred" || dispatchOutcome === "superseded") return;
+  if (dispatchOutcome === "deferred" || dispatchOutcome === "superseded" || dispatchOutcome === "lost") return;
 
   const finished = await prisma.pullRequest.findUnique({
     where: { id: pullRequestId },
@@ -763,11 +763,13 @@ function runBindingMismatch(
  * run-binding check, or a deferral whose guarded update missed because the
  * pull request moved) -- `processReview` must not try to finalize it again
  * from the pull request's status, which by then belongs to a different
- * request. Every other `return` really is the run finishing without
+ * request. `"lost"` marks an execution whose claim was taken from it while it
+ * deferred: the row and the run belong to whoever holds them now, so neither is
+ * written. Every other `return` really is the run finishing without
  * executing (paused, blocked, already completed by this same run on a
  * replayed job), which the pull request's status already answers correctly.
  */
-type ReviewInternalOutcome = "deferred" | "superseded" | undefined;
+type ReviewInternalOutcome = "deferred" | "superseded" | "lost" | undefined;
 
 async function processReviewInternal(pullRequestId: string, reviewRunId?: string, executionWindow?: ReviewExecutionWindow, expected?: { headSha: string | null; reviewRequestVersion: number }): Promise<ReviewInternalOutcome> {
   // Load PR with repo and org info
@@ -817,6 +819,11 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
   // deferred, so it must not be reported "deferred" (which would leave it
   // non-terminal forever with nothing left to retry it); it is superseded.
   const finalizeSupersededDefer = async (): Promise<ReviewInternalOutcome> => {
+    // A miss is also what losing the claim looks like, and then the row still holds
+    // this run's own request: another execution of it is live, and finalizing the
+    // run here would end that one too.
+    const current = await prisma.pullRequest.findUnique({ where: { id: pullRequestId }, select: { headSha: true, reviewRequestVersion: true } });
+    if (current && current.headSha === pr.headSha && current.reviewRequestVersion === pr.reviewRequestVersion) return "lost";
     if (reviewRunId) {
       await finalizeAttempt(reviewRunId, "superseded", "pull request moved before repository preparation could defer this run");
     }
@@ -1187,7 +1194,7 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
               "> 🐙 **Octopus Review** — Repository indexing is in progress.\n>\n> This review has been re-queued and will start automatically once indexing completes.",
             );
           }
-          if (await deferReviewForRepository(pullRequestId, pr.headSha, pr.reviewRequestVersion, reviewRunId)) return "deferred";
+          if (await deferReviewForRepository(pullRequestId, pr.headSha, pr.reviewRequestVersion, reviewRunId, claimToken)) return "deferred";
           return finalizeSupersededDefer();
         } else {
           // Peer failed -- attempt conditional reclaim
@@ -1390,7 +1397,7 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
         );
         // Same deferral as repository preparation: parked at `pending` so the
         // retry's claim can take it, run kept alive by the "deferred" outcome.
-        if (await deferReviewForRepository(pullRequestId, pr.headSha, pr.reviewRequestVersion, reviewRunId)) return "deferred";
+        if (await deferReviewForRepository(pullRequestId, pr.headSha, pr.reviewRequestVersion, reviewRunId, claimToken)) return "deferred";
         return finalizeSupersededDefer();
       }
     }
@@ -1410,7 +1417,7 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
           "> 🐙 **Octopus Review** — Repository indexing or analysis is in progress.\n>\n> This review will retry automatically once repository preparation completes.",
         );
       }
-      if (await deferReviewForRepository(pullRequestId, pr.headSha, pr.reviewRequestVersion, reviewRunId)) return "deferred";
+      if (await deferReviewForRepository(pullRequestId, pr.headSha, pr.reviewRequestVersion, reviewRunId, claimToken)) return "deferred";
       return finalizeSupersededDefer();
     }
     if (isForgejoConnector) {

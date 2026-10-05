@@ -80,6 +80,7 @@ const repos: Record<string, { id: string; fullName: string; reviewConfig: object
   "repo-q": { id: "repo-q", fullName: "fixture/repo-q", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
   "repo-t": { id: "repo-t", fullName: "fixture/repo-t", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
   "repo-u": { id: "repo-u", fullName: "fixture/repo-u", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
+  "repo-v": { id: "repo-v", fullName: "fixture/repo-v", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
   "repo-i2": { id: "repo-i2", fullName: "fixture/repo-i2", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
 };
 
@@ -142,6 +143,10 @@ const prs: Record<string, Row> = {
     id: "pr-u", repositoryId: "repo-u", number: 22, title: "Title", author: "author", url: "https://example.test/pr/22",
     headSha: A, reviewRequestVersion: 1, status: "pending", reviewBody: null, claimToken: null, updatedAt: new Date(),
   },
+  "pr-v": {
+    id: "pr-v", repositoryId: "repo-v", number: 23, title: "Title", author: "author", url: "https://example.test/pr/23",
+    headSha: A, reviewRequestVersion: 1, status: "pending", reviewBody: null, claimToken: null, updatedAt: new Date(),
+  },
   // Another review of the same organization, already in flight.
   "pr-i2": {
     id: "pr-i2", repositoryId: "repo-i2", number: 10, title: "Title", author: "author", url: "https://example.test/pr/10",
@@ -167,6 +172,7 @@ const runs: Record<string, Run> = {
   "run-q": { id: "run-q", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: 1 },
   "run-t": { id: "run-t", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: 1 },
   "run-u": { id: "run-u", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: 1 },
+  "run-v": { id: "run-v", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: 1 },
   "run-i": { id: "run-i", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: 1 },
 };
 
@@ -280,7 +286,7 @@ const { deferReviewForRepository } = await import("@/lib/review-repository-prepa
 // Keyed by repository, matching the real function's own signature -- each
 // scenario's repository starts "waiting" independently of the other's.
 const analysisReady: Record<string, boolean> = {
-  "repo-a": false, "repo-b": false, "repo-t": false, "repo-u": false, "repo-q": false, "repo-q": false, "repo-c": false, "repo-d": false,
+  "repo-a": false, "repo-b": false, "repo-v": false, "repo-t": false, "repo-u": false, "repo-q": false, "repo-q": false, "repo-c": false, "repo-d": false,
   // E/F/G need no deferral; their repository is ready from the start.
   "repo-e": true, "repo-f": true, "repo-g": true, "repo-h": true, "repo-i": true, "repo-i2": true,
 };
@@ -292,6 +298,8 @@ let interleaveNewAdmissionAfterBindingRead = false;
 let mutatePrDOnAnalysisCheck = false;
 mock.module("@/lib/review-repository-preparation", () => ({
   ensureRepositoryAnalysis: async (repositoryId: string) => {
+    // Scenario V: the claim is taken while the repository is being prepared.
+    if (repositoryId === "repo-v") Object.assign(prs["pr-v"], { claimToken: "worker-b" });
     if (repositoryId === "repo-d" && mutatePrDOnAnalysisCheck) {
       prs["pr-d"] = { ...prs["pr-d"], headSha: B, reviewRequestVersion: 2 };
     }
@@ -574,4 +582,14 @@ analysisReady["repo-u"] = true;
 await processReview("pr-u", undefined, "run-u");
 assert.equal(runs["run-u"].state, "succeeded", "and that retry runs the review");
 
-console.log("PASS repository-preparation and low-balance deferrals stay claimable, a replayed job for a finished run does not dispatch, a deferral that cannot be scheduled leaves the run recoverable, overlapping jobs cannot cancel a run that one of them holds, preserves the run across defer-then-succeed and defer-then-fail, finalizes superseded runs on a cross-request race or a missed guarded update, treats only reviewRequestVersion (never headSha) as a legacy wildcard, and closes the binding-check-to-claim race");
+// V. A worker is overtaken while it prepares the repository, and then has to defer.
+// The row now belongs to the worker that took it: resetting it to pending would make
+// it claimable by a third, so a miss is lost ownership and releases nothing.
+const retriesBeforeLoss = enqueuedAfter.filter((job) => job.pullRequestId === "pr-v").length;
+await processReview("pr-v", undefined, "run-v");
+assert.equal(prs["pr-v"].status, "reviewing", "a worker that lost its claim must not reset the new owner's row");
+assert.equal(prs["pr-v"].claimToken, "worker-b");
+assert.equal(enqueuedAfter.filter((job) => job.pullRequestId === "pr-v").length, retriesBeforeLoss, "and must schedule no retry");
+assert.equal(runs["run-v"].terminalAt, null, "nor end a run another execution may hold");
+
+console.log("PASS repository-preparation and low-balance deferrals stay claimable, a replayed job for a finished run does not dispatch, a deferral that cannot be scheduled leaves the run recoverable, overlapping jobs cannot cancel a run that one of them holds, a worker that lost its claim cannot release the new owner's row, preserves the run across defer-then-succeed and defer-then-fail, finalizes superseded runs on a cross-request race or a missed guarded update, treats only reviewRequestVersion (never headSha) as a legacy wildcard, and closes the binding-check-to-claim race");

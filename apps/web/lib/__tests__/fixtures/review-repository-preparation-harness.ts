@@ -20,6 +20,7 @@ let holdSummary: (() => Promise<void>) | undefined;
 let prStatus = "reviewing";
 let queueFailure = false;
 let runFinished = false;
+const ownerToken = "tok-a";
 const runHandedBack: string[] = [];
 mock.module("@octopus/db", () => ({
   prisma: {
@@ -58,8 +59,11 @@ mock.module("@octopus/db", () => ({
       },
     },
     pullRequest: {
-      updateMany: async ({ data, where }: { data: { status: string }; where: { headSha?: string | null } }) => {
+      updateMany: async ({ data, where }: { data: { status: string; claimToken?: null }; where: { headSha?: string | null; status?: string; claimToken?: string } }) => {
         if (where.headSha !== undefined && where.headSha !== "current") return { count: 0 };
+        // A claimed release only lands on a row this worker still owns.
+        if (where.claimToken !== undefined && (where.claimToken !== ownerToken || where.status !== prStatus)) return { count: 0 };
+        if (where.claimToken !== undefined) assert.equal(data.claimToken, null, "releasing the row releases the claim");
         prStatus = data.status; return { count: 1 };
       },
     },
@@ -174,4 +178,15 @@ runFinished = true;
 queued.length = 0;
 assert.equal(await deferReviewForRepository("pr-1", "current", undefined, "run-1"), false);
 assert.deepEqual(queued, []);
+// Under a claim the release is conditional on owning the row: a worker that lost it
+// (another token holds it) releases nothing, schedules nothing, and reports no deferral.
+runFinished = false;
+prStatus = "reviewing";
+queued.length = 0;
+runHandedBack.length = 0;
+assert.equal(await deferReviewForRepository("pr-1", "current", undefined, "run-1", "tok-stale"), false);
+assert.equal(prStatus, "reviewing", "the new owner's row is untouched");
+assert.deepEqual([queued, runHandedBack], [[], []]);
+assert.equal(await deferReviewForRepository("pr-1", "current", undefined, "run-1", "tok-a"), true);
+assert.equal(prStatus, "pending");
 console.log("Analysis sequencing, empty bases, concurrency, retries and ownership checks passed");
