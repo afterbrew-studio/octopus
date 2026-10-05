@@ -682,21 +682,19 @@ export async function processReview(
 
   if (!reviewRunId) { await dispatch(); return; }
 
-  // Guarded on `pending`, so a replayed job cannot restart a run that already
-  // reached a terminal state. A deferred run coming back round is already
-  // `running` and matches nothing here, which is correct: it never stopped.
-  const started = await prisma.reviewRun.updateMany({
-    where: { id: reviewRunId, state: "pending" },
+  // A run is acquired by one execution at a time: the conditional `pending` ->
+  // `running` transition is won by exactly one of any number of overlapping jobs.
+  // An execution that misses it neither dispatches nor finalizes: the run is
+  // either held by the one that won, or finished, and in both cases it is not this
+  // execution's to touch. A deferral hands the run back to `pending` before it
+  // schedules the retry, so only that retry can take it again.
+  const acquired = await prisma.reviewRun.updateMany({
+    where: { id: reviewRunId, state: "pending", terminalAt: null },
     data: { state: "running" },
   });
-  // A miss is either that deferred run or a finished one. A pg-boss retry of a
-  // finished run must not dispatch: provider setup can fail or publish on its own.
-  if (!started.count) {
-    const run = await prisma.reviewRun.findUnique({ where: { id: reviewRunId }, select: { terminalAt: true } });
-    if (run?.terminalAt) {
-      console.log(`[reviewer] Run ${reviewRunId} already finished, skipping replayed job for PR ${pullRequestId}`);
-      return;
-    }
+  if (!acquired.count) {
+    console.log(`[reviewer] Run ${reviewRunId} is held or finished; skipping this job for PR ${pullRequestId}`);
+    return;
   }
 
   let dispatchOutcome: ReviewInternalOutcome;

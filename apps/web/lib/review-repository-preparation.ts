@@ -96,6 +96,12 @@ export async function deferReviewForRepository(pullRequestId: string, headSha?: 
   // status. See the "deferred" return in reviewer.ts.
   const changed = await prisma.pullRequest.updateMany({ where: { id: pullRequestId, ...(headSha !== undefined ? { headSha } : {}), ...(reviewRequestVersion !== undefined ? { reviewRequestVersion } : {}) }, data: { status: "pending" } });
   if (!changed.count) return false;
+  // Handed back before the retry is scheduled, so that only the retry can take the
+  // run again. If the run is already finished there is nothing left to retry.
+  if (reviewRunId) {
+    const released = await prisma.reviewRun.updateMany({ where: { id: reviewRunId, terminalAt: null }, data: { state: "pending" } });
+    if (!released.count) return false;
+  }
   // The retry re-executes under the SAME frozen run, not live configuration --
   // dropping this here would let a label-selected model silently change on
   // the retry. rayf P-0007 C3.
