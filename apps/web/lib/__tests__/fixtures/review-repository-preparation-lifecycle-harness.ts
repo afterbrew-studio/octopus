@@ -77,6 +77,7 @@ const repos: Record<string, { id: string; fullName: string; reviewConfig: object
   "repo-h": { id: "repo-h", fullName: "fixture/repo-h", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
   "repo-i": { id: "repo-i", fullName: "fixture/repo-i", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
   "repo-j": { id: "repo-j", fullName: "fixture/repo-j", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
+  "repo-k": { id: "repo-k", fullName: "fixture/repo-k", reviewConfig: {}, provider: "forgejo", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
   "repo-i2": { id: "repo-i2", fullName: "fixture/repo-i2", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
 };
 
@@ -127,6 +128,10 @@ const prs: Record<string, Row> = {
     id: "pr-j", repositoryId: "repo-j", number: 11, title: "Title", author: "author", url: "https://example.test/pr/11",
     headSha: A, reviewRequestVersion: 1, status: "pending", reviewBody: null, claimToken: null, updatedAt: new Date(),
   },
+  "pr-k": {
+    id: "pr-k", repositoryId: "repo-k", number: 12, title: "Title", author: "author", url: "https://example.test/pr/12",
+    headSha: A, reviewRequestVersion: 1, status: "completed", reviewBody: null, claimToken: null, updatedAt: new Date(),
+  },
   // Another review of the same organization, already in flight.
   "pr-i2": {
     id: "pr-i2", repositoryId: "repo-i2", number: 10, title: "Title", author: "author", url: "https://example.test/pr/10",
@@ -150,6 +155,7 @@ const runs: Record<string, Run> = {
   "run-h": { id: "run-h", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: null },
   "run-j": { id: "run-j", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: 1 },
   "run-j2": { id: "run-j2", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: 1 },
+  "run-k": { id: "run-k", state: "succeeded", terminalAt: new Date(), terminalDetail: "review completed", headSha: A, reviewRequestVersion: 1 },
   "run-i": { id: "run-i", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: 1 },
 };
 
@@ -269,6 +275,12 @@ mock.module("@/lib/queue", () => ({
 // which is stubbed below).
 mock.module("@/lib/summarizer", () => ({ summarizeRepository: async () => { throw new Error("not used by this fixture"); } }));
 mock.module("@/lib/analyzer", () => ({ analyzeRepository: async () => { throw new Error("not used by this fixture"); } }));
+// Scenario K: provider setup for the pull request's repository is unavailable.
+let providerDispatches = 0;
+mock.module("@/lib/forgejo", () => ({
+  usesForgejoConnector: () => false,
+  runWithForgejoRepository: async () => { providerDispatches++; throw new Error("Forgejo connection unavailable"); },
+}));
 mock.module("@/lib/pubby", () => ({ pubby: { trigger: async () => {} } }));
 mock.module("@/lib/events", () => ({ eventBus: { emit: () => {} } }));
 
@@ -535,4 +547,13 @@ assert.equal(publishedReviews.length - reviewsBeforeRace, 1, "a worker whose cla
 assert.equal(prs["pr-j"].status, "completed");
 assert.equal(runs["run-j"].state, "succeeded", "the worker that held the claim finishes its own run");
 
-console.log("PASS repository-preparation and low-balance deferrals stay claimable, a claim taken after the publication check cannot produce a second review, preserves the run across defer-then-succeed and defer-then-fail, finalizes superseded runs on a cross-request race or a missed guarded update, treats only reviewRequestVersion (never headSha) as a legacy wildcard, and closes the binding-check-to-claim race");
+// K. A pg-boss retry of a run that already finished. The run is terminal, so the
+// job must resolve without dispatching to the provider -- here provider setup
+// fails, which would otherwise make the retry fail and be retried again.
+const replayError = await processReview("pr-k", undefined, "run-k").then(() => null, (error: unknown) => error);
+assert.equal(replayError, null, "a replayed job for a finished run must resolve, not fail and be retried again");
+assert.equal(providerDispatches, 0, "a replayed job for a finished run must not dispatch");
+assert.equal(runs["run-k"].state, "succeeded", "a finished run must stay as it ended");
+assert.equal(prs["pr-k"].status, "completed");
+
+console.log("PASS repository-preparation and low-balance deferrals stay claimable, a claim taken after the publication check cannot produce a second review, a replayed job for a finished run does not dispatch, preserves the run across defer-then-succeed and defer-then-fail, finalizes superseded runs on a cross-request race or a missed guarded update, treats only reviewRequestVersion (never headSha) as a legacy wildcard, and closes the binding-check-to-claim race");
