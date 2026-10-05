@@ -2290,6 +2290,18 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
     // Inline vs summary are both derived from the validated union from here on.
     findings = [...allParsedFindings];
 
+    // What the model found once validated, BEFORE anything below removes a
+    // finding from view: prior-comment dedup hides a finding because it was
+    // already raised, and the re-review filter hides everything non-critical.
+    // Both decide what to SHOW. Neither may decide whether the review found
+    // anything, or a re-review that repeats an unresolved HIGH reads as clean
+    // and approves the new head. Every review after the first is a re-review.
+    const foundBeforeDedup = {
+      hasCritical: allParsedFindings.some((f) => f.severity === "🔴"),
+      hasHigh: allParsedFindings.some((f) => f.severity === "🟠"),
+      hasMedium: allParsedFindings.some((f) => f.severity === "🟡"),
+    };
+
     // Hard dedup: remove findings that match prior bot comments, summary table findings,
     // or dismissed DB findings by file proximity + keyword overlap.
     if (isReReview && (botComments.length > 0 || priorSummaryTableFindings.length > 0 || dismissedDbFindings.length > 0)) {
@@ -2329,17 +2341,6 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
         );
       }
     }
-
-    // What the model actually found, BEFORE the re-review filter below discards
-    // everything non-critical. The filter decides what to SHOW on a follow-up
-    // review; it must not decide whether the review found anything, or a
-    // re-review carrying a HIGH finding reads as clean and can be approved.
-    // Every review after the first is a re-review, so that is the common case.
-    const foundBeforeReReviewFilter = {
-      hasCritical: allParsedFindings.some((f) => f.severity === "🔴"),
-      hasHigh: allParsedFindings.some((f) => f.severity === "🟠"),
-      hasMedium: allParsedFindings.some((f) => f.severity === "🟡"),
-    };
 
     // Re-review filter: only keep critical findings on follow-up reviews.
     // This is a hard filter — prompt instructions alone are not reliable enough.
@@ -2455,8 +2456,9 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
     // reason NOT to emit it. Each answers a different way this review could be
     // wrong rather than clean.
     //
-    //  - severities come from `foundBeforeReReviewFilter`, not from the filtered
-    //    `findings`, so a re-review that found a HIGH cannot read as clean.
+    //  - severities come from `foundBeforeDedup`, not from the filtered
+    //    `findings`, so a re-review that found a HIGH, new or repeated, cannot
+    //    read as clean.
     //  - a review without a verified assessment is UNKNOWN, not clean:
     //    `parseFindings` returns [] for a malformed or truncated response
     //    exactly as it does for a genuinely clean one, so only the recorded
@@ -2475,7 +2477,7 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
     });
     const approvable = mayApprove({
       optedIn: org.approveWhenClean,
-      found: foundBeforeReReviewFilter,
+      found: foundBeforeDedup,
       coverage,
       shape,
     });
@@ -2489,7 +2491,7 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
         : "COMMENT";
     if (org.approveWhenClean && !approvable && !shouldRequestChanges) {
       console.log(
-        `[reviewer] not approving PR ${pr.number}: clean=${isCleanReview(foundBeforeReReviewFilter)} verified=${assessmentVerified(coverage)} wholeDiff=${readWholeDiff(coverage)}`,
+        `[reviewer] not approving PR ${pr.number}: clean=${isCleanReview(foundBeforeDedup)} verified=${assessmentVerified(coverage)} wholeDiff=${readWholeDiff(coverage)}`,
       );
     }
 
