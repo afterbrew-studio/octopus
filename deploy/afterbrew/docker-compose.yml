@@ -83,9 +83,9 @@ services:
   # The only service a tunnel is ever pointed at. See ./Caddyfile for what it
   # admits and why it is an allowlist.
   #
-  # Published on loopback for the same reason as `web`: the tunnel client runs on
-  # the host as an unprivileged process and dials this locally. Nothing on the LAN
-  # can reach it, so the exposure is exactly the tunnel and nothing else.
+  # The tunnel client joins this compose network and dials `ingress:8080`. The
+  # loopback publication is for the operator's probes; nothing on the LAN can reach
+  # it, so the exposure is exactly the tunnel and nothing else.
   ingress:
     container_name: octopus-ingress
     # caddy 2.11.4. Pinned by digest for the same reason as every other image here.
@@ -105,6 +105,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
+    restart: unless-stopped
   # Embeddings, locally. The review path is not optional about them: reviewer.ts
   # awaits `indexRepository` and a retrieval `createEmbeddings` with no diff-only
   # fallback, so with no embedding provider a review throws rather than degrades.
