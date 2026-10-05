@@ -13,8 +13,8 @@ mock.module("server-only", () => ({}));
  */
 
 let reply = "";
-const prior: ReviewCoverage | null = null;
-const priorComments: { id: number; user: string; path: string; line: number; body: string; inReplyToId: null }[] = [];
+let prior: ReviewCoverage | null = null;
+let priorComments: { id: number; user: string; path: string; line: number; body: string; inReplyToId: null }[] = [];
 const events: string[] = [];
 const archived: { coverage: ReviewCoverage }[] = [];
 
@@ -25,6 +25,10 @@ class FakeOpenAI {
 }
 mock.module("openai", () => ({ default: FakeOpenAI }));
 
+const finding = {
+  severity: "🟠", title: "Missing null check", filePath: "src/check.ts", startLine: 1, endLine: 1,
+  category: "Bug", description: "A missing value causes this access to throw.", suggestion: "", confidence: 95,
+};
 const diff = "diff --git a/src/check.ts b/src/check.ts\n--- a/src/check.ts\n+++ b/src/check.ts\n@@ -1 +1 @@\n-return value;\n+return value.name;\n";
 const org = { id: "org", defaultReviewConfig: {}, reviewLanguage: "en", approveWhenClean: true };
 const repo = {
@@ -165,5 +169,11 @@ assert.equal(recorded.assessment?.state, "completed");
 // Prose that is not the review format yields zero findings; that is unknown, not clean.
 assert.equal(await submittedEvent("Overall 5/5"), "COMMENT", "a malformed reply must not approve");
 assert.equal(archived.at(-1)!.coverage.assessment?.state, "incomplete");
+
+// A re-review that finds the same unresolved HIGH at the same line must not approve the new head.
+prior = { ...structuredClone(recorded), reviewRequestVersion: 1 };
+priorComments = [{ id: 5, user: "fixture[bot]", path: "src/check.ts", line: 1, inReplyToId: null,
+  body: `🟠 ${finding.title}\n\n${finding.description}` }];
+assert.equal(await submittedEvent(report([finding])), "COMMENT", "a repeated unresolved HIGH must not approve the new head");
 
 console.log("PASS ordinary review approval requires a verified, finding-free review");
