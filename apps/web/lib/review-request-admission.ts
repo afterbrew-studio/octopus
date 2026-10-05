@@ -205,6 +205,9 @@ async function admitReviewRequestInternal(params: ReviewRequestParams, client: P
         data: {
           ...data, reviewRequestVersion: { increment: 1 }, reviewBody: null,
           reviewCoverage: Prisma.DbNull, errorMessage: null,
+          // A claim belongs to the request it was taken for. Left in place it would
+          // outlive that request, and its worker could write to the new one.
+          claimToken: null,
         },
       });
       if (!pullRequest) return { pullRequest: undefined, reviewRun: undefined };

@@ -11,6 +11,8 @@ import {
   createPullRequestReview as ghCreatePullRequestReview,
   updateCheckRun as ghUpdateCheckRun,
 } from "@/lib/github";
+import { publicationCallTimeoutMs, SHORTEST_STALE_WINDOW_MS } from "@/lib/review-publication";
+import { submitVerdict } from "@/lib/review-verdict";
 import { parseFindings } from "@/lib/review-dedup";
 import { findingSignature, mergeFindingsBySignature, inheritReviewIssueTriage } from "@/lib/finding-merge";
 import {
@@ -236,6 +238,13 @@ export async function handleLargeReviewResult(
     const latest = await prisma.pullRequest.findUnique({ where: { id: pr.id }, select: { headSha: true, reviewRequestVersion: true, reviewBody: true } });
     return latest?.headSha === coverage.headSha && latest.reviewRequestVersion === coverage.reviewRequestVersion && latest.reviewBody === reviewBody;
   };
+  // Writes `updatedAt` only while the request this result belongs to is still the
+  // current one, which is what `stillCurrent` can only report.
+  const reserveCurrentRequest = async () => {
+    if (!correlated || !isReviewRequestVersion(coverage.reviewRequestVersion)) return false;
+    const reserved = await updateCurrentReview(pr.id, coverage.headSha, coverage.reviewRequestVersion, { updatedAt: new Date() }, reviewBody);
+    return reserved.count === 1;
+  };
   if (!await stillCurrent()) return;
 
   // Archive existence does not mean that remote delivery completed. Persist
@@ -276,30 +285,45 @@ export async function handleLargeReviewResult(
         .filter(Boolean)
         .join("\n\n");
 
-      try {
-        await ghCreatePullRequestReview(
-          installationId,
-          owner,
-          repoName,
-          pr.number,
-          summaryBody,
-          reviewEvent,
-          [],
-          undefined,
-          coverage.headSha ?? undefined,
-        );
-        console.log(
-          `[large-review-result] PR review submitted (${reviewEvent}, ${findings.length} findings in summary)`,
-        );
-      } catch (err) {
-        console.error(
-          "[large-review-result] Failed to submit review, falling back to comment:",
-          err,
-        );
-        if (await publishReviewSummary({ pullRequestId: pr.id, headSha: coverage.headSha,
-          reviewRequestVersion: coverage.reviewRequestVersion, installationId, owner, repo: repoName,
-          prNumber: pr.number, body: normalizeLastReviewedCommit(`${stripDetailedFindings(reviewBody)}\n\n${summaryBody}`, coverage.headSha),
-          expectedReviewBody: reviewBody }) === null) return;
+      // A verdict recorded by an earlier delivery attempt may already be standing, and
+      // sending another would duplicate it; the reconcile that record scheduled owns it.
+      const earlier = reviewRun
+        ? (await prisma.reviewRun.findUnique({ where: { id: reviewRun.id }, select: { publication: true } }))?.publication as { headSha?: string | null; reviewRequestVersion?: number } | null | undefined
+        : null;
+      if (earlier && earlier.headSha === coverage.headSha && earlier.reviewRequestVersion === coverage.reviewRequestVersion) {
+      } else {
+        // Reserved by a conditional write rather than checked by a read: a request
+        // admitted after a read would still be published over. A verdict outcome that
+        // is unknown is not sent again; the delayed reconcile withdraws it if its
+        // request has been replaced.
+        const result = await submitVerdict({
+          event: reviewEvent,
+          reserve: reserveCurrentRequest,
+          record: {
+            runId: reviewRun?.id ?? null, pullRequestId: pr.id, installationId, owner, repo: repoName, prNumber: pr.number,
+            headSha: coverage.headSha, reviewRequestVersion: coverage.reviewRequestVersion!, commitId: coverage.headSha ?? null,
+          },
+          send: () => ghCreatePullRequestReview(
+            installationId, owner, repoName, pr.number,
+            summaryBody, reviewEvent, [], undefined, coverage.headSha ?? undefined,
+            AbortSignal.timeout(publicationCallTimeoutMs(SHORTEST_STALE_WINDOW_MS)),
+          ),
+        });
+        if (result.kind === "not-reserved") return;
+        if (result.kind === "rejected") {
+          console.error(
+            "[large-review-result] Failed to submit review, falling back to comment:",
+            result.error,
+          );
+          if (await publishReviewSummary({ pullRequestId: pr.id, headSha: coverage.headSha,
+            reviewRequestVersion: coverage.reviewRequestVersion, installationId, owner, repo: repoName,
+            prNumber: pr.number, body: normalizeLastReviewedCommit(`${stripDetailedFindings(reviewBody)}\n\n${summaryBody}`, coverage.headSha),
+            expectedReviewBody: reviewBody }) === null) return;
+        } else {
+          console.log(
+            `[large-review-result] PR review ${result.kind === "published" ? "submitted" : "sent, outcome unresolved"} (${reviewEvent}, ${findings.length} findings in summary)`,
+          );
+        }
       }
       await checkpoint({ summaryPublished: true });
     }

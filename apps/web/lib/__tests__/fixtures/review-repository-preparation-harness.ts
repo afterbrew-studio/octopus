@@ -21,6 +21,7 @@ let prStatus = "reviewing";
 let queueFailure = false;
 let runFinished = false;
 const ownerToken = "tok-a";
+const claimOf = (claimToken: string) => ({ pullRequestId: "pr-1", claimToken, headSha: "current", reviewRequestVersion: 1 });
 const runHandedBack: string[] = [];
 mock.module("@octopus/db", () => ({
   prisma: {
@@ -59,11 +60,14 @@ mock.module("@octopus/db", () => ({
       },
     },
     pullRequest: {
-      updateMany: async ({ data, where }: { data: { status: string; claimToken?: null }; where: { headSha?: string | null; status?: string; claimToken?: string } }) => {
-        if (where.headSha !== undefined && where.headSha !== "current") return { count: 0 };
+      updateMany: async ({ data, where }: { data: { status: string; claimToken?: null }; where: { headSha?: string | null; status?: string | { in: string[] }; claimToken?: string; AND?: { headSha?: string | null; status?: { in: string[] }; claimToken?: string }[] } }) => {
+        // A claimed release carries the identity inside an AND clause.
+        const condition = where.AND?.[0] ?? where;
+        if (condition.headSha !== undefined && condition.headSha !== "current") return { count: 0 };
         // A claimed release only lands on a row this worker still owns.
-        if (where.claimToken !== undefined && (where.claimToken !== ownerToken || where.status !== prStatus)) return { count: 0 };
-        if (where.claimToken !== undefined) assert.equal(data.claimToken, null, "releasing the row releases the claim");
+        const owned = typeof condition.status === "object" ? condition.status.in : [condition.status];
+        if (condition.claimToken !== undefined && (condition.claimToken !== ownerToken || !owned.includes(prStatus))) return { count: 0 };
+        if (condition.claimToken !== undefined) assert.equal(data.claimToken, null, "releasing the row releases the claim");
         prStatus = data.status; return { count: 1 };
       },
     },
@@ -184,9 +188,9 @@ runFinished = false;
 prStatus = "reviewing";
 queued.length = 0;
 runHandedBack.length = 0;
-assert.equal(await deferReviewForRepository("pr-1", "current", undefined, "run-1", "tok-stale"), false);
+assert.equal(await deferReviewForRepository("pr-1", "current", undefined, "run-1", claimOf("tok-stale")), false);
 assert.equal(prStatus, "reviewing", "the new owner's row is untouched");
 assert.deepEqual([queued, runHandedBack], [[], []]);
-assert.equal(await deferReviewForRepository("pr-1", "current", undefined, "run-1", "tok-a"), true);
+assert.equal(await deferReviewForRepository("pr-1", "current", undefined, "run-1", claimOf("tok-a")), true);
 assert.equal(prStatus, "pending");
 console.log("Analysis sequencing, empty bases, concurrency, retries and ownership checks passed");

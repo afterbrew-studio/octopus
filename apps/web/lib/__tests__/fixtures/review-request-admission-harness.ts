@@ -299,6 +299,14 @@ if (scenario === "enqueue_retry") {
   assert.equal((await startReviewFlow(params)).started, true);
   assert.equal(current!.headSha, A, "provider-authoritative force pushes remain legitimate");
   assert.equal(current!.reviewRequestVersion, 3);
+} else if (scenario === "admission_clears_claim") {
+  // The old request's worker still holds its token. Admitting a new request must take
+  // the token away: it names a request that no longer exists.
+  current = { ...completed(), status: "reviewing", claimToken: "old-worker" };
+  providerHead = A;
+  assert.equal((await startReviewFlow(params)).started, true);
+  assert.equal(current!.headSha, A);
+  assert.equal(current!.claimToken, null, "a new request must not inherit the previous request's claim");
 } else if (scenario === "retry_org_installation") {
   assert.equal(provider, "github");
   repository.installationId = null;

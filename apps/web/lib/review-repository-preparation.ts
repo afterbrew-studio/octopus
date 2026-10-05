@@ -1,5 +1,6 @@
 import "server-only";
 import { DeferralEnqueueError } from "@/lib/review-deferral-error";
+import { updateUnderClaim, type ClaimIdentity } from "@/lib/review-claim";
 import { prisma } from "@octopus/db";
 import { summarizeRepository } from "@/lib/summarizer";
 import { analyzeRepository } from "@/lib/analyzer";
@@ -79,7 +80,7 @@ export async function ensureRepositoryAnalysis(
  * "deferred" for a run that never actually re-enqueued, which would leave it
  * non-terminal forever with nothing left to retry it.
  */
-export async function deferReviewForRepository(pullRequestId: string, headSha?: string | null, reviewRequestVersion?: number, reviewRunId?: string, claimToken?: string): Promise<boolean> {
+export async function deferReviewForRepository(pullRequestId: string, headSha?: string | null, reviewRequestVersion?: number, reviewRunId?: string, claim?: ClaimIdentity): Promise<boolean> {
   // Must be "pending", not "queued": `processReviewInternal`'s own claim query
   // only takes a "queued" row once it is older than the large-review stale
   // window (~35 minutes), so a "queued" retry scheduled 30 seconds out would
@@ -94,18 +95,11 @@ export async function deferReviewForRepository(pullRequestId: string, headSha?: 
   // `processReviewInternal` reporting "deferred" back to `processReview`,
   // which skips finalization on that signal instead of inferring it from
   // status. See the "deferred" return in reviewer.ts.
-  // Given the claim token, the row is only released while this worker still owns it
-  // (reviewing, under that token), and the token goes with it. A miss then means
-  // ownership was lost, which is not a deferral: the row belongs to someone else.
-  const changed = await prisma.pullRequest.updateMany({
-    where: {
-      id: pullRequestId,
-      ...(headSha !== undefined ? { headSha } : {}),
-      ...(reviewRequestVersion !== undefined ? { reviewRequestVersion } : {}),
-      ...(claimToken !== undefined ? { status: "reviewing", claimToken } : {}),
-    },
-    data: claimToken !== undefined ? { status: "pending", claimToken: null } : { status: "pending" },
-  });
+  // Under a claim the write also needs the claim to hold, and releases it: the
+  // retry takes the row with a claim of its own.
+  const changed = claim
+    ? { count: (await updateUnderClaim(claim, { status: "pending", claimToken: null })) ? 1 : 0 }
+    : await prisma.pullRequest.updateMany({ where: { id: pullRequestId, ...(headSha !== undefined ? { headSha } : {}), ...(reviewRequestVersion !== undefined ? { reviewRequestVersion } : {}) }, data: { status: "pending" } });
   if (!changed.count) return false;
   // Handed back before the retry is scheduled, so that only the retry can take the
   // run again. If the run is already finished there is nothing left to retry.

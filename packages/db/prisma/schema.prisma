@@ -501,6 +501,12 @@ model ReviewRun {
   /// Set once, when the run reaches a terminal state. A second write is a bug.
   terminalAt    DateTime?
   terminalDetail String?
+  /// A review verdict that may be standing on the pull request without this run
+  /// knowing it (an APPROVE or REQUEST_CHANGES whose outcome was not observed).
+  /// Written before the provider call and settled by a delayed reconcile job, which
+  /// dismisses a verdict that is active for a request that has since been replaced.
+  /// `state` is pending | current | dismissed | absent.
+  publication   Json?
   createdAt     DateTime @default(now())
 
   pullRequestId String

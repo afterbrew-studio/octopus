@@ -89,7 +89,7 @@ mock.module("@octopus/db", () => ({ prisma: {
       Object.assign(pr, data);
     } else if (typeof data.claimToken === "string") {
       // Not otherwise tracked here (see the else-if above): the claim step's
-      // own write is the one write whose value a later read (`stillOurs`) in
+      // own write is the one write whose value a later conditional write (the reservation) in
       // the same run checks back against, so it alone needs to stick.
       pr.claimToken = data.claimToken;
     }
@@ -256,7 +256,7 @@ mock.module("@/lib/github-app-config", () => ({ getGithubAppConfig: async () => 
 mock.module("@/lib/queue", () => ({
   loadQueueConfig: async () => ({ reviewTimeoutSeconds: 60, largeReviewTimeoutSeconds: 60 }),
   computeStaleReclaimMs: () => 120000,
-  enqueue: async () => {}, enqueueAfter: async () => {},
+  enqueue: async () => {}, enqueueAfter: async () => "job",
 }));
 mock.module("@/lib/cost", () => ({ getOrgSpendLimitStatus: async () => ({ blocked: false }), shouldGuardConcurrency: async () => false }));
 mock.module("@/lib/pubby", () => ({ pubby: { trigger: async (_channel: string, _name: string, data: { status?: string }) => { events.push(data); } } }));
@@ -349,7 +349,7 @@ if (directCommentFailure) {
   assert.ok(reviewUpdates.some(query => {
     const { where, data } = query as { where: unknown; data: { status?: string; errorMessage?: string } };
     if (data.status !== "failed") return false;
-    assert.deepEqual(where, { id: pr.id, headSha: pr.headSha, reviewRequestVersion: pr.reviewRequestVersion });
+    assert.deepEqual((where as { AND: unknown[] }).AND[0], { id: pr.id, headSha: pr.headSha, reviewRequestVersion: pr.reviewRequestVersion, claimToken: pr.claimToken, status: { in: ["reviewing", "completed"] } });
     assert.equal(data.errorMessage, "Forgejo API returned 403");
     return true;
   }), "Direct comment failure is persisted for the same review attempt");

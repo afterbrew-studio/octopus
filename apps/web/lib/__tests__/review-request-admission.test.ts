@@ -25,6 +25,7 @@ const scenarios = {
   missing_head: "preserves current state when the provider cannot identify its head",
   provider_failure: "preserves current state when provider lookup fails",
   stale_stuck: "does not fail a stuck newer review for a stale request",
+  admission_clears_claim: "clears the previous request's claim when it admits a new one",
   force_push: "allows a provider-authoritative force push to a previously seen commit",
   retry: "rejects a stale administrative retry through the actual HTTP handler",
   cli_existing: "admits an existing CLI PR with a fresh request version through the HTTP handler",
