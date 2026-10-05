@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { assessChangeShape, UNATTENDED_MAX_FILES, UNATTENDED_MAX_LINES, mayApprove, isModelOutputComplete, readWholeDiff, isCleanReview, shouldFailReviewCheck, formatPastReviews, formatPrIntent, buildRetrievalQuery, cappedConfidence, UNCITED_HIGH_SEV_CAP, filterByConfidence, resolveConfidenceThreshold, type PastReviewHit } from "@/lib/review-helpers";
+import { assessChangeShape, UNATTENDED_MAX_FILES, UNATTENDED_MAX_LINES, mayApprove, assessmentVerified, readWholeDiff, isCleanReview, shouldFailReviewCheck, formatPastReviews, formatPrIntent, buildRetrievalQuery, cappedConfidence, UNCITED_HIGH_SEV_CAP, filterByConfidence, resolveConfidenceThreshold, type PastReviewHit } from "@/lib/review-helpers";
 
 describe("formatPastReviews", () => {
   const hit = (o: Partial<PastReviewHit> = {}): PastReviewHit => ({
@@ -200,12 +200,62 @@ describe("isCleanReview", () => {
   });
 });
 
+const verifiedAssessment = {
+  state: "completed" as const, reason: "ok", model: "m", policySha256: "p", templateSha256: "t",
+  requests: [{ provider: "openai", model: "m", inputPreserved: true, sha256: "r" }],
+  responseSha256: "s", completion: { state: "completed" as const, reason: "stop" },
+  responseValidation: { state: "valid" as const, reason: null },
+};
+const wholeCoverage = (assessment: unknown = verifiedAssessment) => ({
+  complete: true, inventoryComplete: true, files: [{ state: "supplied" }], assessment,
+}) as never;
+
+describe("assessmentVerified", () => {
+  it("accepts only a validated, completed, observed assessment of complete input", () => {
+    expect(assessmentVerified(wholeCoverage())).toBe(true);
+  });
+
+  it("refuses a missing assessment, which is what text with no markers looks like", () => {
+    expect(assessmentVerified(wholeCoverage(null))).toBe(false);
+  });
+
+  it("refuses each way the response could be unproven", () => {
+    const refuse = (patch: Record<string, unknown>) => expect(assessmentVerified(wholeCoverage({ ...verifiedAssessment, ...patch }))).toBe(false);
+    refuse({ state: "incomplete" });
+    refuse({ state: "not-required" });
+    refuse({ responseValidation: { state: "invalid", reason: "Review headings missing or duplicated" } });
+    refuse({ responseValidation: undefined });
+    refuse({ completion: { state: "incomplete", reason: "length" } });
+    refuse({ completion: null });
+    refuse({ requests: [] });
+    refuse({ requests: [{ ...verifiedAssessment.requests[0], inputPreserved: false }] });
+  });
+
+  it("refuses incomplete input however good the assessment looks", () => {
+    expect(assessmentVerified({ ...wholeCoverage(), complete: false })).toBe(false);
+  });
+});
+
+describe("readWholeDiff", () => {
+  const file = (state: string) => ({ state }) as never;
+
+  it("needs a complete inventory with every file supplied", () => {
+    expect(readWholeDiff({ inventoryComplete: true, files: [file("supplied")] })).toBe(true);
+    expect(readWholeDiff({ inventoryComplete: false, files: [file("supplied")] })).toBe(false);
+    expect(readWholeDiff({ inventoryComplete: true, files: [file("supplied"), file("excluded")] })).toBe(false);
+  });
+
+  it("treats an unknown inventory as unread", () => {
+    expect(readWholeDiff({ inventoryComplete: false, files: [] })).toBe(false);
+  });
+});
+
 describe("mayApprove", () => {
   const clean = { hasCritical: false, hasHigh: false, hasMedium: false };
   const goodShape = assessChangeShape({ filesChanged: 3, linesAdded: 40, linesRemoved: 10, statedPurpose: "Restores the regulatory phrase the rename sweep altered." });
-  const ok = { optedIn: true, found: clean, parsedOutput: true, readWholeDiff: true, shape: goodShape };
+  const ok = { optedIn: true, found: clean, coverage: wholeCoverage(), shape: goodShape };
 
-  it("approves only a clean, complete review of the whole diff, when opted in", () => {
+  it("approves only a clean, verified review of the whole diff, when opted in", () => {
     expect(mayApprove(ok)).toBe(true);
   });
 
@@ -222,17 +272,18 @@ describe("mayApprove", () => {
     expect(mayApprove({ ...ok, found: { ...clean, hasMedium: true } })).toBe(false);
   });
 
-  it("refuses when the model response did not arrive whole", () => {
-    // A response truncated mid-emission parses to zero findings, which is the
+  it("refuses when the model response was not verified whole", () => {
+    // A malformed or truncated response parses to zero findings, which is the
     // same value a genuinely clean review produces.
-    expect(mayApprove({ ...ok, parsedOutput: false })).toBe(false);
+    expect(mayApprove({ ...ok, coverage: wholeCoverage({ ...verifiedAssessment, state: "incomplete" }) })).toBe(false);
+    expect(mayApprove({ ...ok, coverage: wholeCoverage(null) })).toBe(false);
   });
 
   it("refuses when part of the diff was never read", () => {
     // Truncated or ignore-filtered: an approval vouches for the change, and a
     // partly-read change cannot be vouched for. The dangerous shape is a large
     // PR whose auth file was dropped by truncation while a lockfile survived.
-    expect(mayApprove({ ...ok, readWholeDiff: false })).toBe(false);
+    expect(mayApprove({ ...ok, coverage: { ...wholeCoverage(), files: [{ state: "partial" }] } as never })).toBe(false);
   });
 
   it("refuses when the change shape was never assessed", () => {
@@ -241,35 +292,9 @@ describe("mayApprove", () => {
   });
 
   it("needs every condition, not a majority of them", () => {
-    for (const key of ["optedIn", "parsedOutput", "readWholeDiff"] as const) {
-      expect(mayApprove({ ...ok, [key]: false })).toBe(false);
-    }
-  });
-});
-
-describe("isModelOutputComplete", () => {
-  it("rejects an empty response and a findings block that never closed", () => {
-    expect(isModelOutputComplete("  ")).toBe(false);
-    expect(isModelOutputComplete("score\n<!-- OCTOPUS_FINDINGS_START -->\n[{\"sev")).toBe(false);
-  });
-
-  it("accepts prose without a block and a closed block", () => {
-    expect(isModelOutputComplete("Overall 5/5")).toBe(true);
-    expect(isModelOutputComplete("<!-- OCTOPUS_FINDINGS_START -->\n[]\n<!-- OCTOPUS_FINDINGS_END -->")).toBe(true);
-  });
-});
-
-describe("readWholeDiff", () => {
-  const file = (state: string) => ({ state }) as never;
-
-  it("needs a complete inventory with every file supplied", () => {
-    expect(readWholeDiff({ inventoryComplete: true, files: [file("supplied")] })).toBe(true);
-    expect(readWholeDiff({ inventoryComplete: false, files: [file("supplied")] })).toBe(false);
-    expect(readWholeDiff({ inventoryComplete: true, files: [file("supplied"), file("excluded")] })).toBe(false);
-  });
-
-  it("treats an unknown inventory as unread", () => {
-    expect(readWholeDiff({ inventoryComplete: false, files: [] })).toBe(false);
+    expect(mayApprove({ ...ok, optedIn: false })).toBe(false);
+    expect(mayApprove({ ...ok, coverage: wholeCoverage(null) })).toBe(false);
+    expect(mayApprove({ ...ok, coverage: { ...wholeCoverage(), inventoryComplete: false } as never })).toBe(false);
   });
 });
 
@@ -312,7 +337,7 @@ describe("assessChangeShape", () => {
     // are different questions, and in a loop where the author is also a model
     // the second one has no other asker.
     const clean = { hasCritical: false, hasHigh: false, hasMedium: false };
-    const base = { optedIn: true, found: clean, parsedOutput: true, readWholeDiff: true };
+    const base = { optedIn: true, found: clean, coverage: wholeCoverage() };
     expect(mayApprove({ ...base, shape: assessChangeShape(ok) })).toBe(true);
     expect(mayApprove({ ...base, shape: assessChangeShape({ ...ok, statedPurpose: "" }) })).toBe(false);
   });

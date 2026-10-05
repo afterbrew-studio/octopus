@@ -90,7 +90,7 @@ import {
   shouldFailReviewCheck,
   isCleanReview,
   mayApprove,
-  isModelOutputComplete,
+  assessmentVerified,
   readWholeDiff,
   assessChangeShape,
   formatPastReviews,
@@ -2457,15 +2457,12 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
     //
     //  - severities come from `foundBeforeReReviewFilter`, not from the filtered
     //    `findings`, so a re-review that found a HIGH cannot read as clean.
-    //  - a review whose model output produced no parseable findings block is
-    //    UNKNOWN, not clean: `parseFindings` returns [] for a truncated response
-    //    exactly as it does for a genuinely clean one.
+    //  - a review without a verified assessment is UNKNOWN, not clean:
+    //    `parseFindings` returns [] for a malformed or truncated response
+    //    exactly as it does for a genuinely clean one, so only the recorded
+    //    request, validation and completion evidence counts.
     //  - a diff that was truncated or filtered was only partly read, and
     //    approving it would vouch for files the model never saw.
-    // An approval vouches for the diff, so a partly-read one (truncated,
-    // filtered, or with any excluded file) is a partly-read vouch.
-    const parsedSomething = isModelOutputComplete(reviewBody);
-    const wholeDiffRead = readWholeDiff(coverage);
     // Counted from the diff the model actually read, so a truncated diff cannot
     // make a large change look small enough to wave through.
     const addedLines = diff.split('\n').filter((l) => l.startsWith('+') && !l.startsWith('+++')).length;
@@ -2479,8 +2476,7 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
     const approvable = mayApprove({
       optedIn: org.approveWhenClean,
       found: foundBeforeReReviewFilter,
-      parsedOutput: parsedSomething,
-      readWholeDiff: wholeDiffRead,
+      coverage,
       shape,
     });
     if (org.approveWhenClean && !shape.mergeableUnattended) {
@@ -2493,7 +2489,7 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
         : "COMMENT";
     if (org.approveWhenClean && !approvable && !shouldRequestChanges) {
       console.log(
-        `[reviewer] not approving PR ${pr.number}: clean=${isCleanReview(foundBeforeReReviewFilter)} parsed=${parsedSomething} wholeDiff=${wholeDiffRead}`,
+        `[reviewer] not approving PR ${pr.number}: clean=${isCleanReview(foundBeforeReReviewFilter)} verified=${assessmentVerified(coverage)} wholeDiff=${readWholeDiff(coverage)}`,
       );
     }
 
