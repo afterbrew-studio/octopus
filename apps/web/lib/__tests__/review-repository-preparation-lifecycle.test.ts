@@ -1,6 +1,6 @@
 import { expect, it } from "bun:test";
 
-it("preserves a frozen run's final state across a repository-preparation defer-then-succeed sequence", async () => {
+it("preserves a frozen run's final state across a repository-preparation and low-balance defer-then-succeed sequences", async () => {
   const process = Bun.spawn(["bun", "lib/__tests__/fixtures/review-repository-preparation-lifecycle-harness.ts"], {
     cwd: import.meta.dir + "/../..", stdout: "pipe", stderr: "pipe",
   });
@@ -10,5 +10,5 @@ it("preserves a frozen run's final state across a repository-preparation defer-t
   // Scenario B deliberately fails a review and logs it via `console.error` --
   // stderr is not asserted empty here, unlike the harness's siblings.
   expect(exit, stderr).toBe(0);
-  expect(stdout).toContain("PASS repository-preparation deferral stays claimable, preserves the run across defer-then-succeed and defer-then-fail, finalizes superseded runs on a cross-request race or a missed guarded update, treats only reviewRequestVersion (never headSha) as a legacy wildcard, and closes the binding-check-to-claim race");
+  expect(stdout).toContain("PASS repository-preparation and low-balance deferrals stay claimable, preserves the run across defer-then-succeed and defer-then-fail, finalizes superseded runs on a cross-request race or a missed guarded update, treats only reviewRequestVersion (never headSha) as a legacy wildcard, and closes the binding-check-to-claim race");
 });
