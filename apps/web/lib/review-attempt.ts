@@ -1,4 +1,5 @@
 import "server-only";
+import { ClaimLostError, claimWhere, updateUnderClaim, WHILE_FINISHING, type ClaimIdentity } from "@/lib/review-claim";
 import type { ReviewConfig } from "@/lib/review-helpers";
 import { isReviewRequestVersion } from "@/lib/review-status-state";
 import { isDeepStrictEqual } from "node:util";
@@ -94,17 +95,16 @@ export function attemptOutcomeForStatus(
   }
 }
 
-/** `claimToken` binds the write to one worker's claim, so a worker that lost the row writes nothing. */
-export async function updateCurrentReview(pullRequestId: string, headSha: string | null, reviewRequestVersion: number | undefined, data: Prisma.PullRequestUpdateManyMutationInput, expectedReviewBody?: string, claimToken?: string) {
+export async function updateCurrentReview(pullRequestId: string, headSha: string | null, reviewRequestVersion: number | undefined, data: Prisma.PullRequestUpdateManyMutationInput, expectedReviewBody?: string) {
   if (!headSha || !isReviewRequestVersion(reviewRequestVersion)) return { count: 0 };
-  return prisma.pullRequest.updateMany({ where: { id: pullRequestId, headSha, reviewRequestVersion, ...(expectedReviewBody !== undefined ? { reviewBody: expectedReviewBody } : {}), ...(claimToken !== undefined ? { claimToken } : {}) }, data });
+  return prisma.pullRequest.updateMany({ where: { id: pullRequestId, headSha, reviewRequestVersion, ...(expectedReviewBody !== undefined ? { reviewBody: expectedReviewBody } : {}) }, data });
 }
 
 /** Call only after the final report has been published successfully. Never infer this from an archived result. */
-export async function recordFirstReviewCompletion(pullRequestId: string, headSha: string | null, reviewRequestVersion: number | undefined, reviewBody: string) {
+export async function recordFirstReviewCompletion(pullRequestId: string, headSha: string | null, reviewRequestVersion: number | undefined, reviewBody: string, claim?: ClaimIdentity) {
   if (!headSha || !isReviewRequestVersion(reviewRequestVersion)) return;
   await prisma.pullRequest.updateMany({
-    where: { id: pullRequestId, headSha, reviewRequestVersion, reviewBody, status: "completed", firstReviewCompletedAt: null },
+    where: { id: pullRequestId, headSha, reviewRequestVersion, reviewBody, status: "completed", firstReviewCompletedAt: null, ...(claim ? { claimToken: claim.claimToken } : {}) },
     data: { firstReviewCompletedAt: new Date() },
   });
 }
@@ -115,12 +115,15 @@ export async function createReviewAttemptComment(
   reviewRequestVersion: number | undefined,
   create: () => Promise<number>,
   expectedReviewBody?: string,
+  /** When given, the comment id is only recorded while this claim holds. */
+  claim?: ClaimIdentity,
 ): Promise<number> {
   let saved = false;
   return withForgejoPublication(async () => {
     const id = await create();
-    const updated = await updateCurrentReview(pullRequestId, headSha, reviewRequestVersion, { reviewCommentId: id }, expectedReviewBody);
-    saved = updated.count === 1;
+    saved = claim
+      ? await updateUnderClaim(claim, { reviewCommentId: id }, WHILE_FINISHING, expectedReviewBody !== undefined ? { reviewBody: expectedReviewBody } : {})
+      : (await updateCurrentReview(pullRequestId, headSha, reviewRequestVersion, { reviewCommentId: id }, expectedReviewBody)).count === 1;
     return id;
   }, { key: JSON.stringify([pullRequestId, headSha, reviewRequestVersion]), acknowledged: async () => saved });
 }
@@ -154,28 +157,38 @@ export async function saveReviewAttempt(
   coverage: ReviewCoverage,
   reviewBody: string,
   issues?: Prisma.ReviewIssueCreateManyInput[],
-  /** When given, the archive is still written but the current view is only replaced while this claim holds. */
-  claimToken?: string,
+  /**
+   * When given, the archive is still written but the current view is only replaced
+   * while this claim holds; losing it throws `ClaimLostError` once the archive is
+   * committed, so the caller stops instead of carrying on with a result that is no
+   * longer the row's.
+   */
+  claim?: ClaimIdentity,
 ) {
   const coverageJson = JSON.parse(JSON.stringify(coverage)) as Prisma.InputJsonValue;
-  return prisma.$transaction(async tx => {
+  const outcome = await prisma.$transaction(async tx => {
     const inserted = await tx.reviewAttempt.createMany({ skipDuplicates: true, data: [{
       id: attemptId, pullRequestId, headSha: coverage.headSha,
       baseSha: coverage.baseSha, coverage: coverageJson, reviewBody,
     }] });
     if (!inserted.count) {
       if (!await hasReviewAttempt(attemptId, pullRequestId, coverage, reviewBody, tx)) throw new Error("Review attempt identity conflict");
-      return false;
+      return "existing" as const;
     }
-    if (!coverage.headSha || !isReviewRequestVersion(coverage.reviewRequestVersion)) return false;
-    const promoted = await tx.pullRequest.updateMany({ where: { id: pullRequestId, headSha: coverage.headSha, reviewRequestVersion: coverage.reviewRequestVersion, ...(claimToken !== undefined ? { claimToken } : {}) }, data: {
-      status: "completed", reviewBody, reviewCoverage: coverageJson, errorMessage: null,
-    } });
-    if (!promoted.count) return false;
+    if (!coverage.headSha || !isReviewRequestVersion(coverage.reviewRequestVersion)) return "stale" as const;
+    const promoted = await tx.pullRequest.updateMany({
+      where: claim
+        ? claimWhere(claim, WHILE_FINISHING)
+        : { id: pullRequestId, headSha: coverage.headSha, reviewRequestVersion: coverage.reviewRequestVersion },
+      data: { status: "completed", reviewBody, reviewCoverage: coverageJson, errorMessage: null },
+    });
+    if (!promoted.count) return claim ? "lost" as const : "stale" as const;
     if (issues !== undefined) {
       await tx.reviewIssue.deleteMany({ where: { pullRequestId } });
       if (issues.length) await tx.reviewIssue.createMany({ data: issues });
     }
-    return true;
+    return "promoted" as const;
   });
+  if (outcome === "lost") throw new ClaimLostError();
+  return outcome === "promoted";
 }

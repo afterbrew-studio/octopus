@@ -82,7 +82,9 @@ export async function reapStuckReviews(
           { status: "queued", updatedAt: { lt: queuedStale } },
         ],
       },
-      data: { status: "failed", errorMessage: REAP_FAILED_MESSAGE },
+      // Clearing the claim in the same write is what makes the failure final for the
+      // worker that went quiet: if it wakes up, nothing it writes matches the row.
+      data: { status: "failed", errorMessage: REAP_FAILED_MESSAGE, claimToken: null },
     });
     if (updated.count === 0) continue;
 

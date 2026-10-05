@@ -1,6 +1,7 @@
 import "server-only";
 import { prisma, type Prisma } from "@octopus/db";
 import { isReviewRequestVersion } from "@/lib/review-status-state";
+import { WHILE_FINISHING, type ClaimIdentity } from "@/lib/review-claim";
 import { createPullRequestComment, updatePullRequestComment, getInstallationToken, findPullRequestSummaryComment } from "@/lib/github";
 
 import { assertReviewProcessingActive, reviewPublicationSignal, type ReviewExecutionWindow } from "./review-capacity";
@@ -16,6 +17,8 @@ type SummaryTarget = {
   prNumber: number;
   body: string;
   expectedReviewBody?: string;
+  /** When given, nothing is published unless this claim still holds the row. */
+  claim?: ClaimIdentity;
 };
 
 /** Reuse the PR's summary while serializing publication with review admission. */
@@ -33,11 +36,12 @@ export async function publishReviewSummary(target: SummaryTarget): Promise<numbe
       const result = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
         const signal = reviewPublicationSignal(target.executionWindow, 10_000)!;
         const [current] = await tx.$queryRaw<{
-          headSha: string | null; reviewRequestVersion: number; reviewCommentId: bigint | null; reviewBody: string | null; status: string;
-        }[]>`SELECT "headSha", "reviewRequestVersion", "reviewCommentId", "reviewBody", status
+          headSha: string | null; reviewRequestVersion: number; reviewCommentId: bigint | null; reviewBody: string | null; status: string; claimToken: string | null;
+        }[]>`SELECT "headSha", "reviewRequestVersion", "reviewCommentId", "reviewBody", status, "claimToken"
              FROM pull_requests WHERE id = ${target.pullRequestId} FOR UPDATE`;
         if (!current || current.headSha !== target.headSha || current.reviewRequestVersion !== target.reviewRequestVersion
-          || (target.expectedReviewBody !== undefined && current.reviewBody !== target.expectedReviewBody)) return null;
+          || (target.expectedReviewBody !== undefined && current.reviewBody !== target.expectedReviewBody)
+          || (target.claim && (current.claimToken !== target.claim.claimToken || !(WHILE_FINISHING as readonly string[]).includes(current.status)))) return null;
         if (target.expectedReviewBody === undefined && current.status === "completed") return null;
 
         const attempts = await tx.reviewAttempt.findMany({

@@ -84,6 +84,8 @@ const repos: Record<string, { id: string; fullName: string; reviewConfig: object
   "repo-o": { id: "repo-o", fullName: "fixture/repo-o", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
   "repo-p": { id: "repo-p", fullName: "fixture/repo-p", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
   "repo-q": { id: "repo-q", fullName: "fixture/repo-q", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
+  "repo-r": { id: "repo-r", fullName: "fixture/repo-r", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
+  "repo-s": { id: "repo-s", fullName: "fixture/repo-s", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
   "repo-i2": { id: "repo-i2", fullName: "fixture/repo-i2", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
 };
 
@@ -162,6 +164,14 @@ const prs: Record<string, Row> = {
     id: "pr-q", repositoryId: "repo-q", number: 18, title: "Title", author: "author", url: "https://example.test/pr/18",
     headSha: A, reviewRequestVersion: 1, status: "pending", reviewBody: null, claimToken: null, updatedAt: new Date(),
   },
+  "pr-r": {
+    id: "pr-r", repositoryId: "repo-r", number: 19, title: "Title", author: "author", url: "https://example.test/pr/19",
+    headSha: A, reviewRequestVersion: 1, status: "pending", reviewBody: null, claimToken: null, updatedAt: new Date(),
+  },
+  "pr-s": {
+    id: "pr-s", repositoryId: "repo-s", number: 20, title: "Title", author: "author", url: "https://example.test/pr/20",
+    headSha: A, reviewRequestVersion: 1, status: "pending", reviewBody: null, claimToken: null, updatedAt: new Date(),
+  },
   // Another review of the same organization, already in flight.
   "pr-i2": {
     id: "pr-i2", repositoryId: "repo-i2", number: 10, title: "Title", author: "author", url: "https://example.test/pr/10",
@@ -193,6 +203,8 @@ const runs: Record<string, Run> = {
   "run-o": { id: "run-o", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: 1 },
   "run-p": { id: "run-p", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: 1 },
   "run-q": { id: "run-q", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: 1 },
+  "run-r": { id: "run-r", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: 1 },
+  "run-s": { id: "run-s", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: 1 },
   "run-i": { id: "run-i", state: "pending", terminalAt: null, terminalDetail: null, headSha: A, reviewRequestVersion: 1 },
 };
 
@@ -200,6 +212,9 @@ const runs: Record<string, Run> = {
 // silently broke when the deferral used to park the pull request at "queued"
 // instead of "pending" -- a fresh row never satisfied `{ lt: staleCutoff }`.
 function conditionMatches(rowValue: unknown, condition: unknown): boolean {
+  if (condition !== null && typeof condition === "object" && "in" in (condition as Record<string, unknown>)) {
+    return (condition as { in: unknown[] }).in.includes(rowValue);
+  }
   if (condition !== null && typeof condition === "object" && "lt" in (condition as Record<string, unknown>)) {
     const cutoff = (condition as { lt: Date }).lt;
     return rowValue instanceof Date && rowValue.getTime() < cutoff.getTime();
@@ -207,8 +222,10 @@ function conditionMatches(rowValue: unknown, condition: unknown): boolean {
   return rowValue === condition;
 }
 function whereMatches(row: Row, where: Record<string, unknown>): boolean {
+  const and = where.AND as Array<Record<string, unknown>> | undefined;
+  if (and && !and.every((clause) => whereMatches(row, clause))) return false;
   for (const [key, value] of Object.entries(where)) {
-    if (key === "OR") continue;
+    if (key === "OR" || key === "AND") continue;
     if (!conditionMatches(row[key], value)) return false;
   }
   const or = where.OR as Array<Record<string, unknown>> | undefined;
@@ -228,7 +245,8 @@ const pullRequestDb = {
   count: async ({ where }: { where: { status: string; id: { not: string } } }) =>
     Object.values(prs).filter((row) => row.status === where.status && row.id !== where.id.not).length,
   updateMany: async ({ where, data }: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
-    const row = prs[where.id as string];
+    const id = where.id ?? (where.AND as Array<{ id?: string }> | undefined)?.find((clause) => clause.id)?.id;
+    const row = prs[id as string];
     if (!row || !whereMatches(row, where)) return { count: 0 };
     apply(row, data);
     return { count: 1 };
@@ -345,7 +363,7 @@ const { deferReviewForRepository } = await import("@/lib/review-repository-prepa
 const analysisReady: Record<string, boolean> = {
   "repo-a": false, "repo-b": false, "repo-q": false, "repo-c": false, "repo-d": false,
   // E/F/G need no deferral; their repository is ready from the start.
-  "repo-e": true, "repo-f": true, "repo-g": true, "repo-h": true, "repo-i": true, "repo-i2": true, "repo-j": true, "repo-m": true, "repo-n": true, "repo-o": true, "repo-p": true, "repo-l": true,
+  "repo-e": true, "repo-f": true, "repo-g": true, "repo-h": true, "repo-i": true, "repo-i2": true, "repo-j": true, "repo-r": true, "repo-s": true, "repo-m": true, "repo-n": true, "repo-o": true, "repo-p": true, "repo-l": true,
 };
 let interleaveNewAdmissionAfterBindingRead = false;
 // Scenario D: simulates the pull request moving WHILE this (slow, real AI)
@@ -458,6 +476,9 @@ mock.module("@/lib/review-summary-comment", () => ({ publishReviewSummary: async
 // interaction with `deferReviewForRepository`. Only the immutable-evidence-record
 // side (irrelevant to the `ReviewRun` lifecycle under test) is stubbed.
 const real = await import("@/lib/review-attempt");
+// Captured before the mock replaces the module's exports in place; calling through
+// `real` afterwards would reach the mock itself.
+const realSaveReviewAttempt = real.saveReviewAttempt;
 let saveForReal = false;
 mock.module("@/lib/review-attempt", () => ({
   attemptOutcomeForStatus: real.attemptOutcomeForStatus,
@@ -466,7 +487,7 @@ mock.module("@/lib/review-attempt", () => ({
   createReviewAttemptComment: async (_id: string, _head: string, _version: number, create: () => Promise<number>) => create(),
   // Stops right after the "completed" write, which is irrelevant to the run lifecycle -- except
   // for scenario L, which is about what a failed worker may persist.
-  saveReviewAttempt: async (...args: Parameters<typeof real.saveReviewAttempt>) => (saveForReal ? real.saveReviewAttempt(...args) : false),
+  saveReviewAttempt: async (...args: Parameters<typeof real.saveReviewAttempt>) => (saveForReal ? realSaveReviewAttempt(...args) : false),
   recordFirstReviewCompletion: async () => { throw new Error("must not be reached: saveReviewAttempt stops before it"); },
   withForgejoReviewPublication: async () => { throw new Error("unexpected Forgejo publication"); },
 }));
@@ -721,4 +742,39 @@ await processReview("pr-q", undefined, "run-q");
 assert.equal(prs["pr-q"].status, "completed", "the retried job must actually run the review");
 assert.equal(runs["run-q"].state, "succeeded");
 
-console.log("PASS repository-preparation and low-balance deferrals stay claimable, a claim taken after the publication check cannot produce a second review, a replayed job for a finished run does not dispatch, a worker that lost its claim cannot publish or persist its failure, a long publication keeps its claim and an ambiguous one is reconciled before any retry, a deferral that cannot be scheduled leaves the run recoverable, preserves the run across defer-then-succeed and defer-then-fail, finalizes superseded runs on a cross-request race or a missed guarded update, treats only reviewRequestVersion (never headSha) as a legacy wildcard, and closes the binding-check-to-claim race");
+// R. A worker whose claim is taken while it publishes, and which then carries on to
+// persist its result as if nothing happened. Persisting is a write to the row, and
+// the row now belongs to the worker that reclaimed it.
+let takenAt: { checkRunUpdates: number } | null = null;
+reviewPost = async (args) => {
+  await recordReview(args);
+  Object.assign(prs["pr-r"], { claimToken: "worker-b", status: "reviewing", reviewBody: "B is still reviewing" });
+  takenAt = { checkRunUpdates };
+  return 456;
+};
+saveForReal = true;
+const quietR = console.error;
+console.error = () => {};
+try { await processReview("pr-r", undefined, "run-r"); } finally { console.error = quietR; saveForReal = false; reviewPost = null; }
+assert.ok(takenAt, "the reclaim must have happened during publication");
+assert.equal(prs["pr-r"].claimToken, "worker-b");
+assert.equal(prs["pr-r"].status, "reviewing", "a worker that lost its claim must not promote its result over the row's new owner");
+assert.equal(prs["pr-r"].reviewBody, "B is still reviewing", "nor replace the report");
+assert.equal(checkRunUpdates, takenAt.checkRunUpdates, "nor complete the other worker's check run");
+
+// S. A new request is admitted while the old review publishes, and the old claim
+// token is still on the row. The token names a request that no longer exists, so
+// nothing the old worker writes may land on the new one.
+reviewPost = async (args) => {
+  await recordReview(args);
+  Object.assign(prs["pr-s"], { headSha: B, reviewRequestVersion: 2, status: "pending", reviewBody: null });
+  return 456;
+};
+saveForReal = true;
+const quietS = console.error;
+console.error = () => {};
+try { await processReview("pr-s", undefined, "run-s"); } finally { console.error = quietS; saveForReal = false; reviewPost = null; }
+assert.equal(prs["pr-s"].status, "pending", "the unreviewed new head must not be marked completed by the old review");
+assert.equal(prs["pr-s"].reviewBody, null, "nor given the old report");
+
+console.log("PASS repository-preparation and low-balance deferrals stay claimable, a claim taken after the publication check cannot produce a second review, a replayed job for a finished run does not dispatch, a worker that lost its claim cannot publish or persist its failure, a worker that lost its claim while publishing cannot promote its result, an old claim cannot write to the request that replaced it, a long publication keeps its claim and an ambiguous one is reconciled before any retry, a deferral that cannot be scheduled leaves the run recoverable, preserves the run across defer-then-succeed and defer-then-fail, finalizes superseded runs on a cross-request race or a missed guarded update, treats only reviewRequestVersion (never headSha) as a legacy wildcard, and closes the binding-check-to-claim race");

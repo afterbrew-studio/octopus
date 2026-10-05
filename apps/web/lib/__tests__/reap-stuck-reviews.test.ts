@@ -70,7 +70,7 @@ describe("reapStuckReviews", () => {
           { status: "queued", updatedAt: { lt: new Date(NOW.getTime() - 2100_000) } },
         ],
       },
-      data: { status: "failed", errorMessage: REAP_FAILED_MESSAGE },
+      data: { status: "failed", errorMessage: REAP_FAILED_MESSAGE, claimToken: null },
     });
     expect(enqueue).toHaveBeenCalledWith(
       "process-review",

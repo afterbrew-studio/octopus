@@ -350,7 +350,7 @@ if (directCommentFailure) {
   assert.ok(reviewUpdates.some(query => {
     const { where, data } = query as { where: unknown; data: { status?: string; errorMessage?: string } };
     if (data.status !== "failed") return false;
-    assert.deepEqual(where, { id: pr.id, headSha: pr.headSha, reviewRequestVersion: pr.reviewRequestVersion, claimToken: pr.claimToken });
+    assert.deepEqual((where as { AND: unknown[] }).AND[0], { id: pr.id, headSha: pr.headSha, reviewRequestVersion: pr.reviewRequestVersion, claimToken: pr.claimToken, status: { in: ["reviewing", "completed"] } });
     assert.equal(data.errorMessage, "Forgejo API returned 403");
     return true;
   }), "Direct comment failure is persisted for the same review attempt");
