@@ -1,5 +1,6 @@
 import "server-only";
 import crypto from "node:crypto";
+import { readBoundedJson, isPostgresSafeText } from "@/lib/bounded-json";
 import { NextRequest, NextResponse } from "next/server";
 import { headers, cookies } from "next/headers";
 import { prisma } from "@octopus/db";
@@ -23,6 +24,38 @@ type InitPayload = {
   issuedAt: number;
 };
 
+// Only provider I/O is caught here; application/auth/database faults stay observable.
+async function readGitlabResponse(url: string, init: RequestInit, stage: "token" | "group" | "user") {
+  try {
+    const response = await fetch(url, { ...init, signal: AbortSignal.timeout(15_000), redirect: "error" });
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => {});
+      console.error("[gitlab-callback] Provider request rejected", { stage, status: response.status });
+      return { ok: false as const, status: response.status };
+    }
+    const parsed = await readBoundedJson(response, 1024 * 1024);
+    if (!parsed.ok) {
+      console.error("[gitlab-callback] Invalid provider response", { stage, reason: parsed.reason });
+      return { ok: false as const };
+    }
+    return { ok: true as const, data: parsed.value };
+  } catch (error) {
+    // Do not log error messages, URLs or response bodies: they can contain credentials.
+    console.error("[gitlab-callback] Provider request failed", {
+      stage, reason: error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError") ? "timeout" : "network",
+    });
+    return { ok: false as const };
+  }
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function isNonemptyText(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0 && isPostgresSafeText(value);
+}
+
 export async function GET(request: NextRequest) {
   const baseUrl = process.env.BETTER_AUTH_URL || request.url;
   const code = request.nextUrl.searchParams.get("code");
@@ -35,7 +68,7 @@ export async function GET(request: NextRequest) {
   cookieStore.delete(GITLAB_OAUTH_INIT_COOKIE);
 
   if (error) {
-    console.error("[gitlab-callback] OAuth error:", error);
+    console.error("[gitlab-callback] OAuth authorization denied");
     return NextResponse.redirect(
       new URL("/settings/integrations?error=gitlab_denied", baseUrl),
     );
@@ -108,7 +141,7 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const tokenResponse = await fetch(`${gitlabHost}/oauth/token`, {
+  const tokenResponse = await readGitlabResponse(`${gitlabHost}/oauth/token`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
@@ -118,59 +151,44 @@ export async function GET(request: NextRequest) {
       code,
       redirect_uri: redirectUri,
     }),
-  });
+  }, "token");
 
-  const tokenData = await tokenResponse.json();
-  if (!tokenResponse.ok || tokenData.error) {
-    console.error("[gitlab-callback] Token exchange failed:", tokenData);
-    return NextResponse.redirect(
-      new URL("/settings/integrations?error=token_exchange", baseUrl),
-    );
+  const tokenData = tokenResponse.ok ? tokenResponse.data : null;
+  if (!isObject(tokenData) || tokenData.error ||
+      !isNonemptyText(tokenData.access_token) || !isNonemptyText(tokenData.refresh_token) ||
+      (tokenData.expires_in != null && (typeof tokenData.expires_in !== "number" || !Number.isFinite(tokenData.expires_in) || tokenData.expires_in <= 0)) ||
+      (tokenData.scope != null && (typeof tokenData.scope !== "string" || !isPostgresSafeText(tokenData.scope)))) {
+    console.error("[gitlab-callback] Invalid token response");
+    return NextResponse.redirect(new URL("/settings/integrations?error=token_exchange", baseUrl));
   }
 
-  const accessToken = tokenData.access_token as string | undefined;
-  const refreshToken = tokenData.refresh_token as string | undefined;
-  if (!accessToken || !refreshToken) {
-    console.error("[gitlab-callback] Missing tokens in response");
-    return NextResponse.redirect(
-      new URL("/settings/integrations?error=token_exchange", baseUrl),
-    );
+  const accessToken = tokenData.access_token;
+  const refreshToken = tokenData.refresh_token;
+  const tokenExpiresAt = new Date(Date.now() + ((tokenData.expires_in as number | undefined) ?? 7200) * 1000);
+  const scopes = (tokenData.scope as string | undefined) ?? null;
+  if (!Number.isFinite(tokenExpiresAt.getTime())) {
+    console.error("[gitlab-callback] Invalid token expiry");
+    return NextResponse.redirect(new URL("/settings/integrations?error=token_exchange", baseUrl));
   }
 
-  const expiresIn = (tokenData.expires_in as number) ?? 7200;
-  const scopes = (tokenData.scope as string) ?? null;
-  const tokenExpiresAt = new Date(Date.now() + expiresIn * 1000);
-
-  // Verify the namespace exists
+  // Verify the namespace before persisting any credentials.
   const apiBase = `${gitlabHost.replace(/\/+$/, "")}/api/v4`;
+  const authorization = { headers: { Authorization: `Bearer ${accessToken}` } };
   let namespaceName: string;
-  const groupRes = await fetch(
-    `${apiBase}/groups/${encodeURIComponent(namespacePath)}`,
-    { headers: { Authorization: `Bearer ${accessToken}` } },
-  );
-  if (groupRes.ok) {
-    const data = await groupRes.json();
-    namespaceName = (data.name as string) || namespacePath;
-  } else if (groupRes.status === 404) {
-    const userRes = await fetch(
-      `${apiBase}/users?username=${encodeURIComponent(namespacePath)}`,
-      { headers: { Authorization: `Bearer ${accessToken}` } },
-    );
-    if (userRes.ok) {
-      const arr = (await userRes.json()) as Array<{ name?: string }>;
-      namespaceName = arr[0]?.name ?? namespacePath;
-    } else {
-      console.error("[gitlab-callback] Namespace not found:", namespacePath);
-      return NextResponse.redirect(
-        new URL("/settings/integrations?error=namespace_not_found", baseUrl),
-      );
+  const group = await readGitlabResponse(`${apiBase}/groups/${encodeURIComponent(namespacePath)}`, authorization, "group");
+  if (group.ok && isObject(group.data) && isNonemptyText(group.data.name)) {
+    namespaceName = group.data.name;
+  } else if (!group.ok && group.status === 404) {
+    const users = await readGitlabResponse(`${apiBase}/users?username=${encodeURIComponent(namespacePath)}`, authorization, "user");
+    const user = users.ok && Array.isArray(users.data) ? users.data[0] : null;
+    if (!isObject(user) || !isNonemptyText(user.name)) {
+      console.error("[gitlab-callback] Invalid or missing user namespace");
+      return NextResponse.redirect(new URL("/settings/integrations?error=namespace_not_found", baseUrl));
     }
+    namespaceName = user.name;
   } else {
-    const body = await groupRes.text().catch(() => "");
-    console.error("[gitlab-callback] Namespace lookup failed:", groupRes.status, body);
-    return NextResponse.redirect(
-      new URL("/settings/integrations?error=namespace_not_found", baseUrl),
-    );
+    console.error("[gitlab-callback] Invalid or unavailable group namespace");
+    return NextResponse.redirect(new URL("/settings/integrations?error=namespace_not_found", baseUrl));
   }
 
   let saved: boolean;

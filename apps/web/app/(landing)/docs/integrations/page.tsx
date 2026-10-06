@@ -110,6 +110,15 @@ export default function IntegrationsPage() {
           "MRs are reviewed automatically on open and update",
         ]}
       >
+        <P>
+          If GitLab is unreachable, times out, rejects authorization or returns an
+          invalid response during connection, Octopus returns you to Settings →
+          Integrations with an error and keeps any existing connection unchanged.
+          Start the connection again from there. For repeated authorization
+          failures, check your OAuth app settings; for namespace errors, check
+          the group or username and your access. If the instance is unavailable,
+          wait until it recovers before trying again.
+        </P>
         <FeatureGrid>
           <Feature
             icon={<IconGitPullRequest className="size-4" />}
