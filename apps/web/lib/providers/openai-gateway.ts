@@ -128,6 +128,58 @@ const GATEWAY_DISPATCHER = new Agent({
   bodyTimeout: GATEWAY_TIMEOUT_MS,
 });
 
+/**
+ * How a gateway call failed, for the log: the whole error chain (the SDK reports
+ * only "Connection error." and puts the real cause two levels down), whether any
+ * response bytes arrived, and how long the call lasted.
+ */
+type AttemptTrace = { startedAt: number; responseStarted: boolean; status: number | null };
+
+function causeChain(error: unknown): { name: string; code?: string; message: string }[] {
+  const chain: { name: string; code?: string; message: string }[] = [];
+  let current: unknown = error;
+  for (let depth = 0; current && depth < 6; depth++) {
+    const e = current as { name?: string; code?: unknown; message?: unknown; cause?: unknown };
+    chain.push({
+      name: typeof e.name === "string" ? e.name : typeof current,
+      ...(typeof e.code === "string" ? { code: e.code } : {}),
+      message: typeof e.message === "string" ? e.message : String(current),
+    });
+    current = e.cause;
+  }
+  return chain;
+}
+
+/**
+ * Failures of a connection that was never usable: a pooled keep-alive socket the
+ * provider had already closed, or a reset while the request was being sent. They
+ * happen before any response, and say nothing about the request itself.
+ */
+const STALE_SOCKET_CODES = new Set(["ECONNRESET", "EPIPE", "UND_ERR_SOCKET", "ECONNREFUSED"]);
+const TIMEOUT_CODES = new Set(["UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT", "ETIMEDOUT"]);
+/** A reset this late is not a dead pooled socket: the provider may already be generating. */
+const STALE_SOCKET_WINDOW_MS = 10_000;
+const GATEWAY_MAX_RETRIES = 2;
+
+/**
+ * Whether this failure may be sent again. Only a connection that died before any
+ * response and almost at once: never a timeout, a response that began, or an HTTP
+ * status, because each of those means the provider may have worked on the request,
+ * and `maxRetries: 0` exists so a long call is never repeated into the job timeout.
+ */
+function isStaleSocketFailure(error: unknown, trace: AttemptTrace): boolean {
+  if (trace.responseStarted) return false;
+  if (Date.now() - trace.startedAt > STALE_SOCKET_WINDOW_MS) return false;
+  if (typeof (error as { status?: unknown }).status === "number") return false;
+  const chain = causeChain(error);
+  if (chain.some((link) => (link.code && TIMEOUT_CODES.has(link.code)) || /timed? ?out|abort/i.test(link.message) || /abort|timeout/i.test(link.name))) return false;
+  return chain.some((link) => link.code !== undefined && STALE_SOCKET_CODES.has(link.code));
+}
+
+function retryDelayMs(attempt: number): number {
+  return 150 * (attempt + 1) + Math.random() * 150;
+}
+
 export async function callOpenAiGateway(
   params: AiCreateParams,
   opts: GatewayCallOptions,
@@ -146,7 +198,15 @@ export async function callOpenAiGateway(
     // `dispatcher` is undici's transport hook; the SDK's RequestInit type has
     // no field for it, so it rides through as an extra property.
     fetchOptions: { dispatcher: GATEWAY_DISPATCHER } as unknown as Record<string, never>,
+    // Records whether response headers ever arrived: fetch resolves only then.
+    fetch: async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const response = await fetch(input, init);
+      trace.responseStarted = true;
+      trace.status = response.status;
+      return response;
+    },
   });
+  const trace: AttemptTrace = { startedAt: Date.now(), responseStarted: false, status: null };
 
   const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [];
   if (params.system) messages.push({ role: "system", content: stripLoneSurrogates(params.system) });
@@ -156,7 +216,7 @@ export async function callOpenAiGateway(
     ? params.model.slice(opts.modelPrefix.length)
     : params.model;
 
-  const response = await client.chat.completions.create(observeAiRequest(params, opts.name, {
+  const request = observeAiRequest(params, opts.name, {
     // Extensions first, so a reserved key could never win even if one slipped
     // past parseExtraBody.
     ...(opts.extraBody ?? {}),
@@ -185,7 +245,28 @@ export async function callOpenAiGateway(
           },
         }
       : {}),
-  }));
+  });
+
+  let response: Awaited<ReturnType<typeof client.chat.completions.create>>;
+  for (let attempt = 0; ; attempt++) {
+    trace.startedAt = Date.now();
+    trace.responseStarted = false;
+    trace.status = null;
+    try {
+      response = await client.chat.completions.create(request);
+      break;
+    } catch (error) {
+      const retrying = attempt < GATEWAY_MAX_RETRIES && isStaleSocketFailure(error, trace);
+      console.error(
+        `[${opts.name}] gateway call failed (${params.model}, attempt ${attempt + 1}/${GATEWAY_MAX_RETRIES + 1}, ` +
+          `${Date.now() - trace.startedAt}ms, responseStarted=${trace.responseStarted}, status=${trace.status ?? "none"}, ` +
+          `${retrying ? "retrying on a fresh connection" : "not retrying"}):`,
+        JSON.stringify(causeChain(error)),
+      );
+      if (!retrying) throw error;
+      await new Promise((resolve) => setTimeout(resolve, retryDelayMs(attempt)));
+    }
+  }
 
   const finishReason = response.choices[0]?.finish_reason ?? "unknown";
   const raw = response.choices[0]?.message?.content ?? "";
