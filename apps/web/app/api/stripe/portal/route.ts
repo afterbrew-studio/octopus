@@ -1,3 +1,5 @@
+import "server-only";
+import { isPostgresSafeJson, readBoundedJson } from "@/lib/bounded-json";
 import { NextRequest, NextResponse } from "next/server";
 import { headers } from "next/headers";
 import { auth } from "@/lib/auth";
@@ -11,10 +13,20 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const body = await req.json();
-  const { orgId } = body as { orgId: string };
+  const parsed = await readBoundedJson(req, 1024 * 1024);
+  if (!parsed.ok) {
+    return Response.json({ error: parsed.reason === "too_large" ? "Request too large" : "Invalid JSON body" }, { status: parsed.reason === "too_large" ? 413 : 400 });
+  }
+  if (!parsed.value || typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
+    return Response.json({ error: "Expected a JSON object" }, { status: 400 });
+  }
+  if (!isPostgresSafeJson(parsed.value)) {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+  const body = parsed.value as Record<string, unknown>;
+  const { orgId } = body;
 
-  if (!orgId) {
+  if (typeof orgId !== "string" || !orgId.trim()) {
     return NextResponse.json({ error: "Missing orgId" }, { status: 400 });
   }
 

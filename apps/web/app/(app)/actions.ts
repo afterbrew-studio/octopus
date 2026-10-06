@@ -1,6 +1,7 @@
 "use server";
 
 import "server-only";
+import { isTextFormData } from "@/lib/form-input";
 import { headers, cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
@@ -75,6 +76,8 @@ export async function createOrganization(
   if (!allowed) {
     return { error: `You can own at most ${MAX_OWNED_ORGS_PER_USER} organizations.` };
   }
+
+  if (!isTextFormData(formData)) return { error: "Invalid form data." };
 
   const name = (formData.get("name") as string)?.trim();
 
@@ -208,6 +211,8 @@ export async function updateUserName(
 ): Promise<{ error?: string; success?: boolean }> {
   const user = await getUser();
 
+  if (!isTextFormData(formData)) return { error: "Invalid form data." };
+
   const name = (formData.get("name") as string)?.trim();
   if (!name || name.length < 2) {
     return { error: "Name must be at least 2 characters." };
@@ -251,6 +256,8 @@ export async function updateOrganizationName(
     return { error: "Only organization owners and admins can change the name." };
   }
 
+  if (!isTextFormData(formData)) return { error: "Invalid form data." };
+
   const name = (formData.get("name") as string)?.trim();
   if (!name || name.length < 2) {
     return { error: "Organization name must be at least 2 characters." };
@@ -293,6 +300,8 @@ export async function updateApiKeys(
   if (!hasOrgPermission(member, "settings:manage")) {
     return { error: "Only organization owners and admins can update API keys." };
   }
+
+  if (!isTextFormData(formData)) return { error: "Invalid form data." };
 
   const openaiApiKey = (formData.get("openaiApiKey") as string)?.trim() || null;
   const anthropicApiKey = (formData.get("anthropicApiKey") as string)?.trim() || null;
@@ -438,6 +447,8 @@ export async function updateDefaultModels(
   if (!hasOrgPermission(member, "settings:manage")) {
     return { error: "Only organization owners and admins can change default models." };
   }
+
+  if (!isTextFormData(formData, ["defaultModelId", "defaultEmbedModelId", "reviewEffort"])) return { error: "Invalid form data." };
 
   const defaultModelId = (formData.get("defaultModelId") as string)?.trim() || null;
   const defaultEmbedModelId = (formData.get("defaultEmbedModelId") as string)?.trim() || null;
@@ -806,6 +817,8 @@ export async function updateCheckFailureThreshold(
     return { error: "Only organization owners and admins can change review settings." };
   }
 
+  if (!isTextFormData(formData)) return { error: "Invalid form data." };
+
   const threshold = formData.get("threshold") as string;
   if (!VALID_THRESHOLDS.includes(threshold as (typeof VALID_THRESHOLDS)[number])) {
     return { error: "Invalid threshold value." };
@@ -843,6 +856,11 @@ export async function toggleReviewsPaused(
     return { error: "Only organization owners and admins can pause reviews." };
   }
 
+  if (!isTextFormData(formData)) return { error: "Invalid form data." };
+
+  if (!["true", "false"].includes(formData.get("paused") as string)) {
+    return { error: "Invalid paused value." };
+  }
   const paused = formData.get("paused") === "true";
 
   await prisma.organization.update({
@@ -881,6 +899,11 @@ export async function toggleAutoDiscoverRepos(
     return { error: "Only organization owners and admins can change repository discovery." };
   }
 
+  if (!isTextFormData(formData)) return { error: "Invalid form data." };
+
+  if (!["true", "false"].includes(formData.get("enabled") as string)) {
+    return { error: "Invalid enabled value." };
+  }
   const enabled = formData.get("enabled") === "true";
 
   await prisma.organization.update({
@@ -918,6 +941,11 @@ export async function toggleLiveTelemetry(
     return { error: "Only organization owners and admins can change live telemetry." };
   }
 
+  if (!isTextFormData(formData)) return { error: "Invalid form data." };
+
+  if (!["true", "false"].includes(formData.get("enabled") as string)) {
+    return { error: "Invalid enabled value." };
+  }
   const enabled = formData.get("enabled") === "true";
 
   // Force-off for unpaid orgs: a free org may never enable telemetry, even if a
@@ -1016,6 +1044,11 @@ export async function toggleVendorMemberVisibility(
     return { error: "Only the organization owner can change vendor visibility." };
   }
 
+  if (!isTextFormData(formData)) return { error: "Invalid form data." };
+
+  if (!["true", "false"].includes(formData.get("allowed") as string)) {
+    return { error: "Invalid allowed value." };
+  }
   const allowed = formData.get("allowed") === "true";
   const before = await prisma.organization.findUnique({
     where: { id: orgId },
