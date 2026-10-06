@@ -1,5 +1,10 @@
 "use server";
 
+import "server-only";
+import { isActionId } from "@/lib/action-input";
+import { isTextFormData } from "@/lib/form-input";
+import { isPostgresSafeText } from "@/lib/bounded-json";
+
 import { headers, cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
@@ -21,10 +26,11 @@ export async function createKnowledgeDocument(
     headers: await headers(),
   });
   if (!session) redirect("/login");
+  if (!isTextFormData(formData, ["title", "content"])) return { error: "Invalid form data." };
 
   const cookieStore = await cookies();
   const orgId = cookieStore.get("current_org_id")?.value;
-  if (!orgId) return { error: "No organization selected." };
+  if (!isActionId(orgId)) return { error: "No organization selected." };
 
   const member = await prisma.organizationMember.findFirst({
     where: { userId: session.user.id, organizationId: orgId, deletedAt: null },
@@ -140,10 +146,11 @@ export async function getKnowledgeDocument(
     headers: await headers(),
   });
   if (!session) redirect("/login");
+  if (!isActionId(documentId)) return { error: "Invalid document ID." };
 
   const cookieStore = await cookies();
   const orgId = cookieStore.get("current_org_id")?.value;
-  if (!orgId) return { error: "No organization selected." };
+  if (!isActionId(orgId)) return { error: "No organization selected." };
 
   const doc = await prisma.knowledgeDocument.findUnique({
     where: { id: documentId },
@@ -181,10 +188,12 @@ export async function updateKnowledgeDocument(
     headers: await headers(),
   });
   if (!session) redirect("/login");
+  if (!isActionId(documentId)) return { error: "Invalid document ID." };
+  if (!isTextFormData(formData, ["title", "content"])) return { error: "Invalid form data." };
 
   const cookieStore = await cookies();
   const orgId = cookieStore.get("current_org_id")?.value;
-  if (!orgId) return { error: "No organization selected." };
+  if (!isActionId(orgId)) return { error: "No organization selected." };
 
   const doc = await prisma.knowledgeDocument.findUnique({
     where: { id: documentId },
@@ -312,10 +321,11 @@ export async function deleteKnowledgeDocument(
     headers: await headers(),
   });
   if (!session) redirect("/login");
+  if (!isActionId(documentId)) return { error: "Invalid document ID." };
 
   const cookieStore = await cookies();
   const orgId = cookieStore.get("current_org_id")?.value;
-  if (!orgId) return { error: "No organization selected." };
+  if (!isActionId(orgId)) return { error: "No organization selected." };
 
   const doc = await prisma.knowledgeDocument.findUnique({
     where: { id: documentId },
@@ -377,10 +387,11 @@ export async function restoreKnowledgeDocument(
     headers: await headers(),
   });
   if (!session) redirect("/login");
+  if (!isActionId(documentId)) return { error: "Invalid document ID." };
 
   const cookieStore = await cookies();
   const orgId = cookieStore.get("current_org_id")?.value;
-  if (!orgId) return { error: "No organization selected." };
+  if (!isActionId(orgId)) return { error: "No organization selected." };
 
   const doc = await prisma.knowledgeDocument.findUnique({
     where: { id: documentId },
@@ -511,10 +522,17 @@ export async function enhanceKnowledgeContent(
     headers: await headers(),
   });
   if (!session) redirect("/login");
+  if (typeof rawContent !== "string" || !isPostgresSafeText(rawContent)) return { error: "Invalid content." };
 
   const cookieStore = await cookies();
   const orgId = cookieStore.get("current_org_id")?.value;
-  if (!orgId) return { error: "No organization selected." };
+  if (!isActionId(orgId)) return { error: "No organization selected." };
+
+  const member = await prisma.organizationMember.findFirst({
+    where: { userId: session.user.id, organizationId: orgId, deletedAt: null },
+    select: { id: true },
+  });
+  if (!member) return { error: "You are not a member of this organization." };
 
   if (!rawContent?.trim()) return { error: "Content is required." };
 
@@ -584,10 +602,12 @@ export async function setKnowledgeAlwaysInclude(
     headers: await headers(),
   });
   if (!session) redirect("/login");
+  if (!isActionId(documentId)) return { error: "Invalid document ID." };
+  if (typeof alwaysInclude !== "boolean") return { error: "Invalid pin setting." };
 
   const cookieStore = await cookies();
   const orgId = cookieStore.get("current_org_id")?.value;
-  if (!orgId) return { error: "No organization selected." };
+  if (!isActionId(orgId)) return { error: "No organization selected." };
 
   const doc = await prisma.knowledgeDocument.findUnique({
     where: { id: documentId },
@@ -635,10 +655,17 @@ export async function getKnowledgeAuditLogs(documentId: string) {
     headers: await headers(),
   });
   if (!session) redirect("/login");
+  if (!isActionId(documentId)) return [];
 
   const cookieStore = await cookies();
   const orgId = cookieStore.get("current_org_id")?.value;
-  if (!orgId) return [];
+  if (!isActionId(orgId)) return [];
+
+  const member = await prisma.organizationMember.findFirst({
+    where: { userId: session.user.id, organizationId: orgId, deletedAt: null },
+    select: { id: true },
+  });
+  if (!member) return [];
 
   const logs = await prisma.knowledgeAuditLog.findMany({
     where: { documentId, organizationId: orgId },
@@ -666,10 +693,11 @@ export async function addKnowledgeTemplate(
     headers: await headers(),
   });
   if (!session) redirect("/login");
+  if (!isActionId(templateId)) return { error: "Invalid template ID." };
 
   const cookieStore = await cookies();
   const orgId = cookieStore.get("current_org_id")?.value;
-  if (!orgId) return { error: "No organization selected." };
+  if (!isActionId(orgId)) return { error: "No organization selected." };
 
   const member = await prisma.organizationMember.findFirst({
     where: { userId: session.user.id, organizationId: orgId, deletedAt: null },

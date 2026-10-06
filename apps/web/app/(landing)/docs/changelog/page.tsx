@@ -91,7 +91,7 @@ function formatItem(text: string): React.ReactNode {
           href={`https://github.com/octopusreview/octopus/pull/${prMatch[1]}`}
           target="_blank"
           rel="noopener noreferrer"
-          className="ml-1 text-[#10D8BE]/70 transition-colors hover:text-[#10D8BE]"
+          className="ml-1 text-primary/70 transition-colors hover:text-primary"
         >
           #{prMatch[1]}
         </a>
@@ -189,7 +189,7 @@ export default function ChangelogPage() {
             <div
               className={`absolute left-[11px] top-1.5 size-[9px] rounded-full max-sm:hidden ${
                 idx === 0
-                  ? "bg-[#10D8BE] shadow-[0_0_8px_rgba(16,216,190,0.4)]"
+                  ? "bg-primary shadow-[0_0_8px_rgba(21,186,129,0.4)]"
                   : "bg-white/20"
               }`}
             />
@@ -208,7 +208,7 @@ export default function ChangelogPage() {
                   href={entry.compareUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="flex items-center gap-1 text-xs text-[#444] transition-colors hover:text-[#10D8BE]"
+                  className="flex items-center gap-1 text-xs text-[#444] transition-colors hover:text-primary"
                 >
                   <IconExternalLink className="size-3" />
                   Compare

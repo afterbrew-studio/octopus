@@ -123,6 +123,7 @@ function asyncRefundList(items: StubRefund[]) {
     },
   };
 }
+let mockRefundsRetrieve = mock(() => Promise.resolve({} as never));
 let mockRefundsList = mock(() => asyncRefundList([]));
 
 function asyncPaymentIntentList(items: unknown[]) {
@@ -236,6 +237,7 @@ mock.module("@/lib/stripe", () => ({
       },
     },
     refunds: {
+      retrieve: (...args: unknown[]) => mockRefundsRetrieve(...args),
       list: (...args: unknown[]) => mockRefundsList(...args),
     },
     paymentIntents: {
@@ -1774,6 +1776,18 @@ describe("auto-reload failure notification", () => {
   });
 });
 
+function installRefundFixture(chargeId: string, paymentId: string, refunds: StubRefund[]) {
+  const payment = { id: paymentId, status: "succeeded", amount_received: 5000, currency: "usd", customer: "cus_refund", metadata: { orgId: "org_1", type: "credit_purchase" }, latest_charge: chargeId, livemode: false, capture_method: "automatic" };
+  const charge = { id: chargeId, customer: "cus_refund", created: 1789344000, status: "succeeded", paid: true, captured: true, amount_captured: 5000, currency: "usd", payment_intent: paymentId, livemode: false };
+  mockOrganizationFindUnique = mock(() => Promise.resolve({ stripeCustomerId: "cus_refund" } as never));
+  mockPaymentIntentsRetrieve = mock(() => Promise.resolve(payment as never));
+  mockChargesRetrieve = mock(() => Promise.resolve(charge as never));
+  mockCheckoutSessionsList = mock(() => Promise.resolve({ data: [], has_more: false } as never));
+  mockRefundsList = mock(() => asyncRefundList(refunds));
+  mockRefundsRetrieve = mock((id?: string) => Promise.resolve({ ...refunds.find(r => r.id === id), charge: chargeId, payment_intent: paymentId, currency: "usd", created: charge.created + 60 } as never));
+  return { payment, charge, refunds };
+}
+
 describe("Stripe webhook route", () => {
   it("rejects unsigned webhook requests before processing the event", async () => {
     const response = await POST(
@@ -1884,17 +1898,15 @@ describe("Stripe webhook route", () => {
         },
       },
     };
-    mockRefundsList = mock(() =>
-      asyncRefundList([{ id: "re_1", amount: 1250, status: "succeeded" }]),
-    );
+    installRefundFixture("ch_refund", "pi_refund", [{ id: "re_1", amount: 1250, status: "succeeded" }]);
 
     const response = await POST(stripeRequest() as never);
 
     expect(response.status).toBe(200);
     expect(mockCheckoutSessionsList).toHaveBeenCalledWith({
       payment_intent: "pi_refund",
-      limit: 1,
-    });
+      limit: 2,
+    }, { timeout: 10000, maxNetworkRetries: 0 });
     // Per-refund amount keyed on the refund id (idempotency), not the cumulative
     // charge.amount_refunded.
     expect(mockRefundsList).toHaveBeenCalledWith({ charge: "ch_refund" });
@@ -1922,12 +1934,10 @@ describe("Stripe webhook route", () => {
     };
     // Two $5 partial refunds: charge.amount_refunded is the cumulative 1000, but
     // the handler must deduct 5 + 5 keyed per refund id (not 10 + 10).
-    mockRefundsList = mock(() =>
-      asyncRefundList([
-        { id: "re_a", amount: 500, status: "succeeded" },
-        { id: "re_b", amount: 500, status: "succeeded" },
-      ]),
-    );
+    installRefundFixture("ch_multi", "pi_multi", [
+      { id: "re_a", amount: 500, status: "succeeded" },
+      { id: "re_b", amount: 500, status: "succeeded" },
+    ]);
 
     const response = await POST(stripeRequest() as never);
 
@@ -1945,9 +1955,7 @@ describe("Stripe webhook route", () => {
         object: { id: "ch_dup", payment_intent: "pi_dup", amount_refunded: 500 },
       },
     };
-    mockRefundsList = mock(() =>
-      asyncRefundList([{ id: "re_dup", amount: 500, status: "succeeded" }]),
-    );
+    installRefundFixture("ch_dup", "pi_dup", [{ id: "re_dup", amount: 500, status: "succeeded" }]);
     // Redelivered refund hits the UNIQUE(stripeRefundId) constraint → P2002 →
     // the transaction rolls back, so the balance must be left untouched.
     mockTxCreditTransactionCreate = mock(() =>
@@ -1969,15 +1977,86 @@ describe("Stripe webhook route", () => {
       },
     };
     // A pending/failed refund still carries a nonzero amount but moved no money.
-    mockRefundsList = mock(() =>
-      asyncRefundList([{ id: "re_pending", amount: 500, status: "pending" }]),
-    );
+    installRefundFixture("ch_pending", "pi_pending", [{ id: "re_pending", amount: 500, status: "pending" }]);
 
     const response = await POST(stripeRequest() as never);
 
     expect(response.status).toBe(200);
     expect(createdTransactions).toEqual([]);
     expect(orgState).toEqual({ creditBalance: 20, freeCreditBalance: 8 });
+  });
+
+  it("completes a pending refund once despite duplicate and out-of-order webhook delivery", async () => {
+    const f = installRefundFixture("ch_lifecycle", "pi_lifecycle", [{ id: "pyr_lifecycle", amount: 100, status: "pending" }]);
+    const create = mockTxCreditTransactionCreate;
+    mockTxCreditTransactionCreate = mock(({ data }: { data: unknown }) => {
+      const row = data as { stripeRefundId?: string };
+      if (createdTransactions.some(t => (t as typeof row).stripeRefundId === row.stripeRefundId)) return Promise.reject(Object.assign(new Error("duplicate"), { code: "P2002" }));
+      return create({ data });
+    });
+    const invoke = async (type: string, object: unknown) => {
+      currentEvent = { type, livemode: false, data: { object } };
+      expect((await POST(stripeRequest() as never)).status).toBe(200);
+    };
+    await invoke("charge.refunded", f.charge);
+    expect(createdTransactions).toHaveLength(0);
+    const eventRefund = { id: "pyr_lifecycle", charge: f.charge.id, payment_intent: f.payment.id, status: "pending" };
+    f.refunds[0]!.status = "succeeded";
+    await invoke("refund.updated", { ...eventRefund, status: "succeeded" });
+    await invoke("refund.updated", { ...eventRefund, status: "succeeded" });
+    await invoke("refund.updated", eventRefund); // stale payload: re-read current state
+    await invoke("charge.refunded", f.charge);
+    expect(createdTransactions).toHaveLength(1);
+    expect(createdTransactions[0]).toMatchObject({ stripeRefundId: "pyr_lifecycle", amount: -1 });
+    expect(orgState).toEqual({ creditBalance: 20, freeCreditBalance: 7 });
+    expect(mockPaymentIntentsCreate).not.toHaveBeenCalled();
+  });
+
+  it("rejects wrong refund identity, original, customer, currency, mode and amount before debit", async () => {
+    for (const kind of ["id", "original", "customer", "charge_customer", "currency", "mode", "amount"] as const) {
+      const f = installRefundFixture("ch_validation", "pi_validation", [{ id: "re_validation", amount: 100, status: "succeeded" }]);
+      currentEvent = { type: "refund.updated", livemode: false, data: { object: { id: "re_validation", charge: f.charge.id, payment_intent: f.payment.id } } };
+      if (kind === "id") mockRefundsRetrieve = mock(() => Promise.resolve({ id: "re_wrong" } as never));
+      if (kind === "original") f.charge.payment_intent = "pi_wrong";
+      if (kind === "customer") f.payment.customer = "cus_wrong";
+      if (kind === "charge_customer") f.charge.customer = "cus_wrong";
+      if (kind === "currency") f.payment.currency = f.charge.currency = "gbp";
+      if (kind === "mode") f.payment.livemode = true;
+      if (kind === "amount") f.refunds[0]!.amount = 6000;
+      expect((await POST(stripeRequest() as never)).status).toBe(500);
+      expect(createdTransactions).toHaveLength(0);
+    }
+  });
+
+  it("rejects a consistent GBP refund without changing the USD ledger or balances", async () => {
+    const f = installRefundFixture("ch_gbp", "pi_gbp", [{ id: "re_gbp", amount: 100, status: "succeeded" }]);
+    f.payment.currency = f.charge.currency = "gbp";
+    mockRefundsRetrieve = mock(() => Promise.resolve({ ...f.refunds[0], charge: f.charge.id, payment_intent: f.payment.id, currency: "gbp", created: f.charge.created + 60 } as never));
+    currentEvent = { type: "refund.updated", livemode: false, data: { object: { id: "re_gbp", charge: f.charge.id, payment_intent: f.payment.id } } };
+
+    expect((await POST(stripeRequest() as never)).status).toBe(500);
+    expect(createdTransactions).toEqual([]);
+    expect(orgState).toEqual({ creditBalance: 20, freeCreditBalance: 8 });
+  });
+
+  it("verifies Checkout ownership when the original intent has no ownership metadata", async () => {
+    const f = installRefundFixture("ch_checkout_refund", "pi_checkout_refund", [{ id: "re_checkout_refund", amount: 100, status: "succeeded" }]);
+    f.payment.metadata = { orgId: "", type: "" };
+    const session = { id: "cs_refund", status: "complete", mode: "payment", payment_status: "paid", payment_intent: f.payment.id, customer: "cus_refund", metadata: { orgId: "org_1", type: "credit_purchase" }, livemode: false };
+    mockCheckoutSessionsList = mock(() => Promise.resolve({ data: [session], has_more: false } as never));
+    currentEvent = { type: "refund.updated", livemode: false, data: { object: { id: "re_checkout_refund", charge: f.charge.id, payment_intent: f.payment.id } } };
+    expect((await POST(stripeRequest() as never)).status).toBe(200);
+    expect(createdTransactions).toHaveLength(1);
+    expect(createdTransactions[0]).toMatchObject({ organizationId: "org_1", stripeRefundId: "re_checkout_refund", amount: -1 });
+  });
+
+  it("never debits non-successful completion events", async () => {
+    for (const status of ["pending", "failed", "canceled", "requires_action"]) {
+      installRefundFixture("ch_status", "pi_status", [{ id: "re_status", amount: 100, status }]);
+      currentEvent = { type: "refund.updated", livemode: false, data: { object: { id: "re_status", charge: "ch_status", payment_intent: "pi_status" } } };
+      expect((await POST(stripeRequest() as never)).status).toBe(200);
+      expect(createdTransactions).toHaveLength(0);
+    }
   });
 
   it("returns 500 so Stripe retries when a credit grant fails transiently", async () => {

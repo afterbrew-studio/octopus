@@ -181,7 +181,7 @@ export default async function BlogPage({
   };
 
   return (
-    <div className="min-h-screen bg-[#0c0c0c] text-white">
+    <div className="min-h-screen bg-background text-white">
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: jsonLd(blogJsonLd) }} />
       <LandingDesktopNav isLoggedIn={isLoggedIn} />
       <LandingMobileNav isLoggedIn={isLoggedIn} />
@@ -217,7 +217,7 @@ export default async function BlogPage({
                       className={`transition-colors ${
                         category
                           ? "text-[#888] hover:text-white"
-                          : "text-[#10D8BE]"
+                          : "text-primary"
                       }`}
                     >
                       All posts
@@ -230,7 +230,7 @@ export default async function BlogPage({
                           href={makeHref({ q: query, category: c.name, tag })}
                           className={`flex items-center justify-between gap-3 transition-colors ${
                             active
-                              ? "text-[#10D8BE]"
+                              ? "text-primary"
                               : "text-[#888] hover:text-white"
                           }`}
                         >
@@ -260,7 +260,7 @@ export default async function BlogPage({
                             TAG_SIZE[w]
                           } ${
                             active
-                              ? "border-[#10D8BE]/40 bg-[#10D8BE]/10 text-[#10D8BE]"
+                              ? "border-primary/40 bg-primary/10 text-primary"
                               : `border-white/[0.08] ${TAG_TONE[w]} hover:border-white/[0.15] hover:text-white`
                           }`}
                         >
@@ -279,12 +279,12 @@ export default async function BlogPage({
               <div className="mb-6 flex flex-wrap items-center gap-2 text-sm">
                 <span className="text-[#555]">Filtered by</span>
                 {category && (
-                  <span className="rounded-full border border-[#10D8BE]/30 bg-[#10D8BE]/10 px-2.5 py-1 text-[#10D8BE]">
+                  <span className="rounded-full border border-primary/30 bg-primary/10 px-2.5 py-1 text-primary">
                     {category}
                   </span>
                 )}
                 {tag && (
-                  <span className="rounded-full border border-[#10D8BE]/30 bg-[#10D8BE]/10 px-2.5 py-1 text-[#10D8BE]">
+                  <span className="rounded-full border border-primary/30 bg-primary/10 px-2.5 py-1 text-primary">
                     #{tag}
                   </span>
                 )}
@@ -335,7 +335,7 @@ export default async function BlogPage({
                             className="mb-4 aspect-[1200/630] w-full rounded-lg object-cover"
                           />
                         )}
-                        <h2 className="mb-2 text-2xl font-semibold text-white group-hover:text-[#10D8BE] transition-colors">
+                        <h2 className="mb-2 text-2xl font-semibold text-white group-hover:text-primary transition-colors">
                           {featured.title}
                         </h2>
                         {featured.excerpt && (
@@ -387,7 +387,7 @@ export default async function BlogPage({
                                 />
                               )}
                               <div className="min-w-0 flex-1">
-                                <h2 className="font-semibold text-white transition-colors group-hover:text-[#10D8BE] truncate">
+                                <h2 className="font-semibold text-white transition-colors group-hover:text-primary truncate">
                                   {post.title}
                                 </h2>
                                 {post.excerpt && (

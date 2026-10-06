@@ -7,6 +7,106 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.15] - 2026-10-06
+
+### Fixed
+
+- Malformed API requests, settings forms and repository, knowledge, timeline and model-search action arguments are rejected before database writes or provider calls.
+- Timeline queries and knowledge audit/enhancement actions verify organization membership at their server entry points.
+- Repository review settings accept the Low inline severity option shown in the form.
+- GitLab connections show useful recovery guidance when the provider is unreachable or returns an invalid response, preserving an existing connection.
+- Dependency analysis closes its response stream once and safely handles a disconnected client while saving completed results.
+- The self-hosting configuration generator creates fresh secrets in your browser after the page loads, preventing hydration mismatches. Copy is available once both keys are ready.
+
+### Improved
+
+- Browser error reporting filters a narrowly identified injected MetaMask error chain while retaining application errors and uncertain cases.
+
+### Upgrade notes
+
+- No database or configuration changes from 1.2.14. Update all web instances and review workers, then verify health and version. This release does not change provider credentials or retry previous operations.
+
+## [1.2.14] - 2026-09-30
+
+### Fixed
+
+- GitHub reviews now recognize verified empty added files instead of reporting them as missing review input.
+- Inline findings attach only to source lines within diff hunks. Empty files and diff metadata no longer create invalid comment locations.
+
+### Upgrade notes
+
+- No database or configuration changes from 1.2.13. Update all web instances and review workers. Existing review attempts stay unchanged; retry an affected pull request after the rollout completes.
+
+## [1.2.13] - 2026-09-29
+
+### Improved
+
+- Octopus now uses the green mascot and Geist typography across the website, sign-in pages, docs, and app. Buttons and navigation share the new palette, with separate colours for light and dark themes.
+- Updated browser and home-screen icons, link previews, and the brand page with the approved artwork and downloads.
+
+### Upgrade notes
+
+- No database or configuration changes from 1.2.12. Update the application image as usual.
+
+## [1.2.12] - 2026-09-29
+
+### Added
+
+- Choose Claude Sonnet 5.5 for reviews and chat. Existing defaults and pinned models stay unchanged.
+
+### Improved
+
+- The pricing guide lists Sonnet 5.5 usage and cache costs. It also clarifies that your own API keys cover only requests routed through those keys; other platform usage still consumes credits.
+
+### Upgrade notes
+
+- For upgrades from 1.2.11, verify that no earlier migrations are pending. Deploy 1.2.12 to every web instance and review worker, wait until all are healthy, and retire the older instances. Then run `bunx prisma migrate deploy` from `packages/db` in a checkout of the `v1.2.12` tag. The only new migration inserts the Sonnet 5.5 catalog entry. For older releases, check and apply prerequisite schema migrations before following this sequence.
+
+## [1.2.11] - 2026-09-28
+
+### Fixed
+- Review instructions require three-column score tables and escaped literal pipes in notes, including code spans. Strict validation still rejects malformed output; existing unassessed attempts remain unchanged.
+
+## [1.2.10] - 2026-09-28
+
+### Fixed
+- Review score tables accept escaped Markdown pipes and unambiguous spacing around score slashes while preserving validation guards. Rejected responses retain bounded structural diagnostics without raw output; earlier unassessed attempts remain unchanged.
+
+## [1.2.9] - 2026-09-27
+
+### Added
+- Authorized operators can preview and run a bounded, read-only processor cash audit against retained ledger evidence. Explicit approval, fresh binding checks and durable records keep each run traceable without replaying payments or refunds.
+
+### Upgrade notes
+- No database migration or configuration change is required. Audits do not run automatically after upgrade. Receipt agreement, retained-ledger coverage and upstream completeness remain separate; upstream completeness stays unknown. Real processor observation still requires a separately approved run.
+
+## [1.2.8] - 2026-09-27
+
+### Fixed
+- Refunds that finish after a pending state can now update the credit balance through the individual refund completion webhook, with duplicate and ownership checks preserved.
+
+### Added
+- A bounded operator cash-audit tool compares supplied processor observations with retained ledger evidence and reports coverage gaps separately from receipt agreement. Supplied observations do not establish upstream completeness, which remains unknown even when receipts agree.
+
+### Upgrade notes
+- No database migration is required. Completion delivery requires the existing Stripe webhook destination to subscribe to `refund.updated`. That hosted subscription is currently absent and separately held; activating it is outside this application release's authorization. Application deployment does not change that subscription. This release does not replay historical events or run cash audits automatically.
+
+## [1.2.7] - 2026-09-26
+
+### Improved
+- Anthropic and OpenAI reuse stable prompt instructions more effectively while preserving conversation history and free switching between models and providers.
+- Cache cost estimates and new usage charges account for provider-specific token counters, cache prices and streaming cache duration.
+
+### Fixed
+- OpenAI-compatible provider requests safely handle malformed Unicode without changing valid characters.
+- Review assessment accepts supported heading formats and counts the overall score only from the score table.
+
+### Configuration
+- Review output budgets can be configured with `OCTOPUS_REVIEW_MAX_TOKENS`; the default remains 8,192 tokens.
+
+### Upgrade notes
+- No database migration or configuration change is required. Existing charged usage and ledger history remain unchanged.
+
 ## [1.2.6] - 2026-09-25
 
 ### Added

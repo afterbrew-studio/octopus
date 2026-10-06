@@ -7,13 +7,13 @@ export default function LandingLayout({
   children: React.ReactNode;
 }) {
   return (
-    <>
+    <div className="dark">
       <script
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: jsonLd(ORGANIZATION_JSON_LD) }}
       />
       {children}
       <AskOctopus />
-    </>
+    </div>
   );
 }

@@ -85,3 +85,103 @@ for (const [provider, callback] of [["bitbucket", bitbucket], ["gitlab", gitlab]
 }
 existing = null;
 console.log("OAuth callback setup: passed");
+
+// Upstream failures must preserve an existing connection and keep credentials out of logs.
+const callbackUrl = new URL(`https://octopus.example.test/api/gitlab/callback?code=fixture&state=${Buffer.from(JSON.stringify({ nonce: "nonce" })).toString("base64url")}`);
+const callbackRequest = Object.assign(new Request(callbackUrl), { nextUrl: callbackUrl }) as never;
+const goodTokens = { access_token: "fixture-access", refresh_token: "fixture-refresh", expires_in: 3600 };
+const originalError = console.error;
+const originalTimeout = AbortSignal.timeout;
+const originalFetch = globalThis.fetch;
+const logged: unknown[][] = [];
+console.error = (...args: unknown[]) => { logged.push(args); };
+try {
+  for (const stage of ["token", "group", "user"] as const) {
+    for (const failure of ["network", "timeout", "html", "null", "shape", "missing", "oversized", "rejected", "empty"] as const) {
+      let calls = 0;
+      let cancelled = false;
+      const requests: Array<RequestInit | undefined> = [];
+      const deadlines: Array<{ milliseconds: number; controller: AbortController }> = [];
+      AbortSignal.timeout = (milliseconds: number) => {
+        const controller = new AbortController();
+        deadlines.push({ milliseconds, controller });
+        return controller.signal;
+      };
+      existing = { ...original };
+      const writesBefore = writes.length;
+      const syncsBefore = syncCalls.length;
+      globalThis.fetch = (async (input: string | URL | Request, options?: RequestInit) => {
+        calls++;
+        requests.push(options);
+        const url = String(input);
+        const currentStage = url.endsWith("/oauth/token") ? "token" : url.includes("/groups/") ? "group" : "user";
+        if (stage === "user" && currentStage === "group") return new Response(null, { status: 404 });
+        if (currentStage !== stage) return Response.json(currentStage === "token" ? goodTokens : { name: "Group" });
+        if (failure === "network") throw new TypeError("fixture-access private-response");
+        const valid = stage === "token" ? goodTokens : stage === "group" ? { name: "Group" } : [{ name: "Personal namespace" }];
+        if (failure === "timeout") return new Promise<Response>((resolve, reject) => {
+          const signal = options?.signal;
+          const onAbort = () => { cancelled = true; reject(signal?.reason); };
+          signal?.addEventListener("abort", onAbort, { once: true });
+          queueMicrotask(() => {
+            deadlines.at(-1)?.controller.abort(new DOMException("fixture-secret", "TimeoutError"));
+            signal?.removeEventListener("abort", onAbort);
+            resolve(Response.json(valid));
+          });
+        });
+        if (failure === "html") return new Response("<html>private-response fixture-access</html>");
+        if (failure === "null") return Response.json(null);
+        if (failure === "missing") return Response.json(stage === "user" ? [{}] : {});
+        if (failure === "oversized") {
+          const padding = "x".repeat(1024 * 1024);
+          return Response.json(stage === "user" ? [{ name: "Personal namespace", padding }] : { ...valid, padding });
+        }
+        if (failure === "shape") return Response.json(stage === "token" ? { ...goodTokens, expires_in: "bad" } : stage === "group" ? [] : {});
+        if (failure === "empty") return stage === "user" ? Response.json([]) : new Response("");
+        return Response.json({ error: "denied", private: "fixture-access" }, { status: 403 });
+      }) as typeof fetch;
+      const response = await gitlab(callbackRequest);
+      for (const [index, options] of requests.entries()) {
+        assert.ok(options?.signal instanceof AbortSignal, `${stage}: ${failure}: signal`);
+        assert.equal(options?.redirect, "error", `${stage}: ${failure}: redirect`);
+        assert.equal(deadlines[index]?.milliseconds, 15_000, `${stage}: ${failure}: deadline`);
+        assert.equal(options.signal, deadlines[index]?.controller.signal, `${stage}: ${failure}: deadline signal`);
+      }
+      if (failure === "timeout") {
+        assert.equal(cancelled, true, `${stage}: timeout must cancel the request`);
+        assert.equal(requests.at(-1)?.signal?.aborted, true);
+      }
+      assert.equal(response.status, 307);
+      const location = new URL(response.headers.get("location")!);
+      assert.equal(location.searchParams.get("error"), stage === "token" ? "token_exchange" : "namespace_not_found", `${stage}: ${failure}`);
+      assert.equal(writes.length, writesBefore);
+      assert.equal(syncCalls.length, syncsBefore);
+      assert.equal(calls, stage === "token" ? 1 : stage === "group" ? 2 : 3, "authorization code exchange is never blindly retried");
+      assert.deepEqual(existing, original);
+    }
+  }
+  AbortSignal.timeout = originalTimeout;
+  assert.doesNotMatch(JSON.stringify(logged), /fixture-access|fixture-secret|private-response|gitlab\.example/);
+  throwSync = false;
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url.endsWith("/oauth/token")) return Response.json(goodTokens);
+    if (url.includes("/groups/")) return new Response(null, { status: 404 });
+    return Response.json([{ name: "Personal namespace" }]);
+  }) as typeof fetch;
+  const personal = await gitlab(callbackRequest);
+  assert.equal(new URL(personal.headers.get("location")!).searchParams.get("authorized"), "gitlab");
+  assert.equal(writes.at(-1)?.update.namespaceName, "Personal namespace");
+  let fetches = 0;
+  globalThis.fetch = (async () => { fetches++; throw new Error("must not fetch for invalid state"); }) as typeof fetch;
+  const invalidUrl = new URL(callbackUrl);
+  invalidUrl.searchParams.set("state", Buffer.from(JSON.stringify({ nonce: "wrong" })).toString("base64url"));
+  const invalid = await gitlab(Object.assign(new Request(invalidUrl), { nextUrl: invalidUrl }) as never);
+  assert.equal(new URL(invalid.headers.get("location")!).searchParams.get("error"), "state_mismatch");
+  assert.equal(fetches, 0);
+} finally {
+  console.error = originalError;
+  AbortSignal.timeout = originalTimeout;
+  globalThis.fetch = originalFetch;
+}
+console.log("GitLab callback failure checks: passed");

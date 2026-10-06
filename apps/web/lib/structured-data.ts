@@ -28,7 +28,7 @@ export const ORGANIZATION_ENTITY = {
   url: SITE_URL,
   logo: {
     "@type": "ImageObject",
-    url: `${SITE_URL}/logo.svg`,
+    url: `${SITE_URL}/brand/octopus-mark.png`,
   },
   description:
     "Octopus is an AI code review service that reviews every pull request on GitHub, GitLab, Bitbucket and Forgejo with full-repository context and posts severity-rated findings inline.",

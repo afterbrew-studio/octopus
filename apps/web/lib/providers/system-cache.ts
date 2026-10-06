@@ -1,17 +1,11 @@
 /**
- * Prompt-cache breakpoint support (#650). The review system prompt carries a
- * marker splitting the stable, cacheable instruction/rulepack prefix from the
- * per-review volatile context. The Anthropic provider turns the marker into a
- * `cache_control` breakpoint so the prefix is reused across reviews; every other
- * provider sees the marker as an inert HTML comment (safe to leave or strip).
- * Pure so it is unit-testable without the server-only provider.
+ * Trusted boundary between stable instructions and per-request context.
+ * Provider-specific handling is documented in docs/prompt-caching.md.
+ * Keep this module independent of the server-only providers.
  */
 export const CACHE_BREAKPOINT = "<!--CACHE_BREAKPOINT-->";
 
-/** Cache TTL: "5m" (default Anthropic ephemeral) or "1h" (extended). Reviews are
- *  sporadic, so "1h" keeps the cached prefix alive across a work session for a
- *  much higher hit rate; a 1h write costs 2x base input vs 1.25x for 5m, so it
- *  pays off once the prefix is read again within the hour (active repos). */
+/** See docs/prompt-caching.md for TTL configuration and accounting. */
 export type CacheTtl = "5m" | "1h";
 
 export type SystemBlock = {

@@ -90,12 +90,12 @@ export function sanitizePostgresJson(value: unknown): unknown {
 }
 
 /**
- * Read and parse a JSON request without buffering more than maxBytes.
+ * Read and parse a JSON request or response body, capped at maxBytes.
  * Content-Length is only an early rejection hint; the stream limit remains
- * authoritative for chunked or dishonest requests.
+ * authoritative for chunked bodies or inaccurate headers.
  */
 export async function readBoundedJson(
-  request: Request,
+  request: Pick<Request, "headers" | "body">,
   maxBytes: number,
 ): Promise<BoundedJsonResult> {
   const contentLength = request.headers.get("content-length");

@@ -29,7 +29,7 @@ export type ReviewAssessment = {
   responseSha256: string | null;
   completion: AiResponse["completion"] | null;
   /** Response syntax is independent of input coverage and provider completion. */
-  responseValidation?: { state: "valid" | "invalid"; reason: string | null };
+  responseValidation?: { state: "valid" | "invalid"; reason: string | null; scoreStructure?: ReturnType<typeof scoreStructure> };
   /** Supplemental extraction evidence; never repairs the primary assessment. */
   recoveries?: FindingsRecoveryEvidence[];
 };
@@ -118,14 +118,45 @@ export async function executeFindingsRecovery(
 
 const REVIEW_HEADING = "## 🐙 Octopus Review";
 
+const SCORE_CATEGORIES = ["Security", "Code Quality", "Performance", "Error Handling", "Consistency", "Overall"] as const;
+
+// Only unescaped pipes separate Markdown cells; an even backslash run leaves a delimiter.
+function scoreCells(line: string): string[] {
+  const cells: string[] = []; let start = 0; let slashes = 0;
+  for (let i = 0; i < line.length; i++) {
+    if (line[i] === "|" && slashes % 2 === 0) { cells.push(line.slice(start, i)); start = i + 1; }
+    slashes = line[i] === "\\" ? slashes + 1 : 0;
+  }
+  cells.push(line.slice(start)); return cells;
+}
+function scoreSection(text: string): string {
+  return /^### Score[ \t]*\r?\n([\s\S]*?)(?=^#{1,6} |(?![\s\S]))/m.exec(text)?.[1] ?? "";
+}
+/** Fixed enums and capped counts only; never retain response text or score values. */
+function scoreStructure(text: string) {
+  const lines = scoreSection(normalizeReviewResponse(text)).split("\n").map(scoreCells);
+  return SCORE_CATEGORIES.map(category => {
+    const rows = lines.filter(cells => cells[1]?.trim().replaceAll("**", "") === category);
+    const token = rows[0]?.[2]?.trim().replaceAll("**", "");
+    return { category, rows: Math.min(rows.length, 2), cells: Math.min(rows[0]?.length ?? 0, 6),
+      token: token === undefined ? "missing" : /^(?:[1-5]\/5|N\/A|Not assessed)$/.test(token) ? "recognized" : "invalid" };
+  });
+}
+
 /**
- * Canonicalize two shapes that models vary without changing the meaning of the
+ * Canonicalize presentation shapes that models vary without changing the meaning of the
  * review, so validation judges structure rather than typography: a suffix on
  * the report heading (`## 🐙 Octopus Review — PR #12`) and an Overall row whose
- * two cells are not both bold.
+ * two cells are not both bold, and horizontal spacing around score slashes.
  */
 export function normalizeReviewResponse(text: string): string {
   return text
+    .replace(/(^### Score[ \t]*\r?\n)([\s\S]*?)(?=^#{1,6} |(?![\s\S]))/gm, (_section, heading: string, body: string) => heading + body.split("\n").map(line => {
+      const cells = scoreCells(line);
+      if (cells.length !== 5 || !SCORE_CATEGORIES.some(category => cells[1].trim().replaceAll("**", "") === category)) return line;
+      cells[2] = cells[2].replace(/^(\s*(?:\*\*)?)([1-5])[ \t]*\/[ \t]*5((?:\*\*)?\s*)$/, "$1$2/5$3");
+      return cells.join("|");
+    }).join("\n"))
     .replace(/^## 🐙 Octopus Review\b[^\n]*$/gm, REVIEW_HEADING)
     .replace(/^\|\s*(?:\*\*)?Overall(?:\*\*)?\s*\|\s*(?:\*\*)?([1-5]\/5|N\/A|Not assessed)(?:\*\*)?\s*\|([^\n]*)$/gm, "| **Overall** | **$1** |$2");
 }
@@ -137,20 +168,20 @@ export function reviewResponseValidationError(text: string, inputComplete = true
     || (text.match(/^### Score[ \t]*\r?$/gm) ?? []).length !== 1
     || (text.match(/^### Summary[ \t]*\r?$/gm) ?? []).length !== 1
     || !/^### Summary[ \t]*\r?\n\s*\S/m.test(text)) return "Review headings missing or duplicated";
-  const score = /^### Score[ \t]*\r?\n([\s\S]*?)(?=^#{1,6} |(?![\s\S]))/m.exec(text)?.[1] ?? "";
+  const score = scoreSection(text);
   if ((score.match(/^\|[ \t]*Category[ \t]*\|[ \t]*Score[ \t]*\|[ \t]*Notes[ \t]*\|[ \t]*\r?$/gm) ?? []).length !== 1) return "Score table header missing or duplicated";
   for (const category of ["Security", "Code Quality", "Performance", "Error Handling", "Consistency"]) {
-    const rows = score.split("\n").filter(line => line.split("|")[1]?.trim().replaceAll("**", "") === category);
-    if (rows.length !== 1 || rows[0].split("|").length !== 5
-      || !(inputComplete ? /^(?:[1-5]\/5|N\/A)$/ : /^N\/A$/).test(rows[0].split("|")[2].trim().replaceAll("**", ""))) return "Score category rows missing, duplicated or malformed";
+    const rows = score.split("\n").filter(line => scoreCells(line)[1]?.trim().replaceAll("**", "") === category);
+    if (rows.length !== 1 || scoreCells(rows[0]).length !== 5
+      || !(inputComplete ? /^(?:[1-5]\/5|N\/A)$/ : /^N\/A$/).test(scoreCells(rows[0])[2].trim().replaceAll("**", ""))) return "Score category rows missing, duplicated or malformed";
   }
   // Only a row whose first cell is Overall counts: a notes cell that contains the
   // word ("consistent overall") is not a second Overall row.
-  const overall = score.split("\n").filter(line => line.split("|")[1]?.trim().replaceAll("**", "") === "Overall");
-  const overallRow = inputComplete
-    ? /^\|\s*\*\*Overall\*\*\s*\|\s*\*\*[1-5]\/5\*\*\s*\|[^|]+\|\s*$/
-    : /^\|\s*\*\*Overall\*\*\s*\|\s*\*\*Not assessed\*\*\s*\|[^|]+\|\s*$/;
-  if (overall.length !== 1 || !overallRow.test(overall[0])) return inputComplete
+  const overall = score.split("\n").filter(line => scoreCells(line)[1]?.trim().replaceAll("**", "") === "Overall");
+  const cells = overall.length === 1 ? scoreCells(overall[0]) : [];
+  const overallScore = inputComplete ? /^\*\*[1-5]\/5\*\*$/ : /^\*\*Not assessed\*\*$/;
+  if (cells.length !== 5 || cells[0].trim() !== "" || cells[4].trim() !== ""
+    || cells[1].trim() !== "**Overall**" || !overallScore.test(cells[2].trim()) || !cells[3]) return inputComplete
     ? "Overall score missing, duplicated or malformed"
     : "Incomplete-input Overall must be exactly Not assessed, with no duplicate row";
   return reviewFindingsValidationError(text);
@@ -226,7 +257,7 @@ export function recordNoModelAssessment(coverage: ReviewCoverage): void {
   };
 }
 
-/** The caller persists this digest-only record together with the final outcome. */
+/** The caller persists assessment evidence without response text alongside the final outcome. */
 export async function executeCoveredReview(
   request: AiCreateParams, coverage: ReviewCoverage, template: string,
   call: (request: AiCreateParams) => Promise<AiResponse>,
@@ -255,7 +286,7 @@ export async function executeCoveredReview(
   assessment.responseSha256 = sha256(response.text);
   assessment.completion = response.completion ?? null;
   const validationError = reviewResponseValidationError(response.text, coverage.complete);
-  assessment.responseValidation = { state: validationError === null ? "valid" : "invalid", reason: validationError };
+  assessment.responseValidation = { state: validationError === null ? "valid" : "invalid", reason: validationError, ...(validationError !== null ? { scoreStructure: scoreStructure(response.text) } : {}) };
   if (validationError !== null) console.log(`[review-assessment] Response rejected: ${validationError}; completion=${response.completion?.reason ?? "unknown"}`);
   const observed = assessment.requests.length === 1 && assessment.requests[0].model === response.model
     && assessment.requests[0].provider === response.provider && assessment.requests[0].inputPreserved;

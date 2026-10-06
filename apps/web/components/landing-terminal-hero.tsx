@@ -26,7 +26,7 @@ const TONE_CLASS: Record<Tone, string> = {
   cmd: "text-white",
   out: "text-[#c9c9c9]",
   dim: "text-[#6a6a6a]",
-  ok: "text-[#10d8be]",
+  ok: "text-primary",
   warn: "text-[#f0a868]",
   crit: "text-[#ff6b6b]",
   info: "text-[#6ea8fe]",
@@ -121,8 +121,8 @@ export function LandingTerminalHero({ className = "" }: { className?: string }) 
           <span className="size-3 rounded-full bg-[#28c840]/80" />
         </div>
         <span className="font-mono text-[11px] text-[#666]">octp · example AI session</span>
-        <span className="flex items-center gap-1.5 font-mono text-[11px] text-[#10d8be]">
-          <span className="size-1.5 rounded-full bg-[#10d8be]" />
+        <span className="flex items-center gap-1.5 font-mono text-[11px] text-primary">
+          <span className="size-1.5 rounded-full bg-primary" />
           example
         </span>
       </div>
@@ -135,7 +135,7 @@ export function LandingTerminalHero({ className = "" }: { className?: string }) 
           <div key={i} className={`whitespace-pre-wrap break-words ${TONE_CLASS[line.tone]}`}>
             {line.tone === "cmd" ? (
               <>
-                <span className="text-[#10d8be]/80">$</span> {line.text}
+                <span className="text-primary/80">$</span> {line.text}
               </>
             ) : (
               line.text
@@ -144,9 +144,9 @@ export function LandingTerminalHero({ className = "" }: { className?: string }) 
         ))}
         {/* active prompt + caret */}
         <div className="whitespace-pre-wrap break-words text-white">
-          <span className="text-[#10d8be]/80">$</span> {active ?? ""}
+          <span className="text-primary/80">$</span> {active ?? ""}
           <span
-            className="ml-px inline-block h-[1.05em] w-[7px] translate-y-[2px] bg-[#10d8be]"
+            className="ml-px inline-block h-[1.05em] w-[7px] translate-y-[2px] bg-primary"
             style={{ animation: "octpBlink 1s step-end infinite" }}
           />
         </div>

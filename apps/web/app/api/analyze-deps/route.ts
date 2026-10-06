@@ -1,3 +1,4 @@
+import "server-only";
 import { NextRequest } from "next/server";
 import { auth } from "@/lib/auth";
 import { authenticateApiToken } from "@/lib/api-auth";
@@ -121,10 +122,11 @@ export async function POST(req: NextRequest) {
 
   // SSE stream
   const encoder = new TextEncoder();
+  let disconnected = false;
   const stream = new ReadableStream({
     async start(controller) {
       const send = (event: string, data: unknown) => {
-        controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+        if (!disconnected) controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
       };
 
       const startTime = Date.now();
@@ -140,7 +142,6 @@ export async function POST(req: NextRequest) {
         const repoResp = await fetch(`${GITHUB_API}/${owner}/${repo}`, { headers: ghHeaders });
         if (!repoResp.ok) {
           send("error", { message: `Repository not found or not accessible: ${repoName}` });
-          controller.close();
           return;
         }
         const repoData = await repoResp.json() as { default_branch?: string };
@@ -176,7 +177,6 @@ export async function POST(req: NextRequest) {
               analyzedFiles: cached.analyzedFiles,
               cached: true,
             });
-            controller.close();
             return;
           }
         }
@@ -216,7 +216,6 @@ export async function POST(req: NextRequest) {
             data: { status: "completed", results: [], analyzedFiles: [], durationMs: Date.now() - startTime },
           });
           send("complete", { analysisId, reports: [], repoName, analyzedFiles: [] });
-          controller.close();
           return;
         }
 
@@ -243,7 +242,6 @@ export async function POST(req: NextRequest) {
             data: { status: "completed", results: [], analyzedFiles: [], durationMs: Date.now() - startTime },
           });
           send("complete", { analysisId, reports: [], repoName, analyzedFiles: [] });
-          controller.close();
           return;
         }
 
@@ -291,8 +289,12 @@ export async function POST(req: NextRequest) {
         }
         send("error", { message });
       } finally {
-        controller.close();
+        if (!disconnected) controller.close();
       }
+    },
+    cancel() {
+      // Finish and save the analysis, but stop writing to a disconnected reader.
+      disconnected = true;
     },
   });
 

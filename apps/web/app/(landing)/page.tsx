@@ -62,7 +62,7 @@ const productJsonLd = {
   "@type": "SoftwareApplication",
   name: "Octopus",
   url: "https://octopus-review.ai",
-  logo: "https://octopus-review.ai/logo.svg",
+  logo: "https://octopus-review.ai/brand/octopus-mark.png",
   description:
     "AI-powered code review tool that connects to GitHub, GitLab, Bitbucket, and Forgejo, indexes your codebase, and automatically reviews pull requests with severity-rated findings.",
   applicationCategory: "DeveloperApplication",
@@ -115,7 +115,7 @@ export default async function LandingPage() {
     loadActiveAnnouncements(),
   ]);
   return (
-    <div className="dark relative min-h-screen bg-[#0c0c0c] text-[#a0a0a0] selection:bg-white/20">
+    <div className="dark relative min-h-screen bg-background text-[#a0a0a0] selection:bg-white/20">
       <script
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(productJsonLd) }}
@@ -150,7 +150,7 @@ export default async function LandingPage() {
           <h1 className="animate-fade-in text-4xl font-bold leading-[1.1] tracking-tight text-white [animation-delay:100ms] sm:text-5xl md:text-6xl">
             Give your AI this prompt.
             <br />
-            <span className="text-[#10D8BE]">Let it handle the rest.</span>
+            <span className="text-primary">Let it handle the rest.</span>
           </h1>
 
           <p className="mx-auto mt-6 max-w-2xl text-base leading-relaxed text-[#a0a0a0] sm:text-lg lg:mx-0">
@@ -247,7 +247,7 @@ export default async function LandingPage() {
               </p>
               <p className="mt-4 text-sm text-[#888]">
                 Hosting your code on Forgejo?{" "}
-                <Link href="/docs/integrations#forgejo" className="text-[#10D8BE] underline underline-offset-4">
+                <Link href="/docs/integrations#forgejo" className="text-primary underline underline-offset-4">
                   Connect your Forgejo instance
                 </Link>{" "}
                 through public HTTPS, a local connector for Cloud with private LAN/VPN access, or your own Octopus deployment.
@@ -256,11 +256,11 @@ export default async function LandingPage() {
 
             <div className="mt-12 grid gap-5 md:grid-cols-2">
               {/* Cloud — primary */}
-              <div className="relative flex flex-col rounded-2xl border border-[#10D8BE]/30 bg-gradient-to-b from-[#10D8BE]/[0.06] to-transparent p-8">
-                <span className="absolute right-6 top-6 rounded-full border border-[#10D8BE]/30 bg-[#10D8BE]/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wider text-[#10D8BE]">
+              <div className="relative flex flex-col rounded-2xl border border-primary/30 bg-gradient-to-b from-primary/[0.06] to-transparent p-8">
+                <span className="absolute right-6 top-6 rounded-full border border-primary/30 bg-primary/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wider text-primary">
                   Recommended
                 </span>
-                <div className="flex size-11 items-center justify-center rounded-xl bg-[#10D8BE]/10 text-[#10D8BE]">
+                <div className="flex size-11 items-center justify-center rounded-xl bg-primary/10 text-primary">
                   <IconCloud className="size-6" />
                 </div>
                 <h3 className="mt-5 text-xl font-semibold text-white">Cloud</h3>
@@ -273,7 +273,7 @@ export default async function LandingPage() {
                     "Retention follows your deployment and configuration",
                   ].map((t) => (
                     <li key={t} className="flex items-start gap-2.5">
-                      <IconCheck className="mt-0.5 size-4 shrink-0 text-[#10D8BE]" />
+                      <IconCheck className="mt-0.5 size-4 shrink-0 text-primary" />
                       <span>{t}</span>
                     </li>
                   ))}
@@ -289,7 +289,7 @@ export default async function LandingPage() {
                     href="/login"
                     event="cta_click"
                     eventParams={{ location: "cloud_or_self_host", label: "cloud_get_started" }}
-                    className="inline-flex items-center justify-center gap-2 rounded-full bg-[#10D8BE] px-5 py-2.5 text-sm font-medium text-[#0c0c0c] transition-colors hover:bg-[#0fbfa8]"
+                    className="inline-flex items-center justify-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-medium text-background transition-colors hover:bg-primary/90"
                   >
                     Get started free
                     <IconArrowRight className="size-4" />
@@ -375,7 +375,7 @@ export default async function LandingPage() {
                     href={`/blog/${post.slug}`}
                     className="group rounded-xl border border-white/[0.06] p-6 transition-colors hover:border-white/[0.12] hover:bg-white/[0.02]"
                   >
-                    <h3 className="font-semibold text-white transition-colors group-hover:text-[#10D8BE]">
+                    <h3 className="font-semibold text-white transition-colors group-hover:text-primary">
                       {post.title}
                     </h3>
                     {post.excerpt && (
@@ -466,7 +466,7 @@ export default async function LandingPage() {
               href="#agent-setup"
               event="cta_click"
               eventParams={{ location: "bottom_cta", label: "agent_setup_prompt" }}
-              className="inline-flex items-center gap-2 rounded-full bg-white px-6 py-3 text-sm font-medium text-[#0c0c0c] transition-colors hover:bg-[#e0e0e0]"
+              className="inline-flex items-center gap-2 rounded-full bg-white px-6 py-3 text-sm font-medium text-background transition-colors hover:bg-[#e0e0e0]"
             >
               Get the setup prompt
               <IconArrowRight className="size-4" />
@@ -516,7 +516,7 @@ function StepCard({
     <div className="group rounded-xl border border-white/[0.08] bg-white/[0.04] p-6 backdrop-blur-sm transition-colors hover:border-white/[0.15] hover:bg-white/[0.07]">
       <div className="flex items-center gap-4">
         <span className="text-3xl font-black text-white/[0.06]">{step}</span>
-        <div className="flex size-10 items-center justify-center rounded-lg bg-white/[0.06] text-[#888] transition-colors group-hover:bg-white group-hover:text-[#0c0c0c]">
+        <div className="flex size-10 items-center justify-center rounded-lg bg-white/[0.06] text-[#888] transition-colors group-hover:bg-white group-hover:text-background">
           {icon}
         </div>
       </div>

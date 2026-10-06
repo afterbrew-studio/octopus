@@ -52,7 +52,7 @@ export function Tabs({
               onKeyDown={(e) => onKeyDown(e, i)}
               className={`-mb-px border-b-2 px-4 py-2 text-sm font-medium transition-colors ${
                 selected
-                  ? "border-[#10D8BE] text-white"
+                  ? "border-primary text-white"
                   : "border-transparent text-[#888] hover:text-[#ccc]"
               }`}
             >

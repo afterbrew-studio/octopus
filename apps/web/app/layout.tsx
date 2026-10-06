@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono, Public_Sans } from "next/font/google";
+import { Geist, Geist_Mono } from "next/font/google";
 import { Suspense } from "react";
 import { MarketingConsentControls } from "@/components/marketing-consent";
 import { ThemeProvider } from "next-themes";
@@ -9,8 +9,6 @@ import { VersionChecker } from "@/components/version-checker";
 import { GlobalErrorHandler } from "@/components/global-error-handler";
 import { TopLoader } from "@/components/top-loader";
 import "./globals.css";
-
-const publicSans = Public_Sans({subsets:['latin'],variable:'--font-sans'});
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -61,8 +59,8 @@ export const metadata: Metadata = {
       {
         url: "/og-image.png",
         width: 1200,
-        height: 630,
-        alt: "Octopus — AI-Powered Automated Code Review",
+        height: 628,
+        alt: "Octopus Code Review — Review with context.",
       },
     ],
   },
@@ -95,12 +93,12 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={publicSans.variable} suppressHydrationWarning>
+    <html lang="en" className={`${geistSans.variable} ${geistMono.variable}`} suppressHydrationWarning>
       <head>
         <meta name="apple-mobile-web-app-title" content="Octopus" />
       </head>
       <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
+        className="font-sans antialiased"
       >
         <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
           <TopLoader />

@@ -1,3 +1,4 @@
+import "server-only";
 import { buildIndexWarning } from "@/lib/review-helpers";
 import { prisma } from "@octopus/db";
 import { pubby } from "@/lib/pubby";
@@ -290,10 +291,7 @@ ${chatHistoryContext || "No relevant previous conversations found."}
       provider: result.provider,
       model: chatModel,
       operation: "chat",
-      inputTokens: result.usage.inputTokens,
-      outputTokens: result.usage.outputTokens,
-      cacheReadTokens: result.usage.cacheReadTokens,
-      cacheWriteTokens: result.usage.cacheWriteTokens,
+      ...result.usage,
       organizationId: orgId,
     });
 

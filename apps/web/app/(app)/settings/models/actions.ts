@@ -1,5 +1,9 @@
 "use server";
 
+import "server-only";
+import { isActionId } from "@/lib/action-input";
+import { isPostgresSafeText } from "@/lib/bounded-json";
+
 import { headers, cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
@@ -22,9 +26,13 @@ export async function searchRepoModels(
     headers: await headers(),
   });
   if (!session) redirect("/login");
+  if (typeof query !== "string" || query.length > 1024 || !isPostgresSafeText(query) ||
+      !Number.isInteger(skip) || skip < 0 || skip > 2_147_483_647 ||
+      !Number.isInteger(take) || take < 1 || take > 100) return { repos: [], total: 0 };
 
   const cookieStore = await cookies();
   const currentOrgId = cookieStore.get("current_org_id")?.value;
+  if (currentOrgId !== undefined && !isActionId(currentOrgId)) return { repos: [], total: 0 };
 
   const member = await prisma.organizationMember.findFirst({
     where: {

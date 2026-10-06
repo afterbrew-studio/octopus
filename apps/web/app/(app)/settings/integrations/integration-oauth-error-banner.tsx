@@ -1,6 +1,14 @@
 import { IconAlertTriangle } from "@tabler/icons-react";
 
 const OAUTH_ERROR_MESSAGES = {
+  token_exchange: {
+    title: "Authorization could not be completed",
+    description: "Start the connection again. If it keeps failing, check the provider's OAuth app settings or contact us for help. Your existing connection has been kept.",
+  },
+  namespace_not_found: {
+    title: "GitLab namespace could not be verified",
+    description: "Check the group or username and make sure your GitLab account can access it, then start the connection again. If your instance is temporarily unavailable, try again once it is back online. Your existing connection has been kept.",
+  },
   connection_replacement: {
     title: "Current connection kept",
     description: "An owner or admin must disconnect the current provider before connecting a different host, namespace or workspace. Reconnecting after disconnection requires repairing any retained webhooks with the new connection details.",

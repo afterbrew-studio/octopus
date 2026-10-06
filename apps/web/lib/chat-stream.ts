@@ -2,6 +2,7 @@ import "server-only";
 import Anthropic from "@anthropic-ai/sdk";
 import { createAiMessage, resolveProvider } from "@/lib/ai-router";
 import type { AiMessage, AiProvider } from "@/lib/providers";
+import { CACHE_BREAKPOINT, type CacheTtl } from "@/lib/providers/system-cache";
 
 /**
  * Shared chat text generation that RESOLVES THE PROVIDER from the model instead
@@ -21,7 +22,7 @@ import type { AiMessage, AiProvider } from "@/lib/providers";
 export interface StreamChatParams {
   orgId: string;
   model: string;
-  /** Cacheable system prefix (Anthropic prompt cache); stable across turns. */
+  /** Stable instruction prefix; keep per-turn context in `system`. */
   systemCacheable?: string;
   /** Dynamic system context appended after the cacheable prefix. */
   system?: string;
@@ -39,6 +40,7 @@ export interface StreamChatResult {
     outputTokens: number;
     cacheReadTokens: number;
     cacheWriteTokens: number;
+    cacheWriteTtl?: CacheTtl;
   };
 }
 
@@ -91,18 +93,21 @@ export async function streamChat(params: StreamChatParams): Promise<StreamChatRe
         outputTokens: final.usage.output_tokens,
         cacheReadTokens: final.usage.cache_read_input_tokens ?? 0,
         cacheWriteTokens: final.usage.cache_creation_input_tokens ?? 0,
+        cacheWriteTtl: "5m",
       },
     };
   }
 
   // Non-Anthropic: single-shot through the router (no provider streaming API).
-  const combinedSystem = [systemCacheable, system].filter(Boolean).join("\n\n");
+  const systemParts = [systemCacheable, system].map(part =>
+    provider === "openai" ? part?.split(CACHE_BREAKPOINT).join("") : part);
+  const combinedSystem = systemParts.filter(Boolean).join(provider === "openai" ? `${CACHE_BREAKPOINT}\n\n` : "\n\n");
   const res = await createAiMessage(
     {
       model,
       maxTokens,
       messages,
-      ...(combinedSystem ? { system: combinedSystem, cacheSystem: Boolean(systemCacheable) } : {}),
+      ...(combinedSystem ? { system: combinedSystem, cacheSystem: Boolean(systemParts[0]) } : {}),
     },
     orgId,
   );

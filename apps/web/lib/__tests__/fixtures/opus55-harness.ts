@@ -69,6 +69,20 @@ assert.deepEqual(requests.at(-1), {
   output_config: { effort: "medium", format: { type: "json_schema", schema } }, messages: params.messages,
 });
 
+const sonnet = { ...params, model: "claude-sonnet-5-5" };
+for (const thinking of [undefined, "disabled"] as const) {
+  nextResponse = response(native);
+  const result = await anthropicProvider.create({ ...sonnet, thinking }, "synthetic-only");
+  assert.equal(result.text, '{"ok":true}');
+  assert.equal(result.model, sonnet.model);
+  assert.deepEqual(result.completion, { state: "completed", reason: "end_turn" });
+  assert.deepEqual(requests.at(-1), {
+    model: sonnet.model, max_tokens: 64000, stream: true,
+    thinking: { type: thinking === "disabled" ? "between_tools" : "adaptive" },
+    output_config: { effort: "medium", format: { type: "json_schema", schema } }, messages: params.messages,
+  });
+}
+
 nextResponse = response([tool], "tool_use");
 assert.deepEqual(await anthropicProvider.create(legacy, "synthetic-only"), {
   text: '{"ok":true}', provider: "anthropic", model: legacy.model,
@@ -90,7 +104,7 @@ assert.deepEqual(requests.at(-1)?.output_config, { effort: "medium" });
 assert.equal(requests.at(-1)?.tool_choice, undefined);
 assert.equal(requests.at(-1)?.tools, undefined);
 
-for (const [request, blocks] of [[params, native], [legacy, [tool]]] as const) {
+for (const [request, blocks] of [[params, native], [sonnet, native], [legacy, [tool]]] as const) {
   nextResponse = response([...blocks], "max_tokens");
   const truncated = await anthropicProvider.create(request, "synthetic-only");
   assert.equal(truncated.text, '{"ok":true}');

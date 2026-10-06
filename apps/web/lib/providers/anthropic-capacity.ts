@@ -7,14 +7,14 @@ import { COMPLETE_REVIEW_POLICY as policy, capacityReceipt, refuseCapacity, gene
 import type { AiCreateParams } from "./index";
 import { CACHE_BREAKPOINT } from "./system-cache";
 import { stripLoneSurrogates } from "./sanitize";
-import { anthropicCountProjection } from "./anthropic-request";
+import { anthropicCountProjection, type AnthropicRequest } from "./anthropic-request";
 
 type CapacityClient = Pick<Anthropic, "baseURL" | "models" | "messages">;
 const positiveInteger = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) > 0;
 
 /** Digest-only, per-attempt evidence. Metadata and count use the generation client's exact account route. */
 export async function admitAnthropicReview(
-  params: AiCreateParams, body: Anthropic.MessageCreateParamsStreaming, client: CapacityClient,
+  params: AiCreateParams, body: AnthropicRequest, client: CapacityClient,
 ): Promise<{ receipt: CapacityAdmissionReceipt; dispatchTimeout: () => number }> {
   const admission = params.completeReviewAdmission!;
   const receipt = capacityReceipt(admission, params.model);

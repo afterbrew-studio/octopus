@@ -42,7 +42,7 @@ const comparisons = [
   {
     slug: "vs-greptile",
     competitor: "Greptile",
-    gradient: "from-[#C0F4DA] via-[#1DFAD9] to-[#10D8BE]",
+    gradient: "from-primary to-primary/80",
     tagline: "RAG-based codebase intelligence SaaS",
     description:
       "Both use RAG for deep codebase context. Compare product focus, licensing, deployment, and pricing models.",
@@ -67,7 +67,7 @@ export default async function ComparePage() {
     .catch(() => null);
 
   return (
-    <div className="dark relative min-h-screen bg-[#0c0c0c] text-[#a0a0a0] selection:bg-white/20">
+    <div className="dark relative min-h-screen bg-background text-[#a0a0a0] selection:bg-white/20">
       <script
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(itemListJsonLd) }}
@@ -111,7 +111,7 @@ export default async function ComparePage() {
                 {c.tagline}
               </p>
               <p className="mt-4 text-sm text-[#a0a0a0]">{c.description}</p>
-              <span className="mt-6 inline-flex items-center gap-2 text-sm font-medium text-white transition-colors group-hover:text-[#10D8BE]">
+              <span className="mt-6 inline-flex items-center gap-2 text-sm font-medium text-white transition-colors group-hover:text-primary">
                 See the comparison
                 <IconArrowRight className="size-4" />
               </span>

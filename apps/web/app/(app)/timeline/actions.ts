@@ -1,5 +1,8 @@
 "use server";
 
+import "server-only";
+import { isActionId } from "@/lib/action-input";
+
 import { headers, cookies } from "next/headers";
 import { auth } from "@/lib/auth";
 import { prisma } from "@octopus/db";
@@ -7,13 +10,33 @@ import { summarizeDailyReviews } from "@/lib/summarizer";
 import { formatWeekLabel, getSundayOfWeek } from "./week-helpers";
 import type { TimelineWeek, TimelineDay } from "@/components/timeline";
 
+function isCalendarDate(value: unknown): value is string {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value) || value.startsWith("0000")) return false;
+  const date = new Date(value + "T00:00:00Z");
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}
+
 // ── Shared query helper ───────────────────────────────────────
 
 export async function getWeekData(
   orgId: string,
   weekStart: Date,
   weekEnd: Date
-): Promise<TimelineWeek> {
+): Promise<TimelineWeek | null> {
+  if (!isActionId(orgId) ||
+      !(weekStart instanceof Date) || !Number.isFinite(weekStart.getTime()) ||
+      !(weekEnd instanceof Date) || !Number.isFinite(weekEnd.getTime()) ||
+      weekStart.getUTCFullYear() < 1 || weekEnd.getUTCFullYear() > 9999 ||
+      weekEnd < weekStart || weekEnd.getTime() - weekStart.getTime() > 8 * 86_400_000) return null;
+
+  const session = await auth.api.getSession({ headers: await headers() });
+  if (!session) return null;
+  const member = await prisma.organizationMember.findFirst({
+    where: { userId: session.user.id, organizationId: orgId, deletedAt: null },
+    select: { organizationId: true },
+  });
+  if (!member) return null;
+
   const now = new Date();
   const monday = new Date(weekStart);
   monday.setHours(0, 0, 0, 0);
@@ -159,14 +182,16 @@ export async function getWeekData(
 
 // ── Server Actions ────────────────────────────────────────────
 
-export async function loadWeek(weekStartISO: string): Promise<TimelineWeek> {
+export async function loadWeek(weekStartISO: string): Promise<TimelineWeek | null> {
+  if (!isCalendarDate(weekStartISO)) return null;
   const session = await auth.api.getSession({
     headers: await headers(),
   });
-  if (!session) throw new Error("Unauthorized");
+  if (!session) return null;
 
   const cookieStore = await cookies();
   const currentOrgId = cookieStore.get("current_org_id")?.value;
+  if (currentOrgId !== undefined && !isActionId(currentOrgId)) return null;
 
   const member = await prisma.organizationMember.findFirst({
     where: {
@@ -176,7 +201,7 @@ export async function loadWeek(weekStartISO: string): Promise<TimelineWeek> {
     },
     select: { organizationId: true },
   });
-  if (!member) throw new Error("No organization");
+  if (!member) return null;
 
   const monday = new Date(weekStartISO + "T00:00:00");
   const sunday = getSundayOfWeek(monday);
@@ -187,13 +212,15 @@ export async function loadWeek(weekStartISO: string): Promise<TimelineWeek> {
 export async function getDaySummary(
   date: string
 ): Promise<{ summary: string; prCount: number } | null> {
+  if (!isCalendarDate(date)) return null;
   const session = await auth.api.getSession({
     headers: await headers(),
   });
-  if (!session) throw new Error("Unauthorized");
+  if (!session) return null;
 
   const cookieStore = await cookies();
   const currentOrgId = cookieStore.get("current_org_id")?.value;
+  if (currentOrgId !== undefined && !isActionId(currentOrgId)) return null;
 
   const member = await prisma.organizationMember.findFirst({
     where: {
@@ -203,7 +230,7 @@ export async function getDaySummary(
     },
     select: { organizationId: true },
   });
-  if (!member) throw new Error("No organization");
+  if (!member) return null;
 
   const existing = await prisma.daySummary.findUnique({
     where: {
@@ -218,15 +245,17 @@ export async function getDaySummary(
   return existing;
 }
 
-export async function generateDailySummary(date: string): Promise<string> {
+export async function generateDailySummary(date: string): Promise<string | null> {
+  if (!isCalendarDate(date)) return null;
   const session = await auth.api.getSession({
     headers: await headers(),
   });
 
-  if (!session) throw new Error("Unauthorized");
+  if (!session) return null;
 
   const cookieStore = await cookies();
   const currentOrgId = cookieStore.get("current_org_id")?.value;
+  if (currentOrgId !== undefined && !isActionId(currentOrgId)) return null;
 
   const member = await prisma.organizationMember.findFirst({
     where: {
@@ -237,7 +266,7 @@ export async function generateDailySummary(date: string): Promise<string> {
     select: { organizationId: true },
   });
 
-  if (!member) throw new Error("No organization");
+  if (!member) return null;
 
   const dayStart = new Date(date + "T00:00:00Z");
   const dayEnd = new Date(date + "T23:59:59.999Z");

@@ -8,7 +8,7 @@ mock.module("@octopus/db", () => ({ Prisma: { DbNull: null },
   prisma: {},
 }));
 
-const { calcCost, formatUsd, formatNumber } = await import("@/lib/cost");
+const { calcCost, formatUsd, formatNumber, fallbackPricedModels } = await import("@/lib/cost");
 
 // The cache-write premium tracks PROMPT_CACHE_TTL (1.25x for 5m, 2x for 1h).
 // Pin 5m so the formula assertions below stay deterministic; a dedicated test
@@ -163,4 +163,69 @@ describe("formatNumber", () => {
 it("prices Opus 5.5 cache reads at published $0.20 per million before markup", () => {
   const rates = new Map([["claude-opus-5-5", { input: 4, output: 20 }]]);
   expect(calcCost(rates, "claude-opus-5-5", 1_000_000, 0, 1_000_000, 0)).toBeCloseTo(0.20 * 1.2, 8);
+});
+
+it("prices Sonnet 5.5 input, output and both cache TTLs with platform markup", () => {
+  expect(fallbackPricedModels()).toContain("claude-sonnet-5-5");
+  const rates = new Map([["claude-sonnet-5-5", { input: 2, output: 10 }]]);
+  // Anthropic input excludes cached reads/writes; each count is billed once.
+  expect(calcCost(rates, "claude-sonnet-5-5", 1_000_000, 1_000_000, 1_000_000, 1_000_000, "anthropic", "5m"))
+    .toBeCloseTo((2 + 10 + 0.20 + 2.50) * 1.2, 8);
+  expect(calcCost(rates, "claude-sonnet-5-5", 1_000_000, 1_000_000, 1_000_000, 1_000_000, "anthropic", "1h"))
+    .toBeCloseTo((2 + 10 + 0.20 + 4) * 1.2, 8);
+});
+
+
+describe("provider-native cache accounting", () => {
+  it("keeps Anthropic uncached input and inclusive gateway input distinct", () => {
+    const prices = new Map([["claude-opus-5-5", { input: 4, output: 20 }]]);
+    expect(calcCost(prices, "claude-opus-5-5", 1000, 0, 10000, 0, "anthropic")).toBeCloseTo(.006 * 1.2, 10);
+    expect(calcCost(prices, "claude-opus-5-5", 11000, 0, 10000, 0, "openrouter")).toBeCloseTo(.006 * 1.2, 10);
+  });
+  it("prices Fable 5.1 reads and simultaneous writes without double subtraction", () => {
+    const prices = new Map([["claude-fable-5-1", { input: 10, output: 50 }]]);
+    expect(calcCost(prices, "claude-fable-5-1", 1000, 100, 10000, 2000, "anthropic")).toBeCloseTo(.0425 * 1.2, 10);
+  });
+});
+
+it("uses published older OpenAI cached-input rates without changing other providers", () => {
+  for (const [alias, date, multiplier] of [
+    ["gpt-4o", "2024-08-06", .5], ["gpt-4o-mini", "2024-07-18", .5],
+    ["gpt-4.5-preview", "2025-02-27", .5],
+    ["o1", "2024-12-17", .5], ["o1-mini", "2024-09-12", .5], ["o1-preview", "2024-09-12", .5],
+    ["o3-mini", "2025-01-31", .5],
+    ["gpt-4.1", "2025-04-14", .25], ["gpt-4.1-mini", "2025-04-14", .25], ["gpt-4.1-nano", "2025-04-14", .25],
+    ["o3", "2025-04-16", .25], ["o4-mini", "2025-04-16", .25],
+    ["o3-deep-research", "2025-06-26", .25], ["o4-mini-deep-research", "2025-06-26", .25],
+  ] as const) {
+    for (const model of [alias, `${alias}-${date}`]) {
+      const prices = new Map([[model, { input: 10, output: 0 }]]);
+      expect(calcCost(prices, model, 1000, 0, 1000, 0, "openai")).toBeCloseTo(.01 * multiplier * 1.2, 10);
+      expect(calcCost(prices, model, 1000, 0, 1000, 0, "openrouter")).toBeCloseTo(.001 * 1.2, 10);
+    }
+  }
+});
+
+it("does not extend OpenAI rate exceptions to unrelated model names", () => {
+  for (const model of ["gpt-5.3-codex", "gpt-6-astra", "o1-custom", "o3-mini-custom", "o4-mini-custom", "gpt-4.1-custom"]) {
+    const prices = new Map([[model, { input: 10, output: 0 }]]);
+    expect(calcCost(prices, model, 1000, 0, 1000, 0, "openai")).toBeCloseTo(.001 * 1.2, 10);
+  }
+});
+
+it("settles Anthropic writes using the request TTL while historical estimates use deployment TTL", () => {
+  const previous = process.env.PROMPT_CACHE_TTL;
+  const prices = new Map([["claude-opus-5-5", { input: 4, output: 20 }]]);
+  try {
+    for (const ttl of ["5m", "1h"] as const) {
+      process.env.PROMPT_CACHE_TTL = ttl;
+      expect(calcCost(prices, "claude-opus-5-5", 0, 0, 0, 1000, "anthropic", "5m")).toBeCloseTo(.005 * 1.2, 10);
+      expect(calcCost(prices, "claude-opus-5-5", 0, 0, 0, 1000, "anthropic", "1h")).toBeCloseTo(.008 * 1.2, 10);
+      expect(calcCost(prices, "claude-opus-5-5", 0, 0, 0, 1000, "anthropic")).toBeCloseTo((ttl === "5m" ? .005 : .008) * 1.2, 10);
+      expect(calcCost(prices, "claude-opus-5-5", 1000, 0, 0, 1000, "openrouter", "5m")).toBeCloseTo((ttl === "5m" ? .005 : .008) * 1.2, 10);
+    }
+  } finally {
+    if (previous === undefined) delete process.env.PROMPT_CACHE_TTL;
+    else process.env.PROMPT_CACHE_TTL = previous;
+  }
 });
