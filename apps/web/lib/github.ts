@@ -500,6 +500,51 @@ export type ReviewComment = {
   start_line?: number;
 };
 
+type CheckRun = {
+  id: number;
+  name?: string;
+  status?: string;
+  conclusion?: string | null;
+  started_at?: string | null;
+  app?: { id?: number } | null;
+};
+
+/** Most check-run pages read before giving up; a commit with more is not judged. */
+const MAX_CHECK_RUN_PAGES = 20;
+
+/** Every check run on the commit, or null when the list cannot be read whole. */
+async function listCheckRuns(owner: string, repo: string, sha: string, headers: Record<string, string>): Promise<CheckRun[] | null> {
+  const all: CheckRun[] = [];
+  for (let page = 1; page <= MAX_CHECK_RUN_PAGES; page++) {
+    const res = await fetchWithRetry(`${GITHUB_API}/repos/${owner}/${repo}/commits/${sha}/check-runs?per_page=100&page=${page}`, { headers });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { total_count?: number; check_runs?: CheckRun[] };
+    const runs = body.check_runs ?? [];
+    all.push(...runs);
+    if (runs.length < 100 || (typeof body.total_count === "number" && all.length >= body.total_count)) return all;
+  }
+  return null;
+}
+
+/** Whether `a` ran after `b`: by start time when both have one, otherwise by id. */
+function ranAfter(a: CheckRun, b: CheckRun): boolean {
+  const at = a.started_at ? Date.parse(a.started_at) : NaN;
+  const bt = b.started_at ? Date.parse(b.started_at) : NaN;
+  if (Number.isFinite(at) && Number.isFinite(bt) && at !== bt) return at > bt;
+  return a.id > b.id;
+}
+
+/** The latest run of each check. The same name from a different app is a different check. */
+function latestRunPerCheck(runs: CheckRun[]): CheckRun[] {
+  const latest = new Map<string, CheckRun>();
+  for (const run of runs) {
+    const key = `${run.app?.id ?? ""}\u0000${run.name ?? ""}`;
+    const current = latest.get(key);
+    if (!current || ranAfter(run, current)) latest.set(key, run);
+  }
+  return [...latest.values()];
+}
+
 /**
  * Whether every check on `sha` has finished and none failed.
  *
@@ -521,20 +566,19 @@ export async function checkStateFor(
   const token = providedToken ?? await getInstallationToken(installationId);
   const headers = { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" };
 
-  const [runsRes, statusRes] = await Promise.all([
-    fetchWithRetry(`${GITHUB_API}/repos/${owner}/${repo}/commits/${sha}/check-runs?per_page=100`, { headers }),
+  const [runs, statusRes] = await Promise.all([
+    listCheckRuns(owner, repo, sha, headers),
     fetchWithRetry(`${GITHUB_API}/repos/${owner}/${repo}/commits/${sha}/status`, { headers }),
   ]);
-  if (!runsRes.ok || !statusRes.ok) return null;
+  if (runs === null || !statusRes.ok) return null;
 
-  const runs = (await runsRes.json()) as {
-    check_runs?: { status?: string; conclusion?: string | null; name?: string }[];
-  };
   const combined = (await statusRes.json()) as { state?: string; statuses?: unknown[] };
 
   const FAILED = new Set(["failure", "timed_out", "action_required", "startup_failure"]);
   let pending = false;
-  for (const run of runs.check_runs ?? []) {
+  // Only the latest run of each check counts: a check that failed and was then
+  // re-run is judged by the re-run, or one red attempt blocks the commit for good.
+  for (const run of latestRunPerCheck(runs)) {
     // Never read our OWN verdict as a reason not to review. A failed review
     // writes `failure` on this SHA, so counting it means one failure blocks
     // every retry on that commit forever - the gate that exists to avoid
@@ -549,7 +593,7 @@ export async function checkStateFor(
   if (pending) return "pending";
   // Nothing failed and nothing is outstanding - but if neither surface reported
   // anything at all, there is no evidence of a green build, only an absence.
-  const reported = (runs.check_runs?.length ?? 0) + (combined.statuses?.length ?? 0);
+  const reported = runs.length + (combined.statuses?.length ?? 0);
   return reported > 0 ? "passing" : null;
 }
 
