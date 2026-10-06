@@ -120,7 +120,7 @@ mock.module("@/lib/github", () => ({
   listOwnUnresolvedThreads: async () => [],
   resolveReviewThread: async () => {},
   createSingleReviewComment: async () => 999,
-  checkStateFor: async () => "success",
+  checkReportFor: async () => ({ state: "passing", failing: [] }),
 }));
 mock.module("@/lib/forgejo", () => ({ runWithForgejoRepository: async (_repo: string, run: () => Promise<void>) => run(), usesForgejoConnector: () => false }));
 mock.module("@/lib/bitbucket", () => ({}));

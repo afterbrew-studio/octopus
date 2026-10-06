@@ -16,6 +16,7 @@ import { reconcileAutoReloadAttempts } from "./credits";
 import { syncMarketingConversions } from "./marketing-outbox";
 import { runOllamaPull } from "./ollama-admin";
 import { reapStuckReviews } from "./reap-stuck-reviews";
+import { requeueOverdueHolds } from "./review-hold";
 import { reconcileReviewPublication, requeueUnresolvedPublications } from "./review-publication-reconcile";
 import type { PublicationRecord } from "./review-verdict";
 import { discoverRepositories } from "./discover-repositories";
@@ -37,6 +38,10 @@ export interface ProcessReviewJob {
    * was enqueued under. New enqueues always set it. See rayf P-0007 C3.
    */
   reviewRunId?: string;
+  /** A recheck of a review held for failing checks: the token that makes it the current one. */
+  holdToken?: string;
+  /** Which hold this recheck follows, which sets the backoff of the next. */
+  holdAttempt?: number;
   /**
    * The pre-rename field name for `reviewRunId`. pg-boss's queue is durable
    * across deploys, so a job enqueued before this rename shipped can still be
@@ -90,7 +95,8 @@ export async function registerWorkers(boss: PgBoss, config: QueueConfig): Promis
       for (const job of jobs) {
         console.log(`[queue] Processing review for PR ${job.data.pullRequestId}`);
         try {
-          await processReview(job.data.pullRequestId, createReviewExecutionWindow(job), job.data.reviewRunId ?? job.data.attemptId);
+          await processReview(job.data.pullRequestId, createReviewExecutionWindow(job), job.data.reviewRunId ?? job.data.attemptId,
+            job.data.holdToken ? { token: job.data.holdToken, attempt: job.data.holdAttempt ?? 0 } : undefined);
         } catch (err) {
           console.error(`[queue] Review failed for PR ${job.data.pullRequestId} (job ${job.id}):`, err);
           throw err;
@@ -228,6 +234,7 @@ export async function registerWorkers(boss: PgBoss, config: QueueConfig): Promis
         // A verdict whose reconcile job was lost (a crash between the record and the
         // job, or retries exhausted) is picked up here from the record on its run.
         await requeueUnresolvedPublications();
+        await requeueOverdueHolds();
         const { requeued, failed, unpublished } = await reapStuckReviews();
         if (requeued || failed || unpublished) {
           // `unpublished` counts attempts that were written and never enqueued.

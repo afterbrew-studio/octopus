@@ -563,6 +563,17 @@ export async function checkStateFor(
   sha: string,
   providedToken?: string,
 ): Promise<"passing" | "failing" | "pending" | null> {
+  return (await checkReportFor(installationId, owner, repo, sha, providedToken)).state;
+}
+
+/** `checkStateFor`, with the names of what is failing, for a notice that has to say so. */
+export async function checkReportFor(
+  installationId: number,
+  owner: string,
+  repo: string,
+  sha: string,
+  providedToken?: string,
+): Promise<{ state: "passing" | "failing" | "pending" | null; failing: string[] }> {
   const token = providedToken ?? await getInstallationToken(installationId);
   const headers = { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" };
 
@@ -570,12 +581,13 @@ export async function checkStateFor(
     listCheckRuns(owner, repo, sha, headers),
     fetchWithRetry(`${GITHUB_API}/repos/${owner}/${repo}/commits/${sha}/status`, { headers }),
   ]);
-  if (runs === null || !statusRes.ok) return null;
+  if (runs === null || !statusRes.ok) return { state: null, failing: [] };
 
-  const combined = (await statusRes.json()) as { state?: string; statuses?: unknown[] };
+  const combined = (await statusRes.json()) as { state?: string; statuses?: { context?: string; state?: string }[] };
 
   const FAILED = new Set(["failure", "timed_out", "action_required", "startup_failure"]);
   let pending = false;
+  const failing: string[] = [];
   // Only the latest run of each check counts: a check that failed and was then
   // re-run is judged by the re-run, or one red attempt blocks the commit for good.
   for (const run of latestRunPerCheck(runs)) {
@@ -585,16 +597,22 @@ export async function checkStateFor(
     // reviewing broken code ends up preventing the review from being retried.
     if (isOwnCheckRun(run.name)) continue;
     if (run.status !== "completed") { pending = true; continue; }
-    if (run.conclusion && FAILED.has(run.conclusion)) return "failing";
+    if (run.conclusion && FAILED.has(run.conclusion)) failing.push(run.name ?? "(unnamed check)");
   }
-  if (combined.state === "failure" || combined.state === "error") return "failing";
+  if (combined.state === "failure" || combined.state === "error") {
+    for (const status of combined.statuses ?? []) {
+      if (status.state === "failure" || status.state === "error") failing.push(status.context ?? "(unnamed status)");
+    }
+    if (failing.length === 0) failing.push("commit status");
+  }
+  if (failing.length > 0) return { state: "failing", failing };
   if (combined.state === "pending" && (combined.statuses?.length ?? 0) > 0) pending = true;
 
-  if (pending) return "pending";
+  if (pending) return { state: "pending", failing: [] };
   // Nothing failed and nothing is outstanding - but if neither surface reported
   // anything at all, there is no evidence of a green build, only an absence.
   const reported = runs.length + (combined.statuses?.length ?? 0);
-  return reported > 0 ? "passing" : null;
+  return { state: reported > 0 ? "passing" : null, failing: [] };
 }
 
 /**
@@ -1559,6 +1577,6 @@ export async function getFileContent(
 }
 
 /** Check runs this app writes itself, which are not evidence about the code. */
-function isOwnCheckRun(name: string | undefined): boolean {
+export function isOwnCheckRun(name: string | undefined): boolean {
   return typeof name === "string" && name.trim().toLowerCase().startsWith("octopus review");
 }

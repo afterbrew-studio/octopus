@@ -1,7 +1,8 @@
 import "server-only";
 import { DeferralEnqueueError } from "@/lib/review-deferral-error";
 import { updateUnderClaim, type ClaimIdentity } from "@/lib/review-claim";
-import { prisma } from "@octopus/db";
+import { prisma, type Prisma } from "@octopus/db";
+import type { HoldRecord } from "@/lib/review-hold";
 import { summarizeRepository } from "@/lib/summarizer";
 import { analyzeRepository } from "@/lib/analyzer";
 import { enqueueAfter } from "@/lib/queue";
@@ -80,7 +81,15 @@ export async function ensureRepositoryAnalysis(
  * "deferred" for a run that never actually re-enqueued, which would leave it
  * non-terminal forever with nothing left to retry it.
  */
-export async function deferReviewForRepository(pullRequestId: string, headSha?: string | null, reviewRequestVersion?: number, reviewRunId?: string, claim?: ClaimIdentity): Promise<boolean> {
+export async function deferReviewForRepository(
+  pullRequestId: string,
+  headSha?: string | null,
+  reviewRequestVersion?: number,
+  reviewRunId?: string,
+  claim?: ClaimIdentity,
+  /** A longer, differently-tracked wait (a review held for checks) uses the same mechanism. */
+  wait?: { delaySeconds: number; runState: string; hold: HoldRecord; payload: object },
+): Promise<boolean> {
   // Must be "pending", not "queued": `processReviewInternal`'s own claim query
   // only takes a "queued" row once it is older than the large-review stale
   // window (~35 minutes), so a "queued" retry scheduled 30 seconds out would
@@ -104,7 +113,10 @@ export async function deferReviewForRepository(pullRequestId: string, headSha?: 
   // Handed back before the retry is scheduled, so that only the retry can take the
   // run again. If the run is already finished there is nothing left to retry.
   if (reviewRunId) {
-    const released = await prisma.reviewRun.updateMany({ where: { id: reviewRunId, terminalAt: null }, data: { state: "pending" } });
+    const released = await prisma.reviewRun.updateMany({
+      where: { id: reviewRunId, terminalAt: null },
+      data: wait ? { state: wait.runState, hold: wait.hold as unknown as Prisma.InputJsonValue } : { state: "pending" },
+    });
     if (!released.count) return false;
   }
   // The retry re-executes under the SAME frozen run, not live configuration --
@@ -112,7 +124,7 @@ export async function deferReviewForRepository(pullRequestId: string, headSha?: 
   // the retry. rayf P-0007 C3.
   let jobId: string | null;
   try {
-    jobId = await enqueueAfter("process-review", reviewRunId ? { pullRequestId, reviewRunId } : { pullRequestId }, 30);
+    jobId = await enqueueAfter("process-review", { ...(reviewRunId ? { pullRequestId, reviewRunId } : { pullRequestId }), ...wait?.payload }, wait?.delaySeconds ?? 30);
   } catch (error) {
     throw new DeferralEnqueueError(error);
   }

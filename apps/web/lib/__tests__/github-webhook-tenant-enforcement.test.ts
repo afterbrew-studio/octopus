@@ -30,6 +30,7 @@ describe("GitHub webhook tenant enforcement", () => {
       unmappedInstallationDropped: true,
       mergedAndMentionScoped: true,
       labelTriggerScoped: true,
+      heldReviewRecheckScoped: true,
       ledgerFailureNonFatal: true,
       uninstallTenantCaptured: true,
       repositoryCreatedSynced: true,

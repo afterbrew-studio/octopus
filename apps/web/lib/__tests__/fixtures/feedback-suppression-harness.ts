@@ -142,7 +142,7 @@ mock.module("@/lib/github", () => ({
   resolveReviewThread: async () => {},
   createSingleReviewComment: async () => 999,
   // Never "failing": the CI gate (org.reviewOnlyWhenCiPasses) is not under test here.
-  checkStateFor: async () => "success",
+  checkReportFor: async () => ({ state: "passing", failing: [] }),
 }));
 mock.module("@/lib/bitbucket", () => ({}));
 mock.module("@/lib/gitlab", () => ({}));

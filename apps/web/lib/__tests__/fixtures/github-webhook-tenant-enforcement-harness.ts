@@ -65,6 +65,15 @@ mock.module("@/lib/github", () => ({
   // The label trigger reads the repository's `octopus.json` through this. Null is "no
   // config file", which is the state every repository in this harness is in.
   getFileContent: () => Promise.resolve(configuredReviewLabels),
+  isOwnCheckRun: (name: string | undefined) => typeof name === "string" && name.trim().toLowerCase().startsWith("octopus review"),
+}));
+// Bringing a held review's recheck forward is its own unit; here only who it is asked for.
+const rechecks: Array<{ repositoryId: string; headSha: string }> = [];
+mock.module("@/lib/review-hold", () => ({
+  recheckHeldReviews: (repositoryId: string, headSha: string) => {
+    rechecks.push({ repositoryId, headSha });
+    return Promise.resolve(1);
+  },
 }));
 mock.module("@/lib/repo-sync", () => ({
   syncOrgRepos: (organizationId: string, opts: { source: string }) => {
@@ -399,6 +408,32 @@ try {
   );
   configuredReviewLabels = null;
 
+  // A check finishing brings forward the recheck of a review held for that commit, for the
+  // signed installation's own repository only.
+  const sha = "c".repeat(40);
+  const checkBody = (event: "check_run" | "check_suite", action: string, extra: Record<string, unknown> = {}, installation = 222) =>
+    JSON.stringify({
+      action, installation: { id: installation }, repository: { id: 9001, full_name: "shared/repository" },
+      [event]: { head_sha: sha, ...extra },
+    });
+  const send = (body: string, eventType: string, deliveryId: string, validSignature = true) =>
+    POST(webhookRequest(body, { eventType, deliveryId, validSignature }));
+  const suiteResponse = await send(checkBody("check_suite", "completed", { conclusion: "success" }), "check_suite", "delivery-suite");
+  const runResponse = await send(checkBody("check_run", "completed", { name: "swift build + tests (macos)" }), "check_run", "delivery-run");
+  assert(suiteResponse.status === 200 && runResponse.status === 200, "check event response failed");
+  assert(
+    rechecks.length === 2 && rechecks.every((call) => call.repositoryId === "repo_b" && call.headSha === sha),
+    "completed check events did not ask for the signed repository's held reviews to be rechecked",
+  );
+  const before = rechecks.length;
+  await send(checkBody("check_run", "completed", { name: "Octopus Review" }), "check_run", "delivery-own");
+  await send(checkBody("check_run", "created", { name: "build" }), "check_run", "delivery-created");
+  await send(checkBody("check_suite", "requested"), "check_suite", "delivery-requested");
+  await send(checkBody("check_suite", "completed", {}, 999), "check_suite", "delivery-unmapped-check");
+  const forged = await send(checkBody("check_suite", "completed"), "check_suite", "delivery-forged", false);
+  assert(forged.status === 401, "a check event with a bad signature was accepted");
+  assert(rechecks.length === before, "an own, unfinished, unmapped or unsigned check event brought a recheck forward");
+
   failNextLedgerWrite = true;
   const failureResponse = await POST(
     webhookRequest(pullRequestBody(), { deliveryId: "delivery-db-failure" }),
@@ -531,6 +566,7 @@ try {
     unmappedInstallationDropped: true,
     mergedAndMentionScoped: true,
     labelTriggerScoped: true,
+    heldReviewRecheckScoped: true,
     ledgerFailureNonFatal: true,
     uninstallTenantCaptured: true,
     repositoryCreatedSynced: true,

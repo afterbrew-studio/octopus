@@ -9,7 +9,9 @@ import {
   getPullRequestDetails,
   createCheckRun,
   updateCheckRun,
+  isOwnCheckRun,
 } from "@/lib/github";
+import { recheckHeldReviews } from "@/lib/review-hold";
 import { startReviewFlow } from "@/lib/webhook-shared";
 import { modelForLabels } from "@/lib/review-config-shared";
 import { fetchReviewConfig, labelAsksForReview } from "@/lib/review-config";
@@ -193,6 +195,30 @@ export async function POST(request: NextRequest) {
         data: { githubInstallationId: null },
       });
     }
+  }
+
+  // ── A check finished → bring forward the recheck of any review held for it ──
+  //
+  // Only a shortcut. A held review rechecks on its own schedule (review-hold.ts), so
+  // nothing depends on the App being subscribed to these events: it needs the
+  // `check_run` and `check_suite` events and read access to the Checks permission to
+  // receive them. The payloads carry the commit as `check_run.head_sha` and
+  // `check_suite.head_sha`. Octopus's own check run is not evidence about the code,
+  // and its completion is not a reason to recheck.
+  if ((event === "check_run" || event === "check_suite") && payload.action === "completed") {
+    const headSha: unknown = payload.check_run?.head_sha ?? payload.check_suite?.head_sha;
+    if (
+      resolvedRepositoryTenant &&
+      typeof headSha === "string" && /^[0-9a-f]{40,64}$/i.test(headSha) &&
+      !(event === "check_run" && isOwnCheckRun(payload.check_run?.name))
+    ) {
+      try {
+        await recheckHeldReviews(resolvedRepositoryTenant.repositoryId, headSha);
+      } catch (err) {
+        console.error("[webhook] Could not bring forward a held review:", err);
+      }
+    }
+    return NextResponse.json({ ok: true });
   }
 
   // ── PR labelled with a configured review label → review on demand ──

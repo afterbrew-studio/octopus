@@ -489,7 +489,7 @@ model ReviewRun {
   provider      String
   /// The merged review configuration AS IT WAS at enqueue. The whole point.
   configSnapshot Json
-  /// pending | running | queued | succeeded | failed | cancelled | superseded
+  /// pending | running | held | queued | succeeded | failed | cancelled | superseded
   /// "queued" is set only for a genuine large-review handoff to internal-cli,
   /// so its long stuck-review window is never applied to a run that is merely
   /// waiting a few seconds on capacity or a repository-preparation retry.
@@ -507,6 +507,11 @@ model ReviewRun {
   /// dismisses a verdict that is active for a request that has since been replaced.
   /// `state` is pending | current | dismissed | absent.
   publication   Json?
+  /// Why a review is waiting rather than running: its commit has failing checks.
+  /// While `state` is `held`, this carries the token only the next recheck job holds
+  /// (a superseded job, or a duplicate, finds a different token and stops), the
+  /// attempt count that sets the backoff, and when the next recheck is due.
+  hold          Json?
   createdAt     DateTime @default(now())
 
   pullRequestId String
