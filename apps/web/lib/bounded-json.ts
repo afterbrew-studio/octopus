@@ -95,7 +95,7 @@ export function sanitizePostgresJson(value: unknown): unknown {
  * authoritative for chunked or dishonest requests.
  */
 export async function readBoundedJson(
-  request: Request,
+  request: Pick<Request, "headers" | "body">,
   maxBytes: number,
 ): Promise<BoundedJsonResult> {
   const contentLength = request.headers.get("content-length");
