@@ -6,12 +6,10 @@
  * JSON serialization escapes lone surrogates, but provider decoders can reject
  * those escapes and fail the whole request. Replace only the unpaired halves;
  * valid surrogate pairs (real emoji, astral-plane chars) are left intact.
+ *
+ * Native, so a multi-megabyte prompt costs microseconds rather than the regex
+ * lookbehind scan this replaced (about 100ms per call at the request-size cap).
  */
-const LONE_SURROGATE =
-  // high surrogate not followed by a low surrogate, OR
-  // low surrogate not preceded by a high surrogate
-  /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
-
 export function stripLoneSurrogates(s: string): string {
-  return s.replace(LONE_SURROGATE, "�");
+  return s.toWellFormed();
 }

@@ -28,4 +28,22 @@ describe("stripLoneSurrogates", () => {
     const cleaned = stripLoneSurrogates("x\uD800y\uDC00z😀");
     expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(cleaned)).toBe(false);
   });
+
+  it("agrees with the lone-surrogate pattern it replaced, on every pairing of surrogate halves", () => {
+    const pattern = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+    const units = ["a", "\uD800", "\uDBFF", "\uDC00", "\uDFFF", "😀"];
+    const inputs: string[] = [""];
+    for (let length = 1; length <= 4; length++) {
+      for (const previous of inputs.filter((value) => value.length < length * 2 + 1).slice()) for (const unit of units) inputs.push(previous + unit);
+    }
+    for (const input of inputs) expect(stripLoneSurrogates(input)).toBe(input.replace(pattern, FFFD));
+  });
+
+  it("stays cheap at the request-size cap, where every capacity check and provider call passes through it", () => {
+    const large = "😀".repeat(1_100_000) + "\uD800";
+    const started = performance.now();
+    for (let i = 0; i < 20; i++) stripLoneSurrogates(large);
+    // The regex took about 100ms per call here, so 20 calls could not fit.
+    expect(performance.now() - started).toBeLessThan(1000);
+  });
 });
