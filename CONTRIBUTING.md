@@ -55,7 +55,9 @@ fix(docker): keep CHANGELOG.md in the build context
 
 ## Releases
 
-Maintainers cut a release by running `scripts/bump-version.sh X.Y.Z`, committing the version bump, then tagging `vX.Y.Z`. The script updates the `version` field in both `package.json` and `apps/web/package.json`.
+Run `scripts/bump-version.sh X.Y.Z`, review the customer-facing `CHANGELOG.md` entry, and commit the changes. The script updates both application manifests and stamps the unreleased changelog notes. Follow the RC process below before creating the stable tag.
+
+After review and CI pass, tag the candidate `vX.Y.Z-rc.N` (`N > 0`) to build the release images. Run [isolated RC acceptance](.github/workflows/rc-acceptance.yml) at that exact source with the successful release build's `rc_run_id` and the workflow's explicit enablement and support-image prerequisites. Set `OCTOPUS_RC_ACCEPTANCE_RUN_ID` to the successful acceptance run, then tag the same source `vX.Y.Z`. The [release workflow](.github/workflows/release.yml) promotes the accepted digests without rebuilding; application deployment remains separate.
 
 ## Pull Request Guidelines
 

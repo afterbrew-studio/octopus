@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.15] - 2026-10-06
+
+### Fixed
+
+- Malformed API requests and settings forms now return controlled errors before database or provider operations.
+- GitLab connections show useful recovery guidance when the provider is unreachable or returns an invalid response, preserving an existing connection.
+- Dependency analysis closes its response stream once and safely handles a disconnected client while saving completed results.
+- The self-hosting configuration generator creates fresh secrets in your browser after the page loads, preventing hydration mismatches. Copy is available once both keys are ready.
+
+### Improved
+
+- Browser error reporting filters a narrowly identified injected MetaMask error chain while retaining application errors and uncertain cases.
+
+### Upgrade notes
+
+- No database or configuration changes from 1.2.14. Update all web instances and review workers, then verify health and version. This release does not change provider credentials or retry previous operations.
+
 ## [1.2.14] - 2026-09-30
 
 ### Fixed

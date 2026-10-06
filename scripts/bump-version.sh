@@ -55,4 +55,4 @@ fs.writeFileSync(p, c);
 console.log(`[bump-version] Stamped CHANGELOG.md [${v}] - ${date}`);
 NODE
 
-echo "Now review CHANGELOG.md, commit, then tag: git tag v$VERSION"
+echo "Next, follow CONTRIBUTING.md#releases."
