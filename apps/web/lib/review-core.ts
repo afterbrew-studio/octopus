@@ -532,7 +532,7 @@ Rules:
   // Step 8: Suppress strong dense matches to previously dismissed findings.
   findings = await suppressFindingsFromFeedback(findings, { repoId: repo.id, orgId: org.id });
 
-  // Step 9: Two-pass validation — use Haiku to re-score confidence on all findings
+  // Step 9: Two-pass validation — re-score confidence on all findings
   // with cross-file context for verifying function signatures, types, etc.
   if (findings.length > 0) {
     try {
@@ -556,7 +556,7 @@ Rules:
         }
       }
 
-      findings = await validateFindings(findings, diff, org.id, confidenceThreshold, crossFileContext || undefined, "[review-core]", verificationContext, fileTreeStr || undefined);
+      findings = await validateFindings(findings, diff, org.id, reviewModel, confidenceThreshold, crossFileContext || undefined, "[review-core]", verificationContext, fileTreeStr || undefined);
     } catch (err) {
       console.warn("[review-core] Two-pass validation failed, keeping all findings:", err);
     }

@@ -19,6 +19,7 @@ let adapter: "openai" | "gateway" | "no-completion" = "openai";
 let prior: ReviewCoverage | null = null;
 let priorComments: { id: number; user: string; path: string; line: number; body: string; inReplyToId: null }[] = [];
 const events: string[] = [];
+const validationModels: string[] = [];
 const archived: { coverage: ReviewCoverage }[] = [];
 
 class FakeOpenAI {
@@ -66,7 +67,8 @@ mock.module("@/lib/qdrant", () => ({
 }));
 mock.module("@/lib/reranker", () => ({ rerankDocuments: async () => [] }));
 mock.module("@/lib/knowledge-context", () => ({ getAlwaysIncludeKnowledge: async () => [], mergeKnowledgeChunks: () => [] }));
-mock.module("@/lib/review-routing", () => ({ resolveReviewModel: async () => "gpt-fixture" }));
+let resolvedModel = "gpt-fixture";
+mock.module("@/lib/review-routing", () => ({ resolveReviewModel: async () => resolvedModel }));
 mock.module("@/lib/ai-usage", () => ({ logAiUsage: async () => {} }));
 mock.module("@/lib/ai-router", () => ({
   getProviderForModel: async () => { throw new Error("Legacy fixture must not resolve adaptive capacity"); },
@@ -84,7 +86,7 @@ mock.module("@/lib/ai-router", () => ({
 mock.module("@/lib/review-validation", () => ({
   gatherCrossFileContext: async () => "",
   gatherVerificationContext: async () => new Map(),
-  validateFindings: async (findings: unknown[]) => findings,
+  validateFindings: async (findings: unknown[], _diff: string, _org: string, model: string) => { validationModels.push(model); return findings; },
 }));
 mock.module("@/lib/review-summary-comment", () => ({ publishReviewSummary: async () => 123 }));
 const realAttempt = await import("@/lib/review-attempt");
@@ -195,5 +197,12 @@ prior = { ...structuredClone(recorded), reviewRequestVersion: 1 };
 priorComments = [{ id: 5, user: "fixture[bot]", path: "src/check.ts", line: 1, inReplyToId: null,
   body: `🟠 ${finding.title}\n\n${finding.description}` }];
 assert.equal(await submittedEvent(report([finding])), "COMMENT", "a repeated unresolved HIGH must not approve the new head");
+
+// The validation pass is handed the model this review resolved, not one of its own.
+resolvedModel = "opencode:glm-5.3";
+validationModels.length = 0;
+await submittedEvent(report([finding]));
+assert.deepEqual(validationModels, ["opencode:glm-5.3"], "validation must run on the review's resolved model");
+resolvedModel = "gpt-fixture";
 
 console.log("PASS ordinary review approval requires a verified, finding-free review");
