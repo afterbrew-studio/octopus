@@ -1,3 +1,5 @@
+import "server-only";
+import { readBoundedJson } from "@/lib/bounded-json";
 import { auth } from "@/lib/auth";
 import { pubby } from "@/lib/pubby";
 import { authenticateApiToken } from "@/lib/api-auth";
@@ -6,9 +8,18 @@ import { headers } from "next/headers";
 import { liveTelemetryActive } from "@/lib/entitlements";
 
 export async function POST(req: Request) {
-  // Clone request body since we may need to read it in both auth paths
-  const body = await req.json();
+  const parsed = await readBoundedJson(req, 1024 * 1024);
+  if (!parsed.ok) {
+    return Response.json({ error: parsed.reason === "too_large" ? "Request too large" : "Invalid JSON body" }, { status: parsed.reason === "too_large" ? 413 : 400 });
+  }
+  if (!parsed.value || typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
+    return Response.json({ error: "Expected a JSON object" }, { status: 400 });
+  }
+  const body = parsed.value as Record<string, unknown>;
   const { socket_id, channel_name } = body;
+  if (typeof socket_id !== "string" || !socket_id.trim() || typeof channel_name !== "string" || !channel_name.trim()) {
+    return Response.json({ error: "Socket ID and channel name are required" }, { status: 400 });
+  }
 
   // Try API token auth first (for headless agents)
   const apiAuth = await authenticateApiToken(req);

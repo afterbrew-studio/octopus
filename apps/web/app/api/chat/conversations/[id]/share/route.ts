@@ -1,3 +1,5 @@
+import "server-only";
+import { readBoundedJson } from "@/lib/bounded-json";
 import { headers } from "next/headers";
 import { auth } from "@/lib/auth";
 import { prisma } from "@octopus/db";
@@ -9,8 +11,16 @@ async function getSessionAndConversation(request: Request, id: string) {
     return { error: Response.json({ error: "Unauthorized" }, { status: 401 }) };
   }
 
-  const { orgId } = await request.json();
-  if (!orgId) {
+  const parsed = await readBoundedJson(request, 1024 * 1024);
+  if (!parsed.ok) {
+    return { error: Response.json({ error: parsed.reason === "too_large" ? "Request too large" : "Invalid JSON body" }, { status: parsed.reason === "too_large" ? 413 : 400 }) };
+  }
+  if (!parsed.value || typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
+    return { error: Response.json({ error: "Expected a JSON object" }, { status: 400 }) };
+  }
+  const body = parsed.value as Record<string, unknown>;
+  const { orgId } = body;
+  if (typeof orgId !== "string" || !orgId.trim()) {
     return { error: Response.json({ error: "Missing orgId" }, { status: 400 }) };
   }
 

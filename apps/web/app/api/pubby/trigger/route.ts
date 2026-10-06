@@ -1,3 +1,5 @@
+import "server-only";
+import { readBoundedJson } from "@/lib/bounded-json";
 import { auth } from "@/lib/auth";
 import { pubby } from "@/lib/pubby";
 import { prisma } from "@octopus/db";
@@ -9,7 +11,18 @@ export async function POST(req: Request) {
     return new Response("Unauthorized", { status: 401 });
   }
 
-  const { channel, event, data } = await req.json();
+  const parsed = await readBoundedJson(req, 1024 * 1024);
+  if (!parsed.ok) {
+    return Response.json({ error: parsed.reason === "too_large" ? "Request too large" : "Invalid JSON body" }, { status: parsed.reason === "too_large" ? 413 : 400 });
+  }
+  if (!parsed.value || typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
+    return Response.json({ error: "Expected a JSON object" }, { status: 400 });
+  }
+  const body = parsed.value as Record<string, unknown>;
+  const { channel, event, data } = body;
+  if (typeof channel !== "string" || !channel.trim() || typeof event !== "string" || !event.trim()) {
+    return Response.json({ error: "Channel and event are required" }, { status: 400 });
+  }
 
   // Validate channel access: presence-chat-{conversationId}
   const chatMatch = channel.match(/^presence-chat-(.+)$/);
