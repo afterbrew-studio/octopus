@@ -132,10 +132,19 @@ for (const action of [actions.updateDefaultModels, actions.toggleReviewsPaused, 
   assert.ok((await action({}, new FormData())).error, `${action.name}: missing fields`);
   assert.deepEqual(writes, []);
 }
+for (const missing of Object.keys(modelFields)) {
+  const partial = form(modelFields);
+  partial.delete(missing);
+  writes.length = 0;
+  assert.equal((await actions.updateDefaultModels({}, partial)).error, "Invalid form data.");
+  assert.deepEqual(writes, [], `missing ${missing} must preserve overrides`);
+}
+assert.equal((await actions.updateDefaultModels({}, form({ defaultModelId: "review-model", defaultEmbedModelId: "embed-model", reviewEffort: "high" }))).success, true);
+assert.deepEqual(writes.at(-1)?.data, { defaultModelId: "review-model", defaultEmbedModelId: "embed-model", reviewEffort: "high" });
 for (const [action, fields] of checkedActions) {
   assert.equal((await action({}, form(fields))).error, undefined, `${action.name}: valid form`);
 }
-assert.ok(writes.some(({ data }) => data.defaultModelId === null && data.defaultEmbedModelId === null), "empty selections inherit defaults");
+assert.ok(writes.some(({ data }) => data.defaultModelId === null && data.defaultEmbedModelId === null && data.reviewEffort === null), "empty selections inherit defaults");
 assert.equal((await billing.updateBillingEmail({}, form({ billingEmail: "" }))).error, undefined);
 assert.equal(writes.at(-1)?.data.billingEmail, null, "explicit empty field clears billing email");
 assert.equal((await tokens.createApiToken(form({ name: "Test" }))).token, "test-token");

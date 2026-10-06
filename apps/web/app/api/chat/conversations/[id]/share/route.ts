@@ -1,5 +1,5 @@
 import "server-only";
-import { readBoundedJson } from "@/lib/bounded-json";
+import { isPostgresSafeJson, readBoundedJson } from "@/lib/bounded-json";
 import { headers } from "next/headers";
 import { auth } from "@/lib/auth";
 import { prisma } from "@octopus/db";
@@ -17,6 +17,9 @@ async function getSessionAndConversation(request: Request, id: string) {
   }
   if (!parsed.value || typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
     return { error: Response.json({ error: "Expected a JSON object" }, { status: 400 }) };
+  }
+  if (!isPostgresSafeJson(parsed.value)) {
+    return { error: Response.json({ error: "Invalid JSON body" }, { status: 400 }) };
   }
   const body = parsed.value as Record<string, unknown>;
   const { orgId } = body;

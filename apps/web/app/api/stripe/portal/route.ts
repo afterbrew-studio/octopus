@@ -1,5 +1,5 @@
 import "server-only";
-import { readBoundedJson } from "@/lib/bounded-json";
+import { isPostgresSafeJson, readBoundedJson } from "@/lib/bounded-json";
 import { NextRequest, NextResponse } from "next/server";
 import { headers } from "next/headers";
 import { auth } from "@/lib/auth";
@@ -19,6 +19,9 @@ export async function POST(req: NextRequest) {
   }
   if (!parsed.value || typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
     return Response.json({ error: "Expected a JSON object" }, { status: 400 });
+  }
+  if (!isPostgresSafeJson(parsed.value)) {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
   }
   const body = parsed.value as Record<string, unknown>;
   const { orgId } = body;

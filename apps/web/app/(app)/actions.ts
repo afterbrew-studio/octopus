@@ -448,7 +448,7 @@ export async function updateDefaultModels(
     return { error: "Only organization owners and admins can change default models." };
   }
 
-  if (!isTextFormData(formData, ["defaultModelId", "defaultEmbedModelId"])) return { error: "Invalid form data." };
+  if (!isTextFormData(formData, ["defaultModelId", "defaultEmbedModelId", "reviewEffort"])) return { error: "Invalid form data." };
 
   const defaultModelId = (formData.get("defaultModelId") as string)?.trim() || null;
   const defaultEmbedModelId = (formData.get("defaultEmbedModelId") as string)?.trim() || null;

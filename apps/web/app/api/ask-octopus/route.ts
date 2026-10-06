@@ -1,5 +1,5 @@
 import "server-only";
-import { readBoundedJson } from "@/lib/bounded-json";
+import { isPostgresSafeJson, readBoundedJson } from "@/lib/bounded-json";
 import Anthropic from "@anthropic-ai/sdk";
 import { prisma } from "@octopus/db";
 import { createEmbeddings } from "@/lib/embeddings";
@@ -159,6 +159,9 @@ export async function POST(request: Request) {
   }
   if (!parsed.value || typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
     return Response.json({ error: "Expected a JSON object" }, { status: 400 });
+  }
+  if (!isPostgresSafeJson(parsed.value)) {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
   }
   const body = parsed.value as Record<string, unknown>;
   const { message, history, fingerprint, sessionId } = body;
