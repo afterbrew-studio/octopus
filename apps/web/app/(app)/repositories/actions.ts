@@ -1,6 +1,8 @@
 "use server";
 
 import "server-only";
+import { isActionId } from "@/lib/action-input";
+import { isBoundedStringArray } from "@/lib/bounded-json";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
@@ -36,6 +38,7 @@ export async function getRepoDetail(repoId: string): Promise<RepoDetailData | nu
     headers: await headers(),
   });
   if (!session) return null;
+  if (!isActionId(repoId)) return null;
 
   const repo = await prisma.repository.findUnique({
     where: { id: repoId },
@@ -98,6 +101,7 @@ export async function analyzeRepository(
     headers: await headers(),
   });
   if (!session) redirect("/login");
+  if (!isActionId(repoId)) return { error: "Invalid repository ID." };
 
   const repo = await prisma.repository.findUnique({
     where: { id: repoId },
@@ -247,6 +251,7 @@ export async function cancelAnalysis(
     headers: await headers(),
   });
   if (!session) redirect("/login");
+  if (!isActionId(repoId)) return { error: "Invalid repository ID." };
 
   const repo = await prisma.repository.findUnique({
     where: { id: repoId },
@@ -292,6 +297,7 @@ export async function toggleFavoriteRepository(
     headers: await headers(),
   });
   if (!session) redirect("/login");
+  if (!isActionId(repoId)) return { favorited: false, error: "Invalid repository ID." };
 
   const repo = await prisma.repository.findUnique({
     where: { id: repoId },
@@ -345,6 +351,7 @@ export async function deletePullRequestReview(
     headers: await headers(),
   });
   if (!session) redirect("/login");
+  if (!isActionId(pullRequestId)) return { error: "Invalid pull request ID." };
 
   const pr = await prisma.pullRequest.findUnique({
     where: { id: pullRequestId },
@@ -397,6 +404,7 @@ export async function cancelPullRequestReview(
     headers: await headers(),
   });
   if (!session) redirect("/login");
+  if (!isActionId(pullRequestId)) return { error: "Invalid pull request ID." };
 
   const pr = await prisma.pullRequest.findUnique({
     where: { id: pullRequestId },
@@ -520,6 +528,8 @@ export async function updateRepoModels(
     headers: await headers(),
   });
   if (!session) redirect("/login");
+  if (!isActionId(repoId)) return { error: "Invalid repository ID." };
+  if ((reviewModelId !== null && !isActionId(reviewModelId)) || (embedModelId !== null && !isActionId(embedModelId))) return { error: "Invalid model selection." };
 
   const repo = await prisma.repository.findUnique({
     where: { id: repoId },
@@ -562,10 +572,8 @@ export async function transferRepository(
     headers: await headers(),
   });
   if (!session) redirect("/login");
-
-  if (!repoId || !targetOrgId) {
-    return { error: "Missing required fields." };
-  }
+  if (!isActionId(repoId)) return { error: "Invalid repository ID." };
+  if (!isActionId(targetOrgId)) return { error: "Invalid target organization." };
 
   // Verify repo exists and user is owner of the source org
   const repo = await prisma.repository.findUnique({
@@ -658,6 +666,7 @@ export async function removeRepository(
     headers: await headers(),
   });
   if (!session) redirect("/login");
+  if (!isActionId(repoId)) return { error: "Invalid repository ID." };
 
   const repo = await prisma.repository.findUnique({
     where: { id: repoId },
@@ -714,6 +723,7 @@ export async function restoreRepository(
     headers: await headers(),
   });
   if (!session) redirect("/login");
+  if (!isActionId(repoId)) return { error: "Invalid repository ID." };
 
   const repo = await prisma.repository.findUnique({
     where: { id: repoId },
@@ -792,6 +802,8 @@ export async function toggleAutoReview(
     headers: await headers(),
   });
   if (!session) redirect("/login");
+  if (!isActionId(repoId)) return { error: "Invalid repository ID." };
+  if (typeof enabled !== "boolean") return { error: "Invalid auto-review setting." };
 
   const repo = await prisma.repository.findUnique({
     where: { id: repoId },
@@ -832,7 +844,7 @@ export async function updateReviewConfig(
     inlineThreshold?: string;
     enableConflictDetection?: boolean;
     disabledCategories?: string[];
-    confidenceThreshold?: string;
+    confidenceThreshold?: string | number;
     enableTwoPassReview?: boolean;
   },
 ): Promise<{ error?: string; success?: boolean }> {
@@ -840,6 +852,15 @@ export async function updateReviewConfig(
     headers: await headers(),
   });
   if (!session) redirect("/login");
+  if (!isActionId(repoId)) return { error: "Invalid repository ID." };
+  if (!config || typeof config !== "object" || Array.isArray(config) ||
+      (Object.getPrototypeOf(config) !== Object.prototype && Object.getPrototypeOf(config) !== null) ||
+      Object.keys(config).some((key) => !["maxFindings", "inlineThreshold", "enableConflictDetection", "disabledCategories", "confidenceThreshold", "enableTwoPassReview"].includes(key)) ||
+      (config.enableConflictDetection !== undefined && typeof config.enableConflictDetection !== "boolean") ||
+      (config.enableTwoPassReview !== undefined && typeof config.enableTwoPassReview !== "boolean") ||
+      (config.disabledCategories !== undefined && !isBoundedStringArray(config.disabledCategories, 100, 128))) {
+    return { error: "Invalid review config." };
+  }
 
   const repo = await prisma.repository.findUnique({
     where: { id: repoId },
@@ -865,10 +886,10 @@ export async function updateReviewConfig(
   }
 
   // Validate config values
-  if (config.maxFindings !== undefined && (config.maxFindings < 1 || config.maxFindings > 50)) {
+  if (config.maxFindings !== undefined && (typeof config.maxFindings !== "number" || !Number.isInteger(config.maxFindings) || config.maxFindings < 1 || config.maxFindings > 50)) {
     return { error: "Max findings must be between 1 and 50." };
   }
-  if (config.inlineThreshold && !["critical", "high", "medium"].includes(config.inlineThreshold)) {
+  if (config.inlineThreshold !== undefined && !["critical", "high", "medium", "low"].includes(config.inlineThreshold)) {
     return { error: "Invalid inline threshold." };
   }
   if (config.confidenceThreshold !== undefined) {
@@ -901,6 +922,8 @@ export async function updateRepoConfigSettings(
     headers: await headers(),
   });
   if (!session) redirect("/login");
+  if (!isActionId(repoId)) return { error: "Invalid repository ID." };
+  if (!input || typeof input !== "object" || Array.isArray(input) || typeof input.useRepoConfig !== "boolean" || !isBoundedStringArray(input.repoConfigFiles, 100, 1024)) return { error: "Invalid repo config settings." };
 
   const repo = await prisma.repository.findUnique({
     where: { id: repoId },
@@ -955,6 +978,7 @@ export async function getReviewConfig(
     headers: await headers(),
   });
   if (!session) return null;
+  if (!isActionId(repoId)) return null;
 
   const repo = await prisma.repository.findUnique({
     where: { id: repoId },
