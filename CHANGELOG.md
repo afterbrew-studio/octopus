@@ -11,7 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Malformed API requests and settings forms now return controlled errors before database or provider operations.
+- Malformed API requests, settings forms and repository, knowledge, timeline and model-search action arguments are rejected before database writes or provider calls.
+- Timeline queries and knowledge audit/enhancement actions verify organization membership at their server entry points.
+- Repository review settings accept the Low inline severity option shown in the form.
 - GitLab connections show useful recovery guidance when the provider is unreachable or returns an invalid response, preserving an existing connection.
 - Dependency analysis closes its response stream once and safely handles a disconnected client while saving completed results.
 - The self-hosting configuration generator creates fresh secrets in your browser after the page loads, preventing hydration mismatches. Copy is available once both keys are ready.

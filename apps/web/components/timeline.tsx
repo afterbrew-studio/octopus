@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -107,6 +108,7 @@ export function Timeline({
       if (weeks.some((w) => w.weekKey === prevMondayISO)) return;
 
       const week = await loadWeek(prevMondayISO);
+      if (!week) { toast.error("Unable to load this week. Refresh the page and try again."); return; }
       setWeeks((prev) => [...prev, week]);
     } catch (err) {
       console.error("Failed to load week:", err);
@@ -137,6 +139,7 @@ export function Timeline({
       if (weeks.some((w) => w.weekKey === mondayISO)) return;
 
       const week = await loadWeek(mondayISO);
+      if (!week) { toast.error("Unable to load this week. Refresh the page and try again."); return; }
       setWeeks((prev) =>
         [...prev, week].sort((a, b) => b.weekKey.localeCompare(a.weekKey))
       );
@@ -506,7 +509,7 @@ function DaySummary({
         setSavedPrCount(existing.prCount);
         setLoadedFromDb(true);
       }
-    });
+    }).catch(() => toast.error("Unable to load the saved summary. Please try again."));
   }, [date, hasReviews]);
 
   if (!hasReviews) return null;
@@ -517,6 +520,7 @@ function DaySummary({
     setLoading(true);
     try {
       const result = await generateDailySummary(date);
+      if (result === null) { toast.error("Unable to generate this summary. Refresh the page and try again."); return; }
       setSummary(result);
       setSavedPrCount(totalPrs);
       setLoadedFromDb(true);
