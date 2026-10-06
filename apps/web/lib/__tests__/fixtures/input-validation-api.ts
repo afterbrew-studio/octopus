@@ -6,6 +6,7 @@ let signedIn = true;
 let role = "owner";
 let tokenAuth: { org: { id: string } } | Response | null = null;
 let shared = false;
+let deletedAt: Date | null = null;
 const effects: string[] = [];
 const reads: string[] = [];
 const sessionData: Record<string, unknown>[] = [];
@@ -35,10 +36,14 @@ mock.module("@octopus/db", () => ({ prisma: {
   } },
   organization: { findUnique: async () => { reads.push("organization"); return { stripeCustomerId: "cus_test" }; } },
   chatConversation: {
-    findFirst: async ({ where }: { where: { id: string; organizationId?: string; userId?: string; deletedAt: null } }) => {
+    findFirst: async ({ where }: { where: { id: string; organizationId?: string; userId?: string; isShared?: boolean; deletedAt: null } }) => {
       reads.push("conversation");
       assert.equal(where.deletedAt, null);
-      if (where.id !== "chat_1" || (where.organizationId && where.organizationId !== "org_1") || (where.userId && where.userId !== user.id)) return null;
+      if (where.id !== "chat_1" ||
+          (where.organizationId !== undefined && where.organizationId !== "org_1") ||
+          (where.userId !== undefined && where.userId !== "user_1") ||
+          (where.isShared !== undefined && where.isShared !== shared) ||
+          where.deletedAt !== deletedAt) return null;
       return { organizationId: "org_1", isShared: shared };
     },
     update: async ({ data }: { data: { isShared: boolean } }) => { effects.push("share"); shared = data.isShared; return { id: "chat_1", title: "Chat", isShared: shared }; },
@@ -135,6 +140,22 @@ effects.length = 0;
 assert.equal((await portal(request('{"orgId":"org_1"}'))).status, 403);
 assert.deepEqual(effects, []);
 role = "owner";
+for (const state of [{ shared: false, deletedAt: null }, { shared: true, deletedAt: new Date() }]) {
+  shared = state.shared;
+  deletedAt = state.deletedAt;
+  for (const [handler, body] of [
+    [auth, { socket_id: "1.2", channel_name: "presence-chat-chat_1" }],
+    [trigger, { channel: "presence-chat-chat_1", event: "typing" }],
+  ] as const) {
+    effects.length = 0;
+    const response = await handler(request(JSON.stringify(body)));
+    assert.equal(response.status, 403);
+    assert.equal(await response.text(), "Conversation not found or not shared");
+    assert.deepEqual(effects, [], "unshared or deleted conversations must not reach Pubby");
+  }
+}
+deletedAt = null;
+shared = true;
 for (const channel of ["presence-chat-chat_1", "private-telemetry-org-org_1"]) {
   assert.equal((await auth(request(JSON.stringify({ socket_id: "1.2", channel_name: channel })))).status, 200);
 }
@@ -142,8 +163,11 @@ assert.equal((await trigger(request(JSON.stringify({ channel: "presence-chat-cha
 assert.equal((await auth(request(channelBody))).status, 200);
 assert.equal((await trigger(request(triggerBody))).status, 200);
 assert.equal((await portal(request('{"orgId":"org_1"}'))).status, 200);
+shared = false;
 assert.equal((await share.POST(request('{"orgId":"org_1"}'), params))?.status, 200);
+assert.equal(shared, true);
 assert.equal((await share.DELETE(request('{"orgId":"org_1"}'), params))?.status, 200);
+assert.equal(shared, false);
 assert.equal((await share.POST(request('{"orgId":"org_1"}'), { params: Promise.resolve({ id: "someone_elses_chat" }) }))?.status, 404);
 tokenAuth = { org: { id: "org_1" } };
 for (const unsafe of ["\u0000", "\ud800", "\udfff"]) {
