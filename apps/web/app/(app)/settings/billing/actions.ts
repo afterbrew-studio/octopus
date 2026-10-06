@@ -1,6 +1,7 @@
 "use server";
 
 import "server-only";
+import { isTextFormData } from "@/lib/form-input";
 import { beginMarketingPayment } from "@/lib/marketing-capture";
 
 import { headers, cookies } from "next/headers";
@@ -273,6 +274,11 @@ export async function updateAutoReload(
   const result = await getOwnerOrgId();
   if ("error" in result) return { error: result.error };
 
+  if (!isTextFormData(formData)) return { error: "Invalid form data." };
+
+  if (!["true", "false"].includes(formData.get("enabled") as string)) {
+    return { error: "Invalid enabled value." };
+  }
   const enabled = formData.get("enabled") === "true";
   const thresholdAmount = Number(formData.get("thresholdAmount"));
   const reloadAmount = Number(formData.get("reloadAmount"));
@@ -351,6 +357,8 @@ export async function updateBillingEmail(
   const result = await getOwnerOrgId();
   if ("error" in result) return { error: result.error };
 
+  if (!isTextFormData(formData, ["billingEmail"])) return { error: "Invalid form data." };
+
   const billingEmail = (formData.get("billingEmail") as string)?.trim() || null;
 
   if (billingEmail && !billingEmail.includes("@")) {
@@ -380,6 +388,8 @@ export async function updateSpendLimit(
 ): Promise<{ error?: string; success?: boolean }> {
   const result = await getOwnerOrgId();
   if ("error" in result) return { error: result.error };
+
+  if (!isTextFormData(formData, ["monthlySpendLimitUsd"])) return { error: "Invalid form data." };
 
   const raw = formData.get("monthlySpendLimitUsd") as string;
   const monthlySpendLimitUsd = raw ? Number(raw) : null;

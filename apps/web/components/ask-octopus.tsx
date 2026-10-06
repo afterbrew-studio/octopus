@@ -30,10 +30,10 @@ const MarkdownContent = memo(function MarkdownContent({ content }: { content: st
               </pre>
             );
           }
-          return <code className="rounded bg-white/10 px-1 py-0.5 text-xs text-[#10D8BE]">{children}</code>;
+          return <code className="rounded bg-white/10 px-1 py-0.5 text-xs text-primary">{children}</code>;
         },
         a: ({ href, children }) => (
-          <a href={href} target="_blank" rel="noopener noreferrer" className="text-[#10D8BE] underline underline-offset-2 hover:text-[#0fc0a8]">
+          <a href={href} target="_blank" rel="noopener noreferrer" className="text-primary underline underline-offset-2 hover:text-primary/80">
             {children}
           </a>
         ),
@@ -232,12 +232,12 @@ export function AskOctopus() {
             className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm sm:hidden"
             onClick={closePanel}
           />
-          <div className="fixed inset-x-0 bottom-0 z-[51] flex h-[85dvh] flex-col overflow-hidden rounded-t-2xl border border-white/10 bg-[#111] shadow-2xl shadow-black/60 sm:inset-auto sm:right-6 sm:bottom-6 sm:h-[560px] sm:w-[420px] sm:rounded-2xl">
+          <div className="dark fixed inset-x-0 bottom-0 z-[51] flex h-[85dvh] flex-col overflow-hidden rounded-t-2xl border border-white/10 bg-[#111] shadow-2xl shadow-black/60 sm:inset-auto sm:right-6 sm:bottom-6 sm:h-[560px] sm:w-[420px] sm:rounded-2xl">
           {/* Header */}
-          <div className="flex items-center justify-between border-b border-white/[0.08] bg-[#0c0c0c] px-4 py-3">
+          <div className="flex items-center justify-between border-b border-white/[0.08] bg-background px-4 py-3">
             <div className="flex items-center gap-2">
-              <div className="flex size-7 items-center justify-center rounded-lg bg-[#10D8BE]/10">
-                <IconMessageCircle className="size-4 text-[#10D8BE]" />
+              <div className="flex size-7 items-center justify-center rounded-lg bg-primary/10">
+                <IconMessageCircle className="size-4 text-primary" />
               </div>
               <div>
                 <h3 className="text-sm font-semibold text-white">Ask anything</h3>
@@ -256,8 +256,8 @@ export function AskOctopus() {
           <div className="flex-1 overflow-y-auto overflow-x-hidden px-4 py-3">
             {messages.length === 0 ? (
               <div className="flex h-full flex-col items-center justify-center">
-                <div className="mb-4 flex size-12 items-center justify-center rounded-2xl bg-[#10D8BE]/10">
-                  <IconMessageCircle className="size-6 text-[#10D8BE]" />
+                <div className="mb-4 flex size-12 items-center justify-center rounded-2xl bg-primary/10">
+                  <IconMessageCircle className="size-6 text-primary" />
                 </div>
                 <p className="mb-1 text-sm font-medium text-white">
                   Ask me anything about Octopus
@@ -287,7 +287,7 @@ export function AskOctopus() {
                     <div
                       className={`min-w-0 max-w-[85%] overflow-hidden rounded-2xl px-3.5 py-2.5 text-[13px] leading-relaxed ${
                         msg.role === "user"
-                          ? "bg-[#10D8BE]/15 text-white"
+                          ? "bg-primary/15 text-white"
                           : "bg-white/[0.05] text-[#ccc]"
                       }`}
                     >
@@ -314,7 +314,7 @@ export function AskOctopus() {
           </div>
 
           {/* Input */}
-          <div className="border-t border-white/[0.08] bg-[#0c0c0c] px-3 py-3">
+          <div className="border-t border-white/[0.08] bg-background px-3 py-3">
             <div className="flex items-end gap-2 rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2">
               <textarea
                 ref={inputRef}
@@ -338,7 +338,7 @@ export function AskOctopus() {
               <button
                 onClick={() => sendMessage(input)}
                 disabled={!input.trim() || isStreaming}
-                className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-[#10D8BE] text-[#0c0c0c] transition-opacity disabled:opacity-30"
+                className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-primary text-background transition-opacity disabled:opacity-30"
               >
                 {isStreaming ? (
                   <IconLoader2 className="size-3.5 animate-spin" />

@@ -10,26 +10,26 @@ export function LandingMobileNav({ isLoggedIn }: { isLoggedIn: boolean }) {
   const [open, setOpen] = useState(false);
 
   return (
-    <nav className="fixed left-0 right-0 top-9 z-40 border-b border-white/[0.06] bg-[#0c0c0c]/80 backdrop-blur-xl lg:hidden">
+    <nav className="fixed left-0 right-0 top-9 z-40 border-b border-white/[0.06] bg-background/80 backdrop-blur-xl lg:hidden">
       <div className="flex items-center justify-between px-4 py-3">
         <Link href="/" className="flex items-center gap-2">
-          <Image src="/logo.svg" alt="Octopus" width={22} height={22} priority />
+          <Image src="/brand/octopus-mark.png" alt="Octopus" width={22} height={22} priority />
           <span className="text-sm font-semibold text-white">Octopus</span>
         </Link>
         <div className="flex items-center gap-2">
           <button
             onClick={() => window.dispatchEvent(new Event("ask-octopus-open"))}
-            className="flex items-center gap-1 rounded-full border border-white/[0.08] px-3 py-1.5 text-xs text-[#888] transition-colors hover:border-[#10D8BE]/30 hover:text-white"
+            className="flex items-center gap-1 rounded-full border border-white/[0.08] px-3 py-1.5 text-xs text-[#888] transition-colors hover:border-primary/30 hover:text-white"
           >
-            <IconMessageCircle className="size-3 text-[#10D8BE]" />
+            <IconMessageCircle className="size-3 text-primary" />
             Ask AI
           </button>
           {isLoggedIn ? (
-            <Link href="/dashboard" className="rounded-full bg-white px-4 py-1.5 text-xs font-medium text-[#0c0c0c]">
+            <Link href="/dashboard" className="rounded-full bg-white px-4 py-1.5 text-xs font-medium text-background">
               Dashboard
             </Link>
           ) : (
-            <TrackedLink href="/login" event="cta_click" eventParams={{ location: "mobile_nav", label: "get_started" }} className="rounded-full bg-white px-4 py-1.5 text-xs font-medium text-[#0c0c0c]">
+            <TrackedLink href="/login" event="cta_click" eventParams={{ location: "mobile_nav", label: "get_started" }} className="rounded-full bg-white px-4 py-1.5 text-xs font-medium text-background">
               Get Started
             </TrackedLink>
           )}
@@ -48,7 +48,7 @@ export function LandingMobileNav({ isLoggedIn }: { isLoggedIn: boolean }) {
         className={`grid transition-[grid-template-rows,opacity] duration-250 ease-out ${open ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0"}`}
       >
         <div className="overflow-hidden">
-          <div className="border-t border-white/[0.06] bg-[#0c0c0c]/95 px-4 pb-4 pt-2 backdrop-blur-xl">
+          <div className="border-t border-white/[0.06] bg-background/95 px-4 pb-4 pt-2 backdrop-blur-xl">
             <div className="flex flex-col gap-1">
               <a
                 href="#how-it-works"
@@ -109,7 +109,7 @@ export function LandingMobileNav({ isLoggedIn }: { isLoggedIn: boolean }) {
                     onClick={() => setOpen(false)}
                     className="flex items-start gap-2.5 rounded-lg px-3 py-2.5 transition-colors hover:bg-white/[0.06]"
                   >
-                    <Image src="/logo.svg" alt="" width={16} height={16} className="mt-0.5 shrink-0 opacity-40 grayscale" />
+                    <Image src="/brand/octopus-mark.png" alt="" width={16} height={16} className="mt-0.5 shrink-0 opacity-40 grayscale" />
                     <div>
                       <div className="text-sm font-medium text-[#ccc]">Brand Guidelines</div>
                       <div className="mt-0.5 text-[11px] text-[#555]">Logos, colors & assets</div>

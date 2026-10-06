@@ -42,3 +42,19 @@ export function scrubEvent(event: ErrorEvent): ErrorEvent {
   }
   return event;
 }
+
+/** Browser-specific filtering; server and edge events always use scrubEvent. */
+export function scrubBrowserEvent(event: ErrorEvent): ErrorEvent | null {
+  const values = event.exception?.values;
+  // Require the complete observed wallet-extension chain and its exact injected
+  // script path. Similar messages, unknown stacks and mixed app frames stay visible.
+  if (values?.some((value) => value.value === "MetaMask extension not found") &&
+      values.some((value) => value.value === "Failed to connect to MetaMask") &&
+      values.every((value) =>
+        (value.value === "MetaMask extension not found" || value.value === "Failed to connect to MetaMask") &&
+        value.stacktrace?.frames?.length &&
+        value.stacktrace.frames.every((frame) => frame.filename === "app:///scripts/inpage.js"))) {
+    return null;
+  }
+  return scrubEvent(event);
+}

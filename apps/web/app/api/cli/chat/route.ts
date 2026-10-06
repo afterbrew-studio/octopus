@@ -1,3 +1,4 @@
+import "server-only";
 import { authenticateApiToken } from "@/lib/api-auth";
 import { prisma } from "@octopus/db";
 import { createEmbeddings } from "@/lib/embeddings";
@@ -232,10 +233,7 @@ export async function POST(request: Request) {
           provider: result.provider,
           model: chatModel,
           operation: "chat",
-          inputTokens: result.usage.inputTokens,
-          outputTokens: result.usage.outputTokens,
-          cacheReadTokens: result.usage.cacheReadTokens,
-          cacheWriteTokens: result.usage.cacheWriteTokens,
+          ...result.usage,
           organizationId: orgId,
         });
 

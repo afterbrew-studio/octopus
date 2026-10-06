@@ -2,7 +2,7 @@ import "server-only";
 import { observeAiRequest, completionEvidence } from "./request-evidence";
 import Anthropic from "@anthropic-ai/sdk";
 import type { Provider, AiCreateParams, AiResponse } from "./index";
-import { prepareAnthropicRequest, freezeRequest, usesNativeJsonOutput } from "./anthropic-request";
+import { prepareAnthropicRequest, freezeRequest, usesNativeJsonOutput, type AnthropicRequest } from "./anthropic-request";
 import { admitAnthropicReview } from "./anthropic-capacity";
 import { generationTimeout, CapacityAdmissionError, capacityReceipt, refuseCapacity, type CapacityAdmissionReceipt } from "../review-capacity";
 
@@ -33,7 +33,7 @@ export const anthropicProvider: Provider = {
   async create(params: AiCreateParams, apiKey?: string | null): Promise<AiResponse> {
     const useTool = params.responseSchema !== undefined && !usesNativeJsonOutput(params.model);
     let client: Anthropic;
-    let body: Anthropic.MessageCreateParamsStreaming;
+    let body: AnthropicRequest;
     let admission: CapacityAdmissionReceipt | undefined;
     let admittedTimeout: (() => number) | undefined;
     try {
@@ -67,7 +67,8 @@ export const anthropicProvider: Provider = {
       admission.primaryDispatch = "started";
       params.completeReviewAdmission!.onDecision?.(structuredClone(admission));
     }
-    const stream = client.messages.stream(observeAiRequest(params, "anthropic", body), {
+    // SDK 0.91.1 serializes between_tools correctly but does not yet type it.
+    const stream = client.messages.stream(observeAiRequest(params, "anthropic", body) as Anthropic.MessageCreateParamsStreaming, {
       signal,
       ...(window ? { maxRetries: 0, timeout: timeoutMs } : {}),
     });

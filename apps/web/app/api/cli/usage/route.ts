@@ -1,3 +1,4 @@
+import "server-only";
 import { authenticateApiToken } from "@/lib/api-auth";
 import { prisma } from "@octopus/db";
 import { getModelPricing, calcCost, getOrgMonthlySpend } from "@/lib/cost";
@@ -18,7 +19,7 @@ export async function GET(request: Request) {
 
   const [usages, pricing, monthlySpend, org] = await Promise.all([
     prisma.aiUsage.groupBy({
-      by: ["model", "operation"],
+      by: ["provider", "model", "operation"],
       where: {
         organizationId: result.org.id,
         createdAt: { gte: start, lt: end },
@@ -58,6 +59,7 @@ export async function GET(request: Request) {
       row._sum?.outputTokens ?? 0,
       row._sum?.cacheReadTokens ?? 0,
       row._sum?.cacheWriteTokens ?? 0,
+      row.provider,
     ),
   }));
 

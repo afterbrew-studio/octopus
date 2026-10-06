@@ -64,7 +64,7 @@ export function NewsletterForm() {
           <button
             type="submit"
             disabled={status === "loading"}
-            className="inline-flex items-center gap-2 rounded-full bg-white px-5 py-3 text-sm font-medium text-[#0c0c0c] transition-colors hover:bg-[#e0e0e0] disabled:opacity-50"
+            className="inline-flex items-center gap-2 rounded-full bg-white px-5 py-3 text-sm font-medium text-background transition-colors hover:bg-[#e0e0e0] disabled:opacity-50"
           >
             {status === "loading" ? (
               <IconLoader2 className="size-4 animate-spin" />

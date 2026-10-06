@@ -145,7 +145,7 @@ export function LandingFeatures() {
     <div ref={ref} className="mx-auto max-w-5xl">
       <div className="grid gap-6 lg:grid-cols-[minmax(0,0.95fr)_minmax(360px,0.65fr)] lg:items-end">
         <div>
-          <span className="text-xs font-semibold uppercase tracking-[0.22em] text-[#10d8be]/75">Features</span>
+          <span className="text-xs font-semibold uppercase tracking-[0.22em] text-primary/75">Features</span>
           <h2 className="mt-4 text-3xl font-bold leading-[1.05] text-white sm:text-4xl md:text-5xl">
             Review with context,
             <br />
@@ -165,7 +165,7 @@ export function LandingFeatures() {
                 <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#666]">Workspace</p>
                 <h3 className="mt-1 text-lg font-semibold text-white">Everything connected</h3>
               </div>
-              <span className="rounded-full border border-[#10d8be]/20 bg-[#10d8be]/10 px-2.5 py-1 text-[11px] text-[#10d8be]">
+              <span className="rounded-full border border-primary/20 bg-primary/10 px-2.5 py-1 text-[11px] text-primary">
                 Live
               </span>
             </div>
@@ -183,13 +183,13 @@ export function LandingFeatures() {
                     onClick={() => setActiveId(feature.id)}
                     className={`group relative grid w-full grid-cols-[40px_1fr_18px] items-center gap-3 overflow-hidden rounded-lg border p-3 text-left transition-colors ${
                       isActive
-                        ? "border-[#10d8be]/35 bg-[#10d8be]/10"
+                        ? "border-primary/35 bg-primary/10"
                         : "border-transparent hover:border-white/[0.08] hover:bg-white/[0.045]"
                     }`}
                   >
                     <span
                       className={`flex size-10 items-center justify-center rounded-lg transition-colors ${
-                        isActive ? "bg-[#10d8be] text-[#061210]" : "bg-white/[0.06] text-[#8d8d8d] group-hover:text-white"
+                        isActive ? "bg-primary text-[#061210]" : "bg-white/[0.06] text-[#8d8d8d] group-hover:text-white"
                       }`}
                     >
                       <Icon className="size-5" />
@@ -201,12 +201,12 @@ export function LandingFeatures() {
                       </span>
                     </span>
                     <IconChevronRight
-                      className={`size-4 transition-colors ${isActive ? "text-[#10d8be]" : "text-[#444] group-hover:text-[#888]"}`}
+                      className={`size-4 transition-colors ${isActive ? "text-primary" : "text-[#444] group-hover:text-[#888]"}`}
                     />
                     {isActive && (
                       <span
                         key={activeId}
-                        className="feature-cycle-progress absolute bottom-0 left-0 h-px bg-[#10d8be]"
+                        className="feature-cycle-progress absolute bottom-0 left-0 h-px bg-primary"
                         style={{ animationDuration: `${AUTO_ADVANCE_MS}ms` }}
                       />
                     )}
@@ -217,11 +217,11 @@ export function LandingFeatures() {
           </div>
 
           <div className="relative min-h-[560px] overflow-hidden bg-[#0b0b0b] p-5 sm:p-8">
-            <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_70%_10%,rgba(16,216,190,0.14),transparent_34%),linear-gradient(180deg,rgba(255,255,255,0.045),transparent)]" />
+            <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_70%_10%,rgba(21,186,129,0.14),transparent_34%),linear-gradient(180deg,rgba(255,255,255,0.045),transparent)]" />
 
             <div className="relative flex items-center justify-between gap-4">
               <div className="flex items-center gap-3">
-                <div className="flex size-11 items-center justify-center rounded-lg bg-[#10d8be]/12 text-[#10d8be]">
+                <div className="flex size-11 items-center justify-center rounded-lg bg-primary/12 text-primary">
                   <ActiveIcon className="size-5" />
                 </div>
                 <div>
@@ -283,7 +283,7 @@ function ChatPreview() {
         <div className="flex gap-1">
           <span className="size-2 rounded-full bg-[#ff6b5f]/70" />
           <span className="size-2 rounded-full bg-[#f9c74f]/70" />
-          <span className="size-2 rounded-full bg-[#10d8be]/70" />
+          <span className="size-2 rounded-full bg-primary/70" />
         </div>
         <span className="text-xs text-[#555]">octp chat · auth-service</span>
       </div>
@@ -294,7 +294,7 @@ function ChatPreview() {
           <span className="text-[#e7e7e7]">{command}</span>
         </p>
         <p className="min-w-0 break-words">
-          <span className="text-[#10d8be]">{">"}</span>{" "}
+          <span className="text-primary">{">"}</span>{" "}
           <span className="text-[#dfdfdf]">
             {typedQuestion}
             {!questionDone && <TypingCursor />}
@@ -302,7 +302,7 @@ function ChatPreview() {
         </p>
         {questionDone && (
           <div className="feature-fade-in flex items-start gap-2.5">
-            <Image src="/logo.svg" alt="" width={18} height={18} className="mt-0.5 shrink-0" />
+            <Image src="/brand/octopus-mark.png" alt="" width={18} height={18} className="mt-0.5 shrink-0" />
             <div className="min-h-24 min-w-0 flex-1 leading-relaxed text-[#c9c9c9]">
               {typedAnswer}
               {!answerDone && <TypingCursor />}
@@ -334,7 +334,7 @@ function CliPreview() {
       <div className="flex gap-1 border-b border-white/[0.06] px-4 py-3">
         <span className="size-2 rounded-full bg-[#ff6b5f]/70" />
         <span className="size-2 rounded-full bg-[#f9c74f]/70" />
-        <span className="size-2 rounded-full bg-[#10d8be]/70" />
+        <span className="size-2 rounded-full bg-primary/70" />
       </div>
       <div className="feature-stagger space-y-4 p-5 text-sm">
         <p>
@@ -383,10 +383,10 @@ function IndexPreview() {
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#666]">Indexer</p>
           <h4 className="mt-1 text-xl font-semibold text-white">Repository context refresh</h4>
         </div>
-        <span className="rounded-full bg-[#10d8be]/10 px-3 py-1 text-xs text-[#10d8be]">78%</span>
+        <span className="rounded-full bg-primary/10 px-3 py-1 text-xs text-primary">78%</span>
       </div>
       <div className="mt-6 h-2 overflow-hidden rounded-full bg-white/[0.08]">
-        <div className="bento-progress-fill h-full rounded-full bg-[#10d8be]" />
+        <div className="bento-progress-fill h-full rounded-full bg-primary" />
       </div>
       <div className="mt-6 grid gap-3 sm:grid-cols-3">
         <TypingPreviewMetric value="4,832" label="chunks" delay={250} />
@@ -416,7 +416,7 @@ function KnowledgePreview() {
           ["Rate Limit Policy", "Security"],
         ].map(([title, label]) => (
           <div key={title} className="flex items-center gap-3 rounded-lg border border-white/[0.06] bg-white/[0.04] p-4">
-            <IconFileText className="size-5 shrink-0 text-[#10d8be]" />
+            <IconFileText className="size-5 shrink-0 text-primary" />
             <div className="min-w-0 flex-1">
               <p className="font-medium text-white">{title}</p>
               <p className="mt-1 text-sm text-[#777]">Used automatically during reviews</p>
@@ -434,7 +434,7 @@ function TeamPreview() {
     <div className="mx-auto max-w-2xl rounded-lg border border-white/[0.08] bg-[#111] p-5 shadow-2xl shadow-black/30">
       <div className="mb-4 flex items-center justify-between">
         <p className="font-semibold text-white">Acme Engineering</p>
-        <span className="rounded-full bg-[#10d8be]/10 px-3 py-1 text-xs text-[#10d8be]">8 repositories</span>
+        <span className="rounded-full bg-primary/10 px-3 py-1 text-xs text-primary">8 repositories</span>
       </div>
       <div className="feature-stagger space-y-3">
         {[
@@ -482,7 +482,7 @@ function AnalyticsPreview() {
             <div key={bar.label} className="flex h-full flex-1 flex-col items-center justify-end gap-2">
               <span className="text-xs font-medium text-[#bdbdbd]">{bar.reviews}</span>
               <div
-                className="feature-bar w-full rounded-t bg-gradient-to-t from-[#10d8be]/45 to-[#10d8be]"
+                className="feature-bar w-full rounded-t bg-gradient-to-t from-primary/45 to-primary"
                 style={{ height: `${bar.height}%`, animationDelay: `${index * 80}ms` }}
               />
               <span className="text-xs text-[#777]">{bar.label}</span>
@@ -501,20 +501,20 @@ function AnalyticsPreview() {
 
 function Citation({ children, active = false }: { children: React.ReactNode; active?: boolean }) {
   return (
-    <span className={`rounded-full px-2 py-1 text-xs ${active ? "bg-[#10d8be]/10 text-[#10d8be]" : "bg-white/[0.06] text-[#8a8a8a]"}`}>
+    <span className={`rounded-full px-2 py-1 text-xs ${active ? "bg-primary/10 text-primary" : "bg-white/[0.06] text-[#8a8a8a]"}`}>
       {children}
     </span>
   );
 }
 
 function TypingCursor() {
-  return <span className="typing-cursor ml-0.5 inline-block h-4 w-px translate-y-0.5 bg-[#10d8be]" />;
+  return <span className="typing-cursor ml-0.5 inline-block h-4 w-px translate-y-0.5 bg-primary" />;
 }
 
 function TerminalFinding({ file, text, tone }: { file: string; text: string; tone: "warn" | "ok" }) {
   return (
     <div className="flex items-start gap-2 text-xs leading-relaxed">
-      <span className={tone === "warn" ? "text-[#f9c74f]" : "text-[#10d8be]"}>{tone === "warn" ? "!" : "✓"}</span>
+      <span className={tone === "warn" ? "text-[#f9c74f]" : "text-primary"}>{tone === "warn" ? "!" : "✓"}</span>
       <span className="text-[#999]">
         <span className="text-[#e7e7e7]">{file}</span> - {text}
       </span>
@@ -525,7 +525,7 @@ function TerminalFinding({ file, text, tone }: { file: string; text: string; ton
 function PreviewMetric({ value, label, accent = false }: { value: string; label: string; accent?: boolean }) {
   return (
     <div className="rounded-lg bg-white/[0.045] p-4 text-center">
-      <div className={`text-xl font-semibold ${accent ? "text-[#10d8be]" : "text-white"}`}>{value}</div>
+      <div className={`text-xl font-semibold ${accent ? "text-primary" : "text-white"}`}>{value}</div>
       <div className="mt-1 text-xs uppercase tracking-[0.16em] text-[#666]">{label}</div>
     </div>
   );
@@ -548,7 +548,7 @@ function TypingPreviewMetric({ value, label, delay }: { value: string; label: st
 
 function FeatureMetric({ value, label }: { value: string; label: string }) {
   return (
-    <div className="rounded-lg border border-white/[0.08] bg-white/[0.035] px-4 py-4 transition-colors hover:border-[#10d8be]/25 hover:bg-[#10d8be]/[0.055]">
+    <div className="rounded-lg border border-white/[0.08] bg-white/[0.035] px-4 py-4 transition-colors hover:border-primary/25 hover:bg-primary/[0.055]">
       <div className="text-base font-semibold text-white sm:text-lg">{value}</div>
       <div className="text-sm text-[#7d7d7d]">{label}</div>
     </div>

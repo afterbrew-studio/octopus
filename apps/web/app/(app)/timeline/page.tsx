@@ -1,3 +1,5 @@
+import "server-only";
+
 import { headers, cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
@@ -73,6 +75,8 @@ export default async function TimelinePage() {
     getWeekData(orgId, monday, sunday),
     getWeekData(orgId, lastMonday, lastSunday),
   ]);
+
+  if (!week || !lastWeek) redirect("/complete-profile");
 
   return (
     <div className="mx-auto max-w-6xl p-6 md:p-10">

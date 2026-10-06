@@ -42,7 +42,7 @@ export function BlogToc({ headings }: { headings: TocHeading[] }) {
               href={`#${h.id}`}
               className={`-ml-px block border-l-2 py-1 pl-3 transition-colors ${
                 activeId === h.id
-                  ? "border-[#10D8BE] text-white"
+                  ? "border-primary text-white"
                   : "border-transparent text-[#666] hover:text-[#aaa]"
               }`}
             >

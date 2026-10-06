@@ -1,23 +1,7 @@
 name: Release Docker image to GHCR
 
-# On every `v*` tag, build the apps/web Docker image and push it to GitHub
-# Container Registry with both a semver tag and the `latest` alias. The
-# self-hosted update page (apps/web/app/(app)/settings/updates) reads
-# `latestRelease` from SystemConfig, refreshed on demand (cached 1h) by
-# apps/web/lib/releases.ts when an admin opens the page.
-#
-# Two image variants are built (they differ only in build-time NEXT_PUBLIC_*
-# values baked into the client bundle, so each needs its own `next build`):
-#   - selfhost: PUBLIC octopus-selfhost package (self-hosters `compose pull`)
-#   - hosted:   PRIVATE octopus package (the hosted deploy stack pulls this)
-# They run as PARALLEL jobs (wall-clock ≈ the slower build, not the sum) since
-# their `next build` outputs can't be shared.
-#
-# Maintainers cut a release by:
-#   1. Bump apps/web/package.json version
-#   2. git tag v0.X.Y && git push origin v0.X.Y
-#   3. This workflow builds + pushes both variants, then creates a GitHub
-#      Release with auto-generated notes.
+# RC tags build once, using the base application version. Stable tags only
+# retag the same-source, accepted RC digests. WDC rollout is separate.
 
 on:
   push:
@@ -28,6 +12,10 @@ permissions:
   contents: write
   packages: write
 
+concurrency:
+  group: release-images
+  cancel-in-progress: false
+
 jobs:
   # ── changelog gate ─────────────────────────────────────────────────────────
   # Block a release that has no customer-facing CHANGELOG.md entry for its
@@ -35,31 +23,27 @@ jobs:
   # Content stays human-curated (scripts/bump-version.sh stamps [Unreleased]
   # into the version) — we only ENFORCE the entry exists, never auto-write prose.
   verify-changelog:
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+      lane: ${{ steps.metadata.outputs.lane }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
-      - name: Require a CHANGELOG.md entry for this version
+      - name: Validate release tag, manifests and changelog
+        id: metadata
         run: |
-          set -euo pipefail
-          SEMVER=${GITHUB_REF#refs/tags/}
-          SEMVER=${SEMVER#v}
-          if [ ! -f CHANGELOG.md ]; then
-            echo "::error::CHANGELOG.md not found at the repository root."
-            exit 1
-          fi
-          ESCAPED=${SEMVER//./\\.}
-          if ! grep -qE "^## \[${ESCAPED}\]" CHANGELOG.md; then
-            echo "::error::CHANGELOG.md has no '## [${SEMVER}]' section. Add a customer-facing entry before tagging — run 'scripts/bump-version.sh ${SEMVER}' to stamp the [Unreleased] notes into a dated version section, then commit and re-tag."
-            exit 1
-          fi
-          echo "CHANGELOG.md has an entry for ${SEMVER} ✓"
+          python3 -m unittest discover -s scripts -p 'test_*images.py'
+          python3 scripts/release_images.py metadata
 
   # ── self-host distribution image (PUBLIC package) ──────────────────────────
   selfhost:
     needs: [verify-changelog]
+    if: needs.verify-changelog.outputs.lane == 'rc'
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -89,6 +73,7 @@ jobs:
           echo "image_name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
 
       - name: Build + push image (self-host distribution)
+        id: build
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
@@ -102,13 +87,12 @@ jobs:
           # package. Visibility is per-package, which is why they're split.
           tags: |
             ${{ steps.tags.outputs.image_name }}-selfhost:${{ steps.tags.outputs.semver }}
-            ${{ steps.tags.outputs.image_name }}-selfhost:latest
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.version=${{ steps.tags.outputs.semver }}
+            org.opencontainers.image.version=${{ needs.verify-changelog.outputs.version }}
           build-args: |
             NEXT_PUBLIC_BUILD_ID=${{ github.sha }}
-            NEXT_PUBLIC_APP_VERSION=${{ steps.tags.outputs.semver }}
+            NEXT_PUBLIC_APP_VERSION=${{ needs.verify-changelog.outputs.version }}
             # Ships the Updates page + nav entry (gated on this build-time flag).
             # No app-slug/pubby baked here — safe to publish publicly.
             NEXT_PUBLIC_OCTOPUS_SELF_HOSTED=true
@@ -122,12 +106,13 @@ jobs:
   # the hosted instance needs its own build: selfHosted OFF, plus the instance's
   # GitHub App slug + Pubby key (both are client-exposed identifiers, not
   # secrets — they ship in every page's JS — hence repo *variables*). Pushes an
-  # immutable `X.Y.Z-prod` plus the `latest-web`/`latest-engine` aliases the
-  # deployment stack pulls. Moving the aliases does NOT touch running services —
-  # they only change on an explicit service update. Skipped when the variables
-  # are unset (e.g. on forks).
+  # RC-specific hosted tag. Missing build variables leave no digest and block
+  # receipt publication; a green skipped build cannot qualify for promotion.
   prod:
     needs: [verify-changelog]
+    if: needs.verify-changelog.outputs.lane == 'rc'
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -152,6 +137,7 @@ jobs:
           echo "image_name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
 
       - name: Build + push image (hosted deploy variant)
+        id: build
         if: ${{ vars.NEXT_PUBLIC_PUBBY_KEY != '' && vars.NEXT_PUBLIC_GITHUB_APP_SLUG != '' }}
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
@@ -161,14 +147,12 @@ jobs:
           push: true
           tags: |
             ${{ steps.tags.outputs.image_name }}:${{ steps.tags.outputs.semver }}-prod
-            ${{ steps.tags.outputs.image_name }}:latest-web
-            ${{ steps.tags.outputs.image_name }}:latest-engine
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.version=${{ steps.tags.outputs.semver }}
+            org.opencontainers.image.version=${{ needs.verify-changelog.outputs.version }}
           build-args: |
             NEXT_PUBLIC_BUILD_ID=${{ github.sha }}
-            NEXT_PUBLIC_APP_VERSION=${{ steps.tags.outputs.semver }}
+            NEXT_PUBLIC_APP_VERSION=${{ needs.verify-changelog.outputs.version }}
             NEXT_PUBLIC_GITHUB_APP_SLUG=${{ vars.NEXT_PUBLIC_GITHUB_APP_SLUG }}
             NEXT_PUBLIC_PUBBY_KEY=${{ vars.NEXT_PUBLIC_PUBBY_KEY }}
             NEXT_PUBLIC_SENTRY_DSN=${{ vars.NEXT_PUBLIC_SENTRY_DSN }}
@@ -185,6 +169,9 @@ jobs:
   # package. Its dedicated tag never moves the self-host app tags or latest alias.
   forgejo-connector:
     needs: [verify-changelog]
+    if: needs.verify-changelog.outputs.lane == 'rc'
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
@@ -201,6 +188,7 @@ jobs:
           echo "semver=$SEMVER" >> "$GITHUB_OUTPUT"
           echo "image=ghcr.io/${GITHUB_REPOSITORY,,}-selfhost" >> "$GITHUB_OUTPUT"
       - name: Build and push connector
+        id: build
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
@@ -212,13 +200,57 @@ jobs:
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.version=${{ steps.tags.outputs.semver }}
+            org.opencontainers.image.version=${{ needs.verify-changelog.outputs.version }}
           cache-from: type=gha,scope=forgejo-connector
           cache-to: type=gha,mode=max,scope=forgejo-connector
 
-  # ── GitHub Release (once, after all images are pushed) ────────────────────
+  rc-receipt:
+    needs: [verify-changelog, selfhost, prod, forgejo-connector]
+    if: needs.verify-changelog.outputs.lane == 'rc'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+      - name: Require all variant digests and record RC source
+        run: python3 scripts/release_images.py receipt
+        env:
+          SELFHOST_DIGEST: ${{ needs.selfhost.outputs.digest }}
+          PROD_DIGEST: ${{ needs.prod.outputs.digest }}
+          FORGEJO_CONNECTOR_DIGEST: ${{ needs.forgejo-connector.outputs.digest }}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: rc-images-${{ github.run_attempt }}
+          path: receipt.json
+          if-no-files-found: error
+          retention-days: 90
+
+  promote:
+    needs: [verify-changelog]
+    if: needs.verify-changelog.outputs.lane == 'stable'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_PAT }}
+      - name: Promote accepted RC digests without rebuilding
+        run: python3 scripts/release_images.py promote
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Maintainer-selected successful isolated acceptance run, never a digest override.
+          ACCEPTANCE_RUN_ID: ${{ vars.OCTOPUS_RC_ACCEPTANCE_RUN_ID }}
+
   release:
-    needs: [selfhost, prod, forgejo-connector]
+    needs: [verify-changelog, rc-receipt, promote]
+    if: >-
+      ${{ !cancelled() && needs.verify-changelog.result == 'success' &&
+          ((needs.verify-changelog.outputs.lane == 'rc' && needs.rc-receipt.result == 'success') ||
+           (needs.verify-changelog.outputs.lane == 'stable' && needs.promote.result == 'success')) }}
     runs-on: ubuntu-latest
     steps:
       - name: Derive semver
@@ -231,26 +263,34 @@ jobs:
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           generate_release_notes: true
-          name: ${{ steps.tags.outputs.semver }}
+          name: ${{ github.ref_name }}
+          prerelease: ${{ needs.verify-changelog.outputs.lane == 'rc' }}
+          make_latest: ${{ needs.verify-changelog.outputs.lane == 'stable' && 'true' || 'false' }}
           body: |
+            RC images use the base application version and do not move latest aliases.
+            Stable images promote accepted RC digests without rebuilding.
+
             Octopus Cloud can now connect to private LAN/VPN Forgejo through a local
             connector. Choose your setup at https://octopus-review.ai/docs/integrations#forgejo.
             The standalone connector image is
             `ghcr.io/octopusreview/octopus-selfhost:forgejo-connector-${{ steps.tags.outputs.semver }}`.
 
-            To upgrade a self-hosted instance, pull the new public image and
-            apply migrations (the runtime image ships no migrations, so run them
-            from a checkout of this tag):
+            Before upgrading, read this version's [Upgrade notes](https://github.com/${{ github.repository }}/blob/v${{ steps.tags.outputs.semver }}/CHANGELOG.md).
+            They specify the order for updating services and applying migrations.
+            Schema prerequisites may need migrations first; a new model catalog
+            entry may need compatible web and review workers running first.
+
+            Prepare the self-hosted upgrade:
 
             ```bash
             git fetch --tags && git checkout vX.Y.Z    # for the compose file + migrations
             export OCTOPUS_VERSION=${{ steps.tags.outputs.semver }}
             docker compose -f docker-compose.selfhost.yml pull
-            # migrate FIRST (expand-only, safe under the still-running old version) ...
-            cd packages/db && DATABASE_URL=postgresql://octopus:octopus@localhost:43332/octopus bunx prisma migrate deploy && cd ../..
-            # ... then roll to the new version
-            docker compose -f docker-compose.selfhost.yml up -d
             ```
+
+            Follow the Upgrade notes before running `docker compose -f docker-compose.selfhost.yml up -d`
+            and `bunx prisma migrate deploy` from `packages/db` with your configured
+            `DATABASE_URL`. The runtime image ships no migrations; use the tag checkout.
 
             Then verify:
 

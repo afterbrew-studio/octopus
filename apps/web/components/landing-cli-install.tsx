@@ -114,7 +114,7 @@ export function CliInstallSection({ embedded = false }: { embedded?: boolean } =
         )}
 
         {/* Terminal card */}
-        <div className={`${embedded ? "" : "mt-12 "}overflow-hidden rounded-2xl border border-white/[0.08] bg-[#0c0c0c]`}>
+        <div className={`${embedded ? "" : "mt-12 "}overflow-hidden rounded-2xl border border-white/[0.08] bg-background`}>
           {/* Top bar: platform tabs */}
           <div className="flex items-center gap-0 border-b border-white/[0.06]">
             {/* Traffic lights */}
@@ -142,7 +142,7 @@ export function CliInstallSection({ embedded = false }: { embedded?: boolean } =
           <div className="relative px-6 py-6">
             <p className="font-mono text-sm text-[#555]">{current.comment}</p>
             <div className="mt-3 flex items-start gap-3">
-              <span className="select-none font-mono text-sm text-[#10D8BE]">$</span>
+              <span className="select-none font-mono text-sm text-primary">$</span>
               <code className="flex-1 break-all font-mono text-sm text-[#e0e0e0]">
                 {current.command}
               </code>
@@ -152,7 +152,7 @@ export function CliInstallSection({ embedded = false }: { embedded?: boolean } =
                 aria-label="Copy command"
               >
                 {copied ? (
-                  <IconCheck className="size-4 text-[#10D8BE]" />
+                  <IconCheck className="size-4 text-primary" />
                 ) : (
                   <IconCopy className="size-4" />
                 )}

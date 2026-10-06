@@ -2,6 +2,7 @@ import "server-only";
 import { prisma } from "@octopus/db";
 import { calcCost, getModelPricing } from "./cost";
 import { deductCredits } from "./credits";
+import type { CacheTtl } from "./providers/system-cache";
 
 type LogAiUsageParams = {
   usedOwnKey?: boolean;
@@ -12,6 +13,7 @@ type LogAiUsageParams = {
   outputTokens: number;
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
+  cacheWriteTtl?: CacheTtl;
   organizationId: string;
 };
 
@@ -72,6 +74,8 @@ export async function logAiUsage(params: LogAiUsageParams): Promise<void> {
         params.outputTokens,
         params.cacheReadTokens ?? 0,
         params.cacheWriteTokens ?? 0,
+        params.provider,
+        params.cacheWriteTtl,
       );
     }
 

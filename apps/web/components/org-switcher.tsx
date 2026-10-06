@@ -119,7 +119,7 @@ export function OrgSwitcher({
                   className="size-5 rounded-full object-cover"
                 />
               ) : (
-                <Image src="/logo.svg" alt="Octopus" width={20} height={20} className="size-5" />
+                <Image src="/brand/octopus-mark.png" alt="Octopus" width={20} height={20} className="size-5" />
               )
             ) : (
               <>
@@ -134,7 +134,7 @@ export function OrgSwitcher({
                       className="size-6 rounded-full object-cover"
                     />
                   ) : (
-                    <Image src="/logo.svg" alt="Octopus" width={24} height={24} className="size-6" />
+                    <Image src="/brand/octopus-mark.png" alt="Octopus" width={24} height={24} className="size-6" />
                   )}
                 </Link>
                 <div className="min-w-0 flex-1">

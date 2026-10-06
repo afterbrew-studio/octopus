@@ -1,3 +1,4 @@
+import "server-only";
 import { headers, cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
@@ -189,7 +190,7 @@ export default async function AnalyticsPage({ searchParams }: PageProps) {
 
   const [byModelOperation, dailyByModel, pricing, balance] = await Promise.all([
     prisma.aiUsage.groupBy({
-      by: ["model", "operation"],
+      by: ["provider", "model", "operation"],
       where: { organizationId: orgId, createdAt: { gte: periodStart, lt: periodEnd } },
       _sum: { inputTokens: true, outputTokens: true, cacheReadTokens: true, cacheWriteTokens: true },
       _count: true,
@@ -199,6 +200,7 @@ export default async function AnalyticsPage({ searchParams }: PageProps) {
       {
         day: Date;
         model: string;
+        provider: string;
         input_tokens: bigint;
         output_tokens: bigint;
         cache_read_tokens: bigint;
@@ -208,6 +210,7 @@ export default async function AnalyticsPage({ searchParams }: PageProps) {
       SELECT
         date_trunc('day', "createdAt") AS day,
         model,
+        provider,
         SUM("inputTokens")::bigint AS input_tokens,
         SUM("outputTokens")::bigint AS output_tokens,
         SUM("cacheReadTokens")::bigint AS cache_read_tokens,
@@ -216,7 +219,7 @@ export default async function AnalyticsPage({ searchParams }: PageProps) {
       WHERE "organizationId" = ${orgId}
         AND "createdAt" >= ${periodStart}
         AND "createdAt" < ${periodEnd}
-      GROUP BY day, model
+      GROUP BY day, model, provider
       ORDER BY day ASC
     `,
 
@@ -245,6 +248,7 @@ export default async function AnalyticsPage({ searchParams }: PageProps) {
       row._sum?.outputTokens ?? 0,
       row._sum?.cacheReadTokens ?? 0,
       row._sum?.cacheWriteTokens ?? 0,
+      row.provider,
     );
     totalCost += cost;
 
@@ -301,6 +305,7 @@ export default async function AnalyticsPage({ searchParams }: PageProps) {
       Number(row.output_tokens),
       Number(row.cache_read_tokens),
       Number(row.cache_write_tokens),
+      row.provider,
     );
     dailyCostMap.set(date, (dailyCostMap.get(date) ?? 0) + cost);
   }

@@ -41,7 +41,7 @@ export function LandingFooter() {
           {/* Brand */}
           <div className="sm:col-span-2 lg:col-span-1">
             <div className="flex items-center gap-2.5">
-              <Image src="/logo.svg" alt="Octopus" width={22} height={22} />
+              <Image src="/brand/octopus-mark.png" alt="Octopus" width={22} height={22} />
               <span className="text-sm font-semibold text-white">Octopus</span>
             </div>
             <p className="mt-3 text-sm leading-relaxed text-[#555]">

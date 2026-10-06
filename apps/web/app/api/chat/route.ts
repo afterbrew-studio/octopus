@@ -1,3 +1,4 @@
+import "server-only";
 import { headers } from "next/headers";
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
@@ -753,10 +754,7 @@ ${agentResult ? `<local_agent_context>\nREAL-TIME results from a local agent run
           provider: result.provider,
           model: chatModel,
           operation: "chat",
-          inputTokens,
-          outputTokens,
-          cacheReadTokens: cacheRead,
-          cacheWriteTokens: cacheWrite,
+          ...result.usage,
           organizationId: orgId,
         });
 

@@ -23,9 +23,9 @@ export default async function DocsLayout({
   }
 
   return (
-    <div className="dark min-h-screen bg-[#0c0c0c] text-[#a0a0a0]">
+    <div className="dark min-h-screen bg-background text-[#a0a0a0]">
       {/* Top bar */}
-      <header className="sticky top-0 z-40 border-b border-white/[0.06] bg-[#0c0c0c]/80 backdrop-blur-xl">
+      <header className="sticky top-0 z-40 border-b border-white/[0.06] bg-background/80 backdrop-blur-xl">
         <div className="mx-auto flex w-full max-w-[1400px] items-center gap-2 px-6 py-3 sm:gap-4">
           <DocsMobileMenu />
           <TrackedLink
@@ -34,7 +34,7 @@ export default async function DocsLayout({
             eventParams={{ label: "logo" }}
             className="flex items-center gap-2"
           >
-            <Image src="/logo.svg" alt="Octopus" width={22} height={22} priority />
+            <Image src="/brand/octopus-mark.png" alt="Octopus" width={22} height={22} priority />
             <span className="hidden text-sm font-semibold text-white sm:inline">Octopus</span>
           </TrackedLink>
           <span className="text-[#333]">/</span>
@@ -53,7 +53,7 @@ export default async function DocsLayout({
                 href="/dashboard"
                 event="cta_click"
                 eventParams={{ location: "docs_header", label: "dashboard" }}
-                className="inline-flex items-center gap-1.5 rounded-full bg-white px-4 py-1.5 text-sm font-medium text-[#0c0c0c] transition-colors hover:bg-[#e0e0e0]"
+                className="inline-flex items-center gap-1.5 rounded-full bg-white px-4 py-1.5 text-sm font-medium text-background transition-colors hover:bg-[#e0e0e0]"
               >
                 Dashboard
                 <IconArrowRight className="size-3.5" />
@@ -63,7 +63,7 @@ export default async function DocsLayout({
                 href="/login"
                 event="cta_click"
                 eventParams={{ location: "docs_header", label: "get_started" }}
-                className="inline-flex items-center gap-1.5 rounded-full bg-white px-4 py-1.5 text-sm font-medium text-[#0c0c0c] transition-colors hover:bg-[#e0e0e0]"
+                className="inline-flex items-center gap-1.5 rounded-full bg-white px-4 py-1.5 text-sm font-medium text-background transition-colors hover:bg-[#e0e0e0]"
               >
                 Get Started
                 <IconArrowRight className="size-3.5" />

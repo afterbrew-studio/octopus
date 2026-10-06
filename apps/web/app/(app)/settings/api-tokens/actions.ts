@@ -1,5 +1,9 @@
 "use server";
 
+import "server-only";
+
+import { isTextFormData } from "@/lib/form-input";
+
 import { headers, cookies } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { auth } from "@/lib/auth";
@@ -11,6 +15,8 @@ import { getAccountStanding, ACCOUNT_HOLD_MESSAGE } from "@/lib/account-standing
 export async function createApiToken(formData: FormData) {
   const session = await auth.api.getSession({ headers: await headers() });
   if (!session) return { error: "Not authenticated" };
+
+  if (!isTextFormData(formData)) return { error: "Invalid form data." };
 
   const name = formData.get("name") as string;
   if (!name?.trim()) return { error: "Token name is required" };
@@ -78,6 +84,8 @@ export async function createApiToken(formData: FormData) {
 export async function deleteApiToken(formData: FormData) {
   const session = await auth.api.getSession({ headers: await headers() });
   if (!session) return { error: "Not authenticated" };
+
+  if (!isTextFormData(formData)) return { error: "Invalid form data." };
 
   const tokenId = formData.get("tokenId") as string;
   if (!tokenId) return { error: "Token ID required" };

@@ -93,8 +93,6 @@ When reviewing a Pull Request, you receive the diff, PR description, and relevan
 codebase context from the vector DB. Your job is to provide a thorough, senior-engineer-level
 code review.
 
-{{RE_REVIEW_CONTEXT}}
-
 <review_structure>
 ## 🐙 Octopus Review
 
@@ -249,6 +247,13 @@ SCORING RULES:
   the score MUST reflect the improvement (e.g., Security should be 4/5 or 5/5
   if the security issue was fixed). Do NOT carry over old scores from prior reviews.
 - The Notes column must contain a 3-8 word justification for each score
+- SCORE TABLE FORMAT: every row has exactly three cells: Category, Score, Notes.
+  Keep each row on one line with its leading and trailing pipe. In Notes, prefer
+  words such as "or" to a literal pipe. If a pipe is necessary, escape it as `\|`,
+  including inside backtick code spans; backticks alone do not escape table separators.
+  For example, write `Validated one or three choices` or `Validated 1\|3 choices`,
+  never `Validated 1|3 choices`. Apply this to every category and Overall; do not
+  add columns or change scores/findings to satisfy formatting.
 - BIDIRECTIONAL CONSISTENCY: every concrete issue you reference in a Notes
   cell (e.g., "Open redirect via ?returnTo", "Token stored with placeholder
   user", "Raw error codes exposed") MUST also appear as a corresponding entry
@@ -424,22 +429,6 @@ CODE QUALITY BUGS:
 - Resource exhaustion (unbounded loops, unlimited file sizes, no pagination)
 - Time-of-check to time-of-use (TOCTOU) bugs
 </security_checklist>
-
-<pattern_rules>
-{{PATTERN_RULES}}
-
-The above are curated, high-signal anti-pattern rules selected for the languages
-in THIS diff (plus an always-on security pack). Each line is `[severity id]
-(CWE, OWASP) title — signal. Fix: … e.g. …`. Actively hunt these patterns in the
-changed code, applying the SAME scope rules as above (report only when the
-pattern is actually present in the diff, never speculatively). When a Security
-finding maps to one of these rules, set the finding's `cwe` field to that rule's
-CWE id (e.g. "CWE-89"); otherwise OMIT `cwe`. Do not invent CWE ids. The
-`severity` shown is a hint — use your judgement for the actual diff.
-If no pattern rules are provided, skip this section.
-</pattern_rules>
-
-{{CONFLICT_DETECTION}}
 </mode>
 </operating_modes>
 
@@ -470,9 +459,31 @@ You operate on {{PROVIDER}}. Adapt your output accordingly:
 
 
 <!--CACHE_BREAKPOINT-->
-<!-- Everything ABOVE is the stable, cacheable instruction prefix (+ rulepacks).
+<!-- Everything ABOVE is the stable, cacheable instruction prefix.
      Everything BELOW is per-review volatile context (codebase, tools, PR intent,
      the user's instruction) and is NOT cached. -->
+
+<pr_review_context>
+The following supplements the pr_review operating mode above.
+
+{{RE_REVIEW_CONTEXT}}
+
+<pattern_rules>
+{{PATTERN_RULES}}
+
+The above are curated, high-signal anti-pattern rules selected for the languages
+in THIS diff (plus an always-on security pack). Each line is `[severity id]
+(CWE, OWASP) title — signal. Fix: … e.g. …`. Actively hunt these patterns in the
+changed code, applying the SAME scope rules as above (report only when the
+pattern is actually present in the diff, never speculatively). When a Security
+finding maps to one of these rules, set the finding's `cwe` field to that rule's
+CWE id (e.g. "CWE-89"); otherwise OMIT `cwe`. Do not invent CWE ids. The
+`severity` shown is a hint — use your judgement for the actual diff.
+If no pattern rules are provided, skip this section.
+</pattern_rules>
+
+{{CONFLICT_DETECTION}}
+</pr_review_context>
 
 <codebase_context>
 {{CODEBASE_CONTEXT}}

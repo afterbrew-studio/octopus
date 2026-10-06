@@ -17,6 +17,8 @@ import { grantSubscriptionPeriod, addOneMonth } from "@/lib/subscription";
 import { isPaidPlanTier, volumeBonusUsd } from "@/lib/plans";
 import { prisma } from "@octopus/db";
 import type Stripe from "stripe";
+import { marketingStripeReader, resolveStripeConversion } from "@/lib/marketing-stripe";
+import { serializeConversion } from "@/lib/marketing-conversions";
 
 async function getMatchingAutoReloadAttempt(
   intent: Stripe.PaymentIntent,
@@ -119,6 +121,43 @@ async function getReceiptUrl(paymentIntentId: string | null): Promise<string | n
 // Detect it structurally by code, not by matching the (unstable) message text.
 function isDuplicateLedgerError(err: unknown): boolean {
   return (err as { code?: string } | null)?.code === "P2002";
+}
+
+// Completion events carry an individual refund, while charge.refunded carries
+// the charge. Both paths validate fresh processor state and share the same
+// unique refund ledger key; neither starts a new financial operation.
+async function processSuccessfulRefund(refundId: string, chargeId: string | null, paymentId: string | null, livemode: boolean) {
+  if (!/^(re_|pyr_)/.test(refundId)) throw new Error("Unsupported refund identity");
+  const reader = marketingStripeReader(getStripe());
+  const refund = await reader.refund(refundId);
+  if (refund.id !== refundId || !/^(re_|pyr_)/.test(refundId)
+    || !chargeId || stripeObjectId(refund.charge) !== chargeId
+    || !paymentId || stripeObjectId(refund.payment_intent) !== paymentId) throw new Error("Refund identity mismatch");
+  if (refund.status !== "succeeded") return;
+  const payment = await reader.payment(paymentId);
+  const sessions = await reader.checkoutsForPayment(paymentId);
+  const orgId = payment.metadata?.orgId || sessions[0]?.metadata?.orgId;
+  if (!orgId || sessions.some(s => s.metadata?.orgId && s.metadata.orgId !== orgId)) throw new Error("Refund ownership unavailable or inconsistent");
+  const org = await prisma.organization.findUnique({ where: { id: orgId }, select: { stripeCustomerId: true } });
+  if (!org?.stripeCustomerId || stripeObjectId(payment.customer) !== org.stripeCustomerId) throw new Error("Refund customer mismatch");
+  const charge = await getStripe().charges.retrieve(chargeId, {}, { timeout: 10000, maxNetworkRetries: 0 });
+  if (stripeObjectId(charge.customer) !== org.stripeCustomerId) throw new Error("Refund charge customer mismatch");
+  const environment = livemode ? "live" : "test";
+  const cachedReader = { ...reader, charge: async (id: string) => id === chargeId ? charge : reader.charge(id), payment: async (id: string) => id === paymentId ? payment : reader.payment(id), refund: async (id: string) => id === refundId ? refund : reader.refund(id) };
+  const resolved = await resolveStripeConversion(cachedReader, "refund", refundId, orgId, environment);
+  if (resolved.event.eventType !== "refund" || !resolved.originalPurchase) throw new Error("Refund resolution mismatch");
+  // Credits are USD-denominated. Never debit GBP or another currency as dollars.
+  if (resolved.event.currency !== "USD") throw new Error("Refund credit currency mismatch");
+  for (const session of sessions) {
+    const alias = await resolveStripeConversion({ ...cachedReader, checkout: async () => session }, "purchase", session.id, orgId, environment);
+    if (serializeConversion(alias.event) !== serializeConversion(resolved.originalPurchase.event)) throw new Error("Refund original alias mismatch");
+  }
+  const amount = Number(resolved.event.amountMinor) / 100;
+  try {
+    await deductCredits(orgId, amount, `Refund — $${amount}`, refundId);
+  } catch (err) {
+    if (!isDuplicateLedgerError(err)) throw err;
+  }
 }
 
 export async function POST(req: NextRequest) {
@@ -228,46 +267,18 @@ export async function POST(req: NextRequest) {
 
     if (event.type === "charge.refunded") {
       const charge = event.data.object;
-      const paymentIntentId = typeof charge.payment_intent === "string" ? charge.payment_intent : null;
-
-      if (paymentIntentId) {
-        // Find the org: Checkout purchases carry orgId on the session, but
-        // off-session charges (auto-reload, subscription, direct top-ups) have
-        // no session — those carry orgId on the PaymentIntent metadata. Try the
-        // session first, then fall back to the intent so every charge's refund
-        // is attributable.
-        const sessions = await getStripe().checkout.sessions.list({ payment_intent: paymentIntentId, limit: 1 });
-        let orgId = sessions.data[0]?.metadata?.orgId;
-        if (!orgId) {
-          const intent = await getStripe().paymentIntents.retrieve(paymentIntentId);
-          orgId = intent.metadata?.orgId;
-        }
-
-        if (orgId) {
-          // Deduct each refund INDIVIDUALLY, keyed on its own id, using the
-          // per-refund amount — NOT charge.amount_refunded, which is the running
-          // cumulative total (deducting that on every delivery, or on a second
-          // partial refund, would over-debit). The unique stripeRefundId makes a
-          // redelivered event a no-op (P2002 → rolled back). Auto-paginate so a
-          // charge with >100 refunds is fully covered, and only act on refunds
-          // that actually moved money — pending/failed/canceled refunds still
-          // carry a nonzero `amount` but must not debit the balance.
-          for await (const refund of getStripe().refunds.list({ charge: charge.id })) {
-            const amount = refund.amount / 100;
-            if (refund.status !== "succeeded" || amount <= 0) continue;
-            try {
-              await deductCredits(orgId, amount, `Refund — $${amount}`, refund.id);
-              console.log(`[stripe-webhook] Refund processed: $${amount} for org ${orgId} (${refund.id})`);
-            } catch (err) {
-              if (isDuplicateLedgerError(err)) {
-                console.log("[stripe-webhook] Duplicate refund, skipping:", refund.id);
-                continue;
-              }
-              throw err;
-            }
-          }
+      const paymentId = stripeObjectId(charge.payment_intent);
+      if (paymentId) {
+        for await (const refund of getStripe().refunds.list({ charge: charge.id })) {
+          await processSuccessfulRefund(refund.id, charge.id, paymentId, event.livemode);
         }
       }
+    }
+    // Stripe documents refund.updated for all refund updates (the legacy
+    // charge.refund.updated event covers only selected payment methods).
+    if (event.type === "refund.updated") {
+      const refund = event.data.object;
+      await processSuccessfulRefund(refund.id, stripeObjectId(refund.charge), stripeObjectId(refund.payment_intent), event.livemode);
     }
 
     // Authoritative grant for our off-session PaymentIntents. Inline grants

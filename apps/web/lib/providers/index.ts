@@ -69,7 +69,8 @@ export type AiCreateParams = {
    * Set to "disabled" for short utility calls (classification, metadata,
    * validation JSON) so models that default to adaptive thinking (Sonnet 5,
    * Opus 4.7+) don't spend the small max_tokens budget on thinking. Ignored on
-   * always-thinking models, which reject thinking-off.
+   * always-thinking models, which reject thinking-off; Sonnet 5.5 maps it to
+   * between_tools to skip upfront thinking instead.
    */
   thinking?: "disabled";
 };
@@ -81,6 +82,7 @@ export type AiResponse = {
   provider: AiProvider;
   model: string;
   usage: {
+    /** Provider-native: Anthropic uncached input; OpenAI-compatible total input. */
     inputTokens: number;
     outputTokens: number;
     cacheReadTokens: number;
@@ -94,9 +96,9 @@ export type Provider = {
   supportsJsonSchema: boolean;
   /**
    * `apiKey` is the org's BYOK for providers that take one. `orgId` is the
-   * calling organisation — needed by providers that look up additional
-   * per-org config from prisma directly (ollama with org-level baseUrl
-   * override, local agent dispatch). Pure-HTTP providers can ignore both.
+   * calling organisation — needed for per-org config (ollama baseUrl
+   * override, local agent dispatch) and OpenAI cache scoping. Forward it
+   * even when the provider only makes HTTP calls.
    */
   create(
     params: AiCreateParams,

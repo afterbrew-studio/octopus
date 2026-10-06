@@ -2,7 +2,7 @@
 // NEXT_PUBLIC_SENTRY_DSN — baked ONLY in the hosted build (from a repo var), so
 // the public self-host image ships with no DSN and client Sentry stays off.
 import * as Sentry from "@sentry/nextjs";
-import { scrubEvent, parseRate } from "@/lib/sentry-scrub";
+import { scrubBrowserEvent, parseRate } from "@/lib/sentry-scrub";
 
 const dsn = process.env.NEXT_PUBLIC_SENTRY_DSN;
 
@@ -50,7 +50,7 @@ Sentry.init({
     "Load failed", // Safari
     "NetworkError when attempting to fetch resource", // Firefox
   ],
-  beforeSend: (event) => scrubEvent(event),
+  beforeSend: (event) => scrubBrowserEvent(event),
 });
 
 // Lets Sentry tie client-side navigations to server transactions (Next 15+/16).

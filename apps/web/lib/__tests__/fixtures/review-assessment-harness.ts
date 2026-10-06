@@ -1,5 +1,7 @@
 import { mock } from "bun:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { substitutePromptVars } from "../../prompt-substitute";
 import { createHash } from "node:crypto";
 import type { AiCreateParams } from "../../providers";
 
@@ -31,7 +33,7 @@ mock.module("@octopus/db", () => ({ prisma: { ...db, $transaction: (run: (tx: ty
 const { openaiProvider } = await import("../../providers/openai");
 const { callOpenAiGateway } = await import("../../providers/openai-gateway");
 const { observeAiRequest, completionEvidence } = await import("../../providers/request-evidence");
-const { executeCoveredReview, executeFindingsRecovery, recordNoModelAssessment, validReviewResponse, reviewResponseValidationError } = await import("../../review-assessment");
+const { executeCoveredReview, executeFindingsRecovery, recordNoModelAssessment, normalizeReviewResponse, validReviewResponse, reviewResponseValidationError } = await import("../../review-assessment");
 const { prepareReviewInput, applyReviewCoverage, renderReviewCoverage, reviewCheckResult, reviewAssessmentComplete, sha256 } = await import("../../review-coverage");
 const { createCoveredReviewRequest } = await import("../../review-request");
 const { saveReviewAttempt } = await import("../../review-attempt");
@@ -73,6 +75,24 @@ ${zeroSummary}
 
 Last reviewed commit: ${"a".repeat(40)}
 `;
+// Typography must not change assessment semantics or weaken malformed-score guards.
+for (const note of [String.raw`literal a\|b`, String.raw`literal a\\\|b`]) {
+  const text = valid.replace("No security finding", note).replace("Lowest category", note).replaceAll("5/5", "5 / 5").replaceAll("4/5", "4 / 5");
+  assert.equal(reviewResponseValidationError(text), null);
+  assert.ok(normalizeReviewResponse(text).includes(note));
+  assert.ok(normalizeReviewResponse(text).includes("**4/5**"));
+}
+for (const text of [
+  valid.replace("No security finding", String.raw`literal a\\|b`),
+  valid.replace("No security finding", "unescaped | separator"),
+  valid.replace("| Security | 5/5 | No security finding |\n", ""),
+  valid.replace("| Security |", "| Security | 5/5 | duplicate |\n| Security |"),
+  ...["0 / 5", "6 / 5", "4.5 / 5", "5 / 10", "5 / 5 injected"].map(score => valid.replace("| Security | 5/5 |", `| Security | ${score} |`)),
+  valid.replace("**4/5**", "**6 / 5**"),
+  valid.replace("**Overall**", "Overall | Extra"),
+  valid.replace("[]", "[null]"),
+]) assert.notEqual(reviewResponseValidationError(text), null);
+
 // Exact adjacent advisory from the sanitized a941 reproduction; no customer code.
 const conflictRisk = "> ⚠️ **Conflict Risk**: This PR modifies high-traffic shared files (`app/db.py`, `app/worker.py`, `app/bot.py`, `app/media_requests.py`). Rebase frequently against `main` and coordinate with authors of related open PRs.";
 const withAdvisory = (body: string, advisory = conflictRisk) => body.replace("### Findings\n", `${advisory}\n\n### Findings\n`);
@@ -88,6 +108,19 @@ function plan(oversized = false, maxChars = 300000) {
   return result;
 }
 const requestFor = (p: ReturnType<typeof plan>, model = "gpt-test"): AiCreateParams => createCoveredReviewRequest({ model, system: "Trusted review template", number: 1, title: "Validators", author: "fixture", diff: p.diff, coverage: p.coverage, comment: "@octopus context", repoConfig: "" });
+// The final emitted provider system prompt is the contract under test, not proof
+// that a live model follows it. No provider call or old-attempt reconstruction.
+const scoreTemplate = readFileSync(new URL("../../../prompts/SYSTEM_PROMPT.md", import.meta.url), "utf8");
+const contractPlan = plan();
+const contractRequest = createCoveredReviewRequest({
+  model: "gpt-test", system: substitutePromptVars(scoreTemplate, { PR_NUMBER: "312", DIAGRAM_RULES: "" }),
+  number: 312, title: "Separator fixture", author: "fixture", diff: contractPlan.diff,
+  coverage: contractPlan.coverage, comment: "", repoConfig: "",
+});
+assert.ok(contractRequest.system.includes("SCORE TABLE FORMAT: every row has exactly three cells: Category, Score, Notes."));
+assert.ok(contractRequest.system.includes("Validated 1\\|3 choices"));
+assert.ok(contractRequest.system.includes("backticks alone do not escape table separators."));
+
 // Exercise every v2 asset kind through assessment, persistence and publication.
 const { fetchGitHubReviewInput } = await import("../../github-review-input");
 const assetPaths = ["png", "jpg", "jpeg", "ttf", "woff2", "zip"].map(ext => `assets/example.${ext}`);
@@ -147,7 +180,8 @@ for (const [name, text, validationReason] of [
     assert.equal(p.coverage.complete, false);
     output = { choices: [{ message: { content: text }, finish_reason: finish }] };
     await executeCoveredReview(requestFor(p), p.coverage, "template-unassessed-v2", request => openaiProvider.create(request, "fake"));
-    assert.deepEqual(p.coverage.assessment?.responseValidation, { state: validationReason === null ? "valid" : "invalid", reason: validationReason });
+    assert.equal(p.coverage.assessment?.responseValidation?.state, validationReason === null ? "valid" : "invalid");
+    assert.equal(p.coverage.assessment?.responseValidation?.reason, validationReason);
     assert.equal(p.coverage.assessment?.state, validationReason === null && finish === "stop" ? "completed" : "incomplete");
     assert.equal(p.coverage.assessment?.responseSha256, sha256(text));
     if (validationReason) assert.ok(p.coverage.assessment!.reason.includes(validationReason));
@@ -211,6 +245,9 @@ for (const [name, text, finish, complete] of [
   ["rereview-headed-interrupted", withAdvisory(valid, `### Positive Highlights\n${rereviewNotes}`), "length", false],
   ["advisory-missing-json", withAdvisory(valid.replace(/<!-- OCTOPUS_FINDINGS_START -->[\s\S]*?<!-- OCTOPUS_FINDINGS_END -->/, "")), "stop", false],
   ["advisory-incomplete-provider", withAdvisory(valid), "length", false],
+  ["score-note-words", valid.replace("No security finding", "Validated one or three choices"), "stop", true],
+  ["score-note-escaped-code", valid.replace("No security finding", "Validated `1\\|3` choices").replace("Lowest category", "Validated `1\\|3` choices"), "stop", true],
+  ["score-note-unescaped-code", valid.replace("No security finding", "Validated `1|3` choices"), "stop", false],
   ["valid", valid, "stop", true],
   ["unassessed-complete-input", unassessed, "stop", false],
   ["rereview-valid", valid, "stop", true],
@@ -597,3 +634,13 @@ assert.equal(reviewResponseValidationError(valid.replace("### Summary", "## 🐙
   }
 }
 console.log("PASS adapter completion, publication and immutable request identity");
+
+const structural = plan();
+const privateToken = "secret-marker-must-not-be-retained";
+output = { choices: [{ message: { content: valid.replace("| Security | 5/5 |", `| Security | ${privateToken} |`) }, finish_reason: "stop" }], usage: {} };
+await executeCoveredReview(requestFor(structural), structural.coverage, "v1", request => openaiProvider.create(request, "fake"));
+const diagnostic = structural.coverage.assessment?.responseValidation?.scoreStructure;
+assert.equal(diagnostic?.length, 6);
+assert.deepEqual(diagnostic?.[0], { category: "Security", rows: 1, cells: 5, token: "invalid" });
+assert.ok(!JSON.stringify(diagnostic).includes(privateToken));
+assert.equal(structural.coverage.assessment?.state, "incomplete");
