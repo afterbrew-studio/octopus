@@ -2,13 +2,20 @@ import assert from "node:assert/strict";
 import { mock, spyOn } from "bun:test";
 import { NextRequest } from "next/server";
 
-const closed = new WeakSet<ReadableStreamDefaultController>();
+const closeAttempts = new WeakMap<ReadableStreamDefaultController, number>();
 let duplicateCloses = 0;
 const nativeClose = ReadableStreamDefaultController.prototype.close;
 const closeSpy = spyOn(ReadableStreamDefaultController.prototype, "close").mockImplementation(function (this: ReadableStreamDefaultController) {
-  if (closed.has(this)) duplicateCloses++;
-  closed.add(this);
+  const attempts = closeAttempts.get(this) ?? 0;
+  if (attempts > 0) duplicateCloses++;
+  closeAttempts.set(this, attempts + 1);
   return nativeClose.call(this);
+});
+const chunkControllers = new WeakMap<object, ReadableStreamDefaultController>();
+const nativeEnqueue = ReadableStreamDefaultController.prototype.enqueue;
+const enqueueSpy = spyOn(ReadableStreamDefaultController.prototype, "enqueue").mockImplementation(function (this: ReadableStreamDefaultController, chunk: unknown) {
+  if (chunk && typeof chunk === "object") chunkControllers.set(chunk, this);
+  return nativeEnqueue.call(this, chunk);
 });
 let scenario = "not-found";
 let fetchStarted: (() => void) | undefined;
@@ -36,7 +43,7 @@ mock.module("@octopus/db", () => ({ prisma: {
 } }));
 globalThis.fetch = (async (input: string | URL | Request) => {
   const url = String(input);
-  if (scenario === "cancelled" && url.endsWith("/team/repo")) {
+  if (scenario === "cancelled" && url.includes("/git/trees/")) {
     await new Promise<void>((resolve) => { releaseFetch = resolve; fetchStarted?.(); });
   }
   if (url.endsWith("/team/repo")) return scenario === "not-found" ? new Response(null, { status: 404 }) : Response.json({ default_branch: "main" });
@@ -64,7 +71,12 @@ const finished = new Promise<void>((resolve) => { analysisFinished = resolve; })
 const started = new Promise<void>((resolve) => { fetchStarted = resolve; });
 const response = await POST(request());
 await started;
-const cancel = response.body!.cancel();
+const reader = response.body!.getReader();
+const first = await reader.read();
+assert.ok(!first.done);
+const responseController = chunkControllers.get(first.value);
+assert.ok(responseController);
+const cancel = reader.cancel();
 // Let the already-started analysis finish and persist its result after the reader leaves.
 assert.ok(releaseFetch);
 releaseFetch();
@@ -72,5 +84,7 @@ await cancel;
 await finished;
 await new Promise((resolve) => setTimeout(resolve, 0));
 assert.equal(writes.at(-1)?.status, "completed");
+assert.equal(closeAttempts.get(responseController) ?? 0, 0, "cancelled response must not be closed");
+enqueueSpy.mockRestore();
 closeSpy.mockRestore();
 console.log("analyzer stream checks passed");
