@@ -2288,7 +2288,7 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
         }
 
         assertProcessingActive();
-        allParsedFindings = await validateFindings(allParsedFindings, diff, org.id, confidenceThreshold, crossFileContext || undefined, "[reviewer]", verificationContext, fileTree);
+        allParsedFindings = await validateFindings(allParsedFindings, diff, org.id, reviewModel, confidenceThreshold, crossFileContext || undefined, "[reviewer]", verificationContext, fileTree);
         assertProcessingActive();
       } catch (err) {
         if (err instanceof ReviewProcessingExpiredError) throw err;

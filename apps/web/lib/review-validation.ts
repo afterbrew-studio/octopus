@@ -221,12 +221,22 @@ export async function gatherVerificationContext(
 
 // ─── Two-Pass Validation ────────────────────────────────────────────────────
 
-export const VALIDATION_MODEL = "claude-sonnet-5";
+/**
+ * The model that scores findings. The review's own, because it is the one this
+ * deployment is configured and keyed for; a hardcoded vendor fails wherever that
+ * vendor has no key and silently skips the false-positive filter. An operator can
+ * pin a different validator with `OCTOPUS_VALIDATION_MODEL`.
+ */
+export function validationModelFor(reviewModel: string): string {
+  return process.env.OCTOPUS_VALIDATION_MODEL?.trim() || reviewModel;
+}
 
 export async function validateFindings(
   findings: InlineFinding[],
   diff: string,
   orgId: string,
+  /** The model the review itself resolved, frozen run override included. */
+  reviewModel: string,
   confidenceThreshold: number,
   crossFileContext?: string,
   logPrefix = "[review-validation]",
@@ -234,6 +244,7 @@ export async function validateFindings(
   fileTree?: string,
 ): Promise<InlineFinding[]> {
   if (findings.length === 0) return findings;
+  const model = validationModelFor(reviewModel);
 
   // Build findings summary with per-finding verification context inline
   const findingsSummary = findings
@@ -271,7 +282,7 @@ export async function validateFindings(
 
   const response = await createAiMessage(
     {
-      model: VALIDATION_MODEL,
+      model,
       // Raised from 2048 to fit per-finding citations/refutations without the
       // validator truncating its own JSON.
       maxTokens: 4096,
@@ -362,7 +373,7 @@ Output ONLY the JSON array, nothing else.`,
 
   await logAiUsage({
     provider: response.provider,
-    model: VALIDATION_MODEL,
+    model,
     operation: "review-validation",
     inputTokens: response.usage.inputTokens,
     outputTokens: response.usage.outputTokens,
