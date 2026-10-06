@@ -180,6 +180,16 @@ describe("reapStuckReviews", () => {
     );
   });
 
+  it("never re-enqueues a review held for failing checks", async () => {
+    // A held run waits on its own schedule. Polling it from here would turn the backoff into a
+    // ten-minute loop, so the query excludes held runs from both the filter and the selection.
+    await reapStuckReviews(NOW);
+    const pendingScan = findMany.mock.calls.map((call) => call[0] as { where?: { status?: string; attempts?: unknown }; select?: { attempts?: { where?: unknown } } })
+      .find((args) => args?.where?.status === "pending");
+    expect(pendingScan?.where?.attempts).toEqual({ some: { terminalAt: null, state: { not: "held" } } });
+    expect(pendingScan?.select?.attempts?.where).toEqual({ terminalAt: null, state: { not: "held" } });
+  });
+
   it("leaves a pending row whose attempt is younger than the grace window", async () => {
     // Otherwise it races the worker that is about to claim it.
     pending = [

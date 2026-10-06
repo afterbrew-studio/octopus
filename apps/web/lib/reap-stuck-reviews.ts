@@ -153,12 +153,14 @@ export async function reapStuckReviews(
     where: {
       status: "pending",
       updatedAt: { lt: pendingStale },
-      attempts: { some: { terminalAt: null } },
+      // A held review waits on its own schedule (see review-hold.ts); re-enqueueing
+      // it here would turn its backoff into a poll.
+      attempts: { some: { terminalAt: null, state: { not: "held" } } },
     },
     select: {
       id: true,
       attempts: {
-        where: { terminalAt: null },
+        where: { terminalAt: null, state: { not: "held" } },
         orderBy: { createdAt: "desc" },
         take: 1,
         select: { id: true, createdAt: true },

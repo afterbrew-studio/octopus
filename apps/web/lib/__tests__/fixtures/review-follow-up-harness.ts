@@ -210,7 +210,7 @@ mock.module("@/lib/github", () => ({
     return 999;
   },
   // Never "failing": the CI gate (org.reviewOnlyWhenCiPasses) is not under test here.
-  checkStateFor: async () => "success",
+  checkReportFor: async () => ({ state: "passing", failing: [] }),
 }));
 mock.module("@/lib/forgejo", () => ({
   runWithForgejoRepository: async (_repo: string, run: () => Promise<void>) => run(),

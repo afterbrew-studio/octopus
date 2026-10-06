@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 mock.module("server-only", () => ({}));
 mock.module("@/lib/github-app-config", () => ({ getGithubAppConfig: async () => null }));
-const { checkStateFor } = await import("@/lib/github");
+const { checkStateFor, checkReportFor } = await import("@/lib/github");
 
 /**
  * Whether a commit may be reviewed is judged on what its checks are now: the latest
@@ -78,6 +78,13 @@ assert.equal(await state(), null, "a failed page is unknown, not passing");
 failPage = null;
 runs = Array.from({ length: 2500 }, (_, i) => run(i + 1, `check-${i}`, "success"));
 assert.equal(await state(), null, "a list longer than the bound is unknown, not judged on a prefix");
+
+// The report names what is failing, from the latest run of each check and from statuses.
+runs = [run(1, "build", "failure", "2026-10-06T06:00:00Z"), run(2, "build", "success", "2026-10-06T06:30:00Z"), run(3, "lint", "failure"), run(4, "Octopus Review", "failure")];
+combined = { state: "failure", statuses: [{ context: "ci/legacy", state: "error" }, { context: "ci/ok", state: "success" }] };
+assert.deepEqual(await checkReportFor(1, "o", "r", "c".repeat(40), "token"), { state: "failing", failing: ["lint", "ci/legacy"] });
+combined = { state: "success", statuses: [] };
+assert.deepEqual(await checkReportFor(1, "o", "r", "c".repeat(40), "token"), { state: "failing", failing: ["lint"] });
 
 // The combined status still counts, and nothing reported is not green.
 runs = [run(1, "build", "success")];

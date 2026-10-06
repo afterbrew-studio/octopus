@@ -38,7 +38,7 @@ import {
   createPullRequestComment as ghCreatePullRequestComment,
   createPullRequestReview as ghCreatePullRequestReview,
   createSingleReviewComment as ghCreateSingleReviewComment,
-  checkStateFor,
+  checkReportFor,
   createCheckRun as ghCreateCheckRun,
   updateCheckRun as ghUpdateCheckRun,
   getRepositoryTree as ghGetRepositoryTree,
@@ -74,6 +74,7 @@ import { attemptOutcomeForStatus, resolveReviewConfig } from "@/lib/review-attem
 import { DeferralEnqueueError } from "@/lib/review-deferral-error";
 import { ClaimLostError, claimWhere, reserveClaim, updateUnderClaim, writeUnderClaim, WHILE_FINISHING, type ClaimIdentity } from "@/lib/review-claim";
 import { submitVerdict } from "@/lib/review-verdict";
+import { HELD_STATE, heldGiveUpNotice, heldNotice, holdDelaySeconds, holdExpired, holdMaxWaitMs, newHold } from "@/lib/review-hold";
 import { publicationCallTimeoutMs } from "@/lib/review-publication";
 import {
   touchesSharedFiles,
@@ -664,6 +665,8 @@ export async function processReview(
   pullRequestId: string,
   executionWindow?: ReviewExecutionWindow,
   reviewRunId?: string,
+  /** Present on a recheck of a review held for checks: the token that makes it the current one. */
+  hold?: { token: string; attempt: number },
 ): Promise<void> {
   const pr = await prisma.pullRequest.findUnique({
     where: { id: pullRequestId }, select: { headSha: true, reviewRequestVersion: true, repository: { select: { id: true, provider: true } } },
@@ -672,14 +675,14 @@ export async function processReview(
   const dispatch = (): Promise<ReviewInternalOutcome> => {
     if (pr?.repository.provider === "forgejo") {
       return forgejo.runWithForgejoRepository(pr.repository.id, () => {
-        if (!forgejo.usesForgejoConnector()) return processReviewInternal(pullRequestId, reviewRunId, executionWindow, pr);
+        if (!forgejo.usesForgejoConnector()) return processReviewInternal(pullRequestId, reviewRunId, executionWindow, pr, hold?.attempt);
         return withForgejoReviewPublication(
           pullRequestId, pr.headSha, pr.reviewRequestVersion,
-          () => processReviewInternal(pullRequestId, reviewRunId, executionWindow, pr), executionWindow?.signal,
+          () => processReviewInternal(pullRequestId, reviewRunId, executionWindow, pr, hold?.attempt), executionWindow?.signal,
         );
       }, pr.headSha);
     }
-    return processReviewInternal(pullRequestId, reviewRunId, executionWindow);
+    return processReviewInternal(pullRequestId, reviewRunId, executionWindow, undefined, hold?.attempt);
   };
 
   if (!reviewRunId) { await dispatch(); return; }
@@ -690,8 +693,16 @@ export async function processReview(
   // either held by the one that won, or finished, and in both cases it is not this
   // execution's to touch. A deferral hands the run back to `pending` before it
   // schedules the retry, so only that retry can take it again.
+  // A run held for checks is taken only by the recheck carrying its current token.
   const acquired = await prisma.reviewRun.updateMany({
-    where: { id: reviewRunId, state: "pending", terminalAt: null },
+    where: {
+      id: reviewRunId,
+      terminalAt: null,
+      OR: [
+        { state: "pending" },
+        ...(hold ? [{ state: HELD_STATE, hold: { path: ["token"], equals: hold.token } }] : []),
+      ],
+    },
     data: { state: "running" },
   });
   if (!acquired.count) {
@@ -712,7 +723,7 @@ export async function processReview(
   // ready -- it never stopped, so it is not finalized here. A superseded run
   // already finalized itself inside `processReviewInternal`, before this
   // execution's pull-request read below would find someone else's request.
-  if (dispatchOutcome === "deferred" || dispatchOutcome === "superseded" || dispatchOutcome === "lost") return;
+  if (dispatchOutcome === "deferred" || dispatchOutcome === "superseded" || dispatchOutcome === "lost" || dispatchOutcome === "settled") return;
 
   const finished = await prisma.pullRequest.findUnique({
     where: { id: pullRequestId },
@@ -765,15 +776,17 @@ function runBindingMismatch(
  * run-binding check, or a deferral whose guarded update missed because the
  * pull request moved) -- `processReview` must not try to finalize it again
  * from the pull request's status, which by then belongs to a different
- * request. `"lost"` marks an execution whose claim was taken from it while it
+ * request. `"settled"` marks an execution that finalized its run itself, with a
+ * reason of its own, and so must not have one inferred from the pull request's
+ * status. `"lost"` marks an execution whose claim was taken from it while it
  * deferred: the row and the run belong to whoever holds them now, so neither is
  * written. Every other `return` really is the run finishing without
  * executing (paused, blocked, already completed by this same run on a
  * replayed job), which the pull request's status already answers correctly.
  */
-type ReviewInternalOutcome = "deferred" | "superseded" | "lost" | undefined;
+type ReviewInternalOutcome = "deferred" | "superseded" | "lost" | "settled" | undefined;
 
-async function processReviewInternal(pullRequestId: string, reviewRunId?: string, executionWindow?: ReviewExecutionWindow, expected?: { headSha: string | null; reviewRequestVersion: number }): Promise<ReviewInternalOutcome> {
+async function processReviewInternal(pullRequestId: string, reviewRunId?: string, executionWindow?: ReviewExecutionWindow, expected?: { headSha: string | null; reviewRequestVersion: number }, holdAttempt?: number): Promise<ReviewInternalOutcome> {
   // Load PR with repo and org info
   const pr = await prisma.pullRequest.findUnique({
     where: { id: pullRequestId },
@@ -801,7 +814,7 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
   const reviewRun = reviewRunId
     ? await prisma.reviewRun.findUnique({
         where: { id: reviewRunId },
-        select: { id: true, configSnapshot: true, state: true, headSha: true, reviewRequestVersion: true, terminalAt: true },
+        select: { id: true, configSnapshot: true, state: true, headSha: true, reviewRequestVersion: true, terminalAt: true, createdAt: true },
       })
     : null;
   if (reviewRun?.terminalAt) return;
@@ -953,26 +966,6 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
   const [owner, repoName] = repo.fullName.split("/");
   const projectPath = repo.fullName;
 
-  // Reviewing a red build spends a model call on a diff that is about to change:
-  // the findings go stale the moment the author pushes the fix, and on a
-  // fix-and-re-review loop that is the common case rather than the exception.
-  //
-  // Only a KNOWN failure holds. `pending` and `null` (nothing reported, or the
-  // read failed) do not: a reviewer that waits for evidence it may never receive
-  // stops reviewing altogether, which is a worse failure than an early read.
-  if (org.reviewOnlyWhenCiPasses && isGitHub && installationId && pr.headSha) {
-    const state = await checkStateFor(installationId, owner, repoName, pr.headSha).catch(() => null);
-    if (state === "failing") {
-      console.log(
-        `[reviewer] PR ${pr.number} has failing checks at ${pr.headSha.slice(0, 8)}; not reviewing yet`,
-      );
-      // Released, not failed: the change is fine, the build is not finished
-      // with it. The next trigger claims it again.
-      await updateUnderClaim(claim, { status: "pending", claimToken: null }).catch(() => {});
-      return;
-    }
-  }
-
   // Provider-aware helper functions
   const providerGetInput = (prNumber: number) =>
     isGitHub
@@ -1032,6 +1025,49 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
       throw err;
     }
   };
+
+  // Reviewing a red build spends a model call on a diff that is about to change:
+  // the findings go stale the moment the author pushes the fix, and on a
+  // fix-and-re-review loop that is the common case rather than the exception.
+  //
+  // Only a KNOWN failure holds. `pending` and `null` (nothing reported, or the
+  // read failed) do not: a reviewer that waits for evidence it may never receive
+  // stops reviewing altogether, which is a worse failure than an early read.
+  //
+  // A hold is not a finish. The run stays alive and bound to this request, the
+  // author is told once (the same comment, edited in place), and a delayed recheck
+  // under the same run decides again, until the checks pass, the request is replaced,
+  // or the wait runs out. No model call is made while held.
+  if (org.reviewOnlyWhenCiPasses && isGitHub && installationId && pr.headSha) {
+    const report = await checkReportFor(installationId, owner, repoName, pr.headSha).catch(() => null);
+    if (report?.state === "failing") {
+      const attempt = holdAttempt ?? 0;
+      console.log(
+        `[reviewer] PR ${pr.number} has failing checks at ${pr.headSha.slice(0, 8)} (${report.failing.join(", ")}); holding the review`,
+      );
+      if (holdExpired(reviewRun?.createdAt ?? null, attempt)) {
+        const reason = "held for failing checks past the wait limit";
+        await publishMainComment(heldGiveUpNotice(pr.headSha, report.failing, Math.round(holdMaxWaitMs() / 60_000)))
+          .catch((err) => console.warn("[reviewer] Could not post the give-up notice:", err));
+        try {
+          await writeUnderClaim(claim, { status: "failed", errorMessage: reason });
+        } catch (err) {
+          if (err instanceof ClaimLostError) return "lost";
+          throw err;
+        }
+        if (reviewRunId) await finalizeAttempt(reviewRunId, "cancelled", reason);
+        return "settled";
+      }
+      await publishMainComment(heldNotice(pr.headSha, report.failing))
+        .catch((err) => console.warn("[reviewer] Could not post the hold notice:", err));
+      const hold = newHold(attempt);
+      const held = await deferReviewForRepository(pullRequestId, pr.headSha, pr.reviewRequestVersion, reviewRunId, claim, {
+        delaySeconds: holdDelaySeconds(attempt), runState: HELD_STATE, hold, payload: { holdToken: hold.token, holdAttempt: hold.attempt },
+      });
+      if (held) return "deferred";
+      return finalizeSupersededDefer();
+    }
+  }
 
   const providerGetTree = (branch: string) =>
     isGitHub
