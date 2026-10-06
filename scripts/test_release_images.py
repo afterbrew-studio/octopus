@@ -1,5 +1,6 @@
 """Offline release contract checks; no Docker daemon, registry, or GitHub calls."""
 import copy
+from contextlib import chdir
 import hashlib
 import io
 import json
@@ -80,22 +81,28 @@ class ReleaseTest(unittest.TestCase):
             remote.assert_not_called()
 
     def test_acceptance_binds_exact_build_and_tag(self):
-        accepted = {**copy.deepcopy(BUILT), "accepted": True}
-        def check(receipt=accepted, commit=SOURCE, build=BUILT, attempt=1):
-            with patch.object(release.Path, "is_file", return_value=True), \
-                 patch.object(release, "read_artifact", side_effect=[(receipt, 1), (build, attempt)]), \
-                 patch.object(release, "api", return_value={"sha": commit}):
-                return release.accepted_images(REPO, 20, SOURCE, BASE)
-        self.assertEqual(check(), BUILT)
-        for changes in ({"accepted": False}, {"accepted": "true"}, {"source": "b" * 40},
-                        {"images": {**BUILT["images"], "prod": "sha256:" + "9" * 64}},
-                        {"run_id": 11}, {"tag": "v1.2.14-rc.2"}):
-            with self.subTest(changes=changes), self.assertRaises(ValueError):
-                check(receipt={**accepted, **changes})
-        with self.assertRaisesRegex(ValueError, "tag moved"):
-            check(commit="b" * 40)
-        with self.assertRaisesRegex(ValueError, "attempt mismatch"):
-            check(attempt=2)
+        with tempfile.TemporaryDirectory() as directory, chdir(directory):
+            Path("apps/web").mkdir(parents=True)
+            Path(".github/workflows").mkdir(parents=True)
+            Path(".github/workflows/rc-acceptance.yml").touch()
+            for name in ("package.json", "apps/web/package.json"):
+                Path(name).write_text(json.dumps({"version": BASE}))
+            Path("CHANGELOG.md").write_text(f"## [{BASE}]\n")
+            accepted = {**copy.deepcopy(BUILT), "accepted": True}
+            def check(receipt=accepted, commit=SOURCE, build=BUILT, attempt=1):
+                with patch.object(release, "read_artifact", side_effect=[(receipt, 1), (build, attempt)]), \
+                     patch.object(release, "api", return_value={"sha": commit}):
+                    return release.accepted_images(REPO, 20, SOURCE, BASE)
+            self.assertEqual(check(), BUILT)
+            for changes in ({"accepted": False}, {"accepted": "true"}, {"source": "b" * 40},
+                            {"images": {**BUILT["images"], "prod": "sha256:" + "9" * 64}},
+                            {"run_id": 11}, {"tag": "v1.2.14-rc.2"}):
+                with self.subTest(changes=changes), self.assertRaises(ValueError):
+                    check(receipt={**accepted, **changes})
+            with self.assertRaisesRegex(ValueError, "tag moved"):
+                check(commit="b" * 40)
+            with self.assertRaisesRegex(ValueError, "attempt mismatch"):
+                check(attempt=2)
 
     def test_promotion_preflights_all_and_retags_without_build(self):
         rc = release.image_refs(REPO, "1.2.14-rc.1")
