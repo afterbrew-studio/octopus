@@ -262,8 +262,9 @@ docker compose exec ollama ollama pull nomic-embed-text`}</CodeBlock>
       <Section id="environment-variables" title="Environment Variables">
         <Paragraph>
           Generate a default <Mono>.env</Mono> file with pre-filled defaults for
-          database, Qdrant, and auth. A unique{" "}
-          <Mono>BETTER_AUTH_SECRET</Mono> is generated automatically.
+          database, Qdrant, and auth. Fresh <Mono>BETTER_AUTH_SECRET</Mono> and{" "}
+          <Mono>OCTOPUS_DATA_KEY</Mono> values are generated in your browser
+          after the page loads. Copy stays disabled until both keys are ready.
           Configure your AI services before starting. GitHub App credentials
           are needed only if you connect GitHub repositories. Forgejo credentials
           are entered in Settings → Integrations after sign-in.
