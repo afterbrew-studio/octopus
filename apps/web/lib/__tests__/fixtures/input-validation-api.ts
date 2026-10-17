@@ -25,9 +25,14 @@ mock.module("@/lib/pubby", () => ({ pubby: {
 mock.module("@/lib/stripe", () => ({ createPortalSession: async () => { effects.push("portal"); return "https://billing.example/session"; } }));
 mock.module("@/lib/embeddings", () => ({ createEmbeddings: async () => { effects.push("embedding"); return [[1]]; } }));
 mock.module("@/lib/qdrant", () => ({ searchDocsChunks: async () => { effects.push("search"); return []; }, ensureDocsCollection: async () => { effects.push("collection"); } }));
-mock.module("@anthropic-ai/sdk", () => ({ default: class {
-  messages = { stream: async function* () { effects.push("ai"); yield { type: "content_block_delta", delta: { type: "text_delta", text: "Hello" } }; } };
-} }));
+mock.module("@/lib/ai-client", () => ({ getPlatformReviewModel: async () => "acp:model" }));
+mock.module("@/lib/chat-stream", () => ({
+  streamChat: async ({ onDelta }: { onDelta: (text: string) => void }) => {
+    effects.push("ai");
+    onDelta("Hello");
+    return { text: "Hello", provider: "acp", stopReason: "stop", usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0 } };
+  },
+}));
 mock.module("@octopus/db", () => ({ prisma: {
   organizationMember: { findFirst: async ({ where }: { where: { organizationId: string; userId: string; deletedAt: null } }) => {
     reads.push("membership");
