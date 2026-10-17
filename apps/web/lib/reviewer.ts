@@ -129,7 +129,7 @@ import { writeSyncLog, deleteSyncLogs } from "@/lib/elasticsearch";
 import { logAiUsage } from "@/lib/ai-usage";
 import { resolveReviewModel } from "@/lib/review-routing";
 import { createAiMessage, getProviderForModel } from "@/lib/ai-router";
-import { getReviewModel } from "@/lib/ai-client";
+import { getUtilityModel } from "@/lib/ai-client";
 import { getOrgSpendLimitStatus, shouldGuardConcurrency } from "@/lib/cost";
 import fs from "node:fs";
 import path from "node:path";
@@ -247,7 +247,7 @@ Reply ONLY with a JSON array of strings, one per entry, in order. Example: ["dis
   const userMessage = lines.join("\n");
 
   try {
-    const model = await getReviewModel(orgId, repoId);
+    const model = await getUtilityModel(orgId, repoId);
     const response = await createAiMessage(
       {
         model,

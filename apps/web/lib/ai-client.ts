@@ -18,8 +18,15 @@ async function getPlatformDefault(category: "llm" | "embedding"): Promise<string
 
 export interface ResolvedReviewModel {
   model: string;
+  /** Where the model came from; the platform default is not a pin. */
+  source: "repo" | "org" | "platform";
   /** true when the model came from an explicit repo/org pin (not the platform default). */
   pinned: boolean;
+}
+
+/** The model an organization falls back to when neither it nor a repo pins one. */
+export async function getPlatformReviewModel(): Promise<string> {
+  return (await getPlatformDefault("llm")) ?? HARDCODED_REVIEW_MODEL;
 }
 
 /**
@@ -34,20 +41,29 @@ export async function resolveReviewModelPin(orgId: string, repoId?: string): Pro
       where: { id: repoId },
       select: { reviewModelId: true },
     });
-    if (repo?.reviewModelId) return { model: repo.reviewModelId, pinned: true };
+    if (repo?.reviewModelId) return { model: repo.reviewModelId, source: "repo", pinned: true };
   }
 
   const org = await prisma.organization.findUnique({
     where: { id: orgId },
     select: { defaultModelId: true },
   });
-  if (org?.defaultModelId) return { model: org.defaultModelId, pinned: true };
+  if (org?.defaultModelId) return { model: org.defaultModelId, source: "org", pinned: true };
 
-  return { model: (await getPlatformDefault("llm")) ?? HARDCODED_REVIEW_MODEL, pinned: false };
+  return { model: await getPlatformReviewModel(), source: "platform", pinned: false };
 }
 
 export async function getReviewModel(orgId: string, repoId?: string): Promise<string> {
   return (await resolveReviewModelPin(orgId, repoId)).model;
+}
+
+/**
+ * The model for side tasks (titles, translation, the chat guard, reply
+ * classification). `OCTOPUS_UTILITY_MODEL` pins a cheap model for all of them;
+ * unset, they run on the review model.
+ */
+export async function getUtilityModel(orgId: string, repoId?: string): Promise<string> {
+  return process.env.OCTOPUS_UTILITY_MODEL?.trim() || getReviewModel(orgId, repoId);
 }
 
 export async function getEmbedModel(orgId: string, repoId?: string): Promise<string> {
