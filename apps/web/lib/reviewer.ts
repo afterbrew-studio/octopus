@@ -3082,6 +3082,7 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
     // Not a review failure: the pull request is already parked for a retry that
     // could not be scheduled, and recording a failure here would end the run.
     if (err instanceof DeferralEnqueueError) {
+      outcomeDeferred = true;
       console.error(`[reviewer] PR ${pr.id} deferred but its retry was not scheduled:`, err);
       throw err;
     }

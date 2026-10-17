@@ -564,6 +564,25 @@ mock.module("@/lib/review-attempt", () => ({
   withForgejoReviewPublication: async () => { throw new Error("unexpected Forgejo publication"); },
 }));
 
+// Records what the reviewer tells the outcome table; the table itself needs PostgreSQL.
+const outcomeDeferrals: string[] = [];
+const outcomeFinishes: string[] = [];
+mock.module("@/lib/review-attempt-outcome", () => ({
+  startReviewOutcome: async () => {},
+  deferReviewOutcome: async (key: { pullRequestId: string }) => { outcomeDeferrals.push(key.pullRequestId); },
+  supersedeReviewOutcomes: async () => {},
+  recordReviewAdmissionAfterCommit: () => {},
+  ReviewOutcomeRecorder: class {
+    constructor(readonly key: { pullRequestId: string }) {}
+    assessment() {}
+    mainPosted = () => {};
+    inlinePosted() {}
+    superseded() {}
+    async finish() { outcomeFinishes.push(this.key.pullRequestId); }
+    async publish<T>(operation: () => Promise<T>) { return operation(); }
+  },
+}));
+
 const { processReview } = await import("@/lib/reviewer");
 
 // I. Low balance with another review of the organization in flight. Runs first:
@@ -946,6 +965,8 @@ failDeferralEnqueue = false;
 assert.ok(enqueueFailure, "a deferral that could not be scheduled must fail the job so it is retried");
 assert.equal(runs["run-q"].terminalAt, null, "the run must stay alive so the retry and the reconciler can recover it");
 assert.equal(prs["pr-q"].status, "pending");
+assert.deepEqual(outcomeDeferrals.filter((id) => id === "pr-q"), ["pr-q"], "the outcome is recorded as deferred, not as a failed attempt");
+assert.ok(!outcomeFinishes.includes("pr-q"), "no terminal outcome is recorded for a review that is still pending");
 analysisReady["repo-q"] = true;
 await processReview("pr-q", undefined, "run-q");
 assert.equal(prs["pr-q"].status, "completed", "the retried job must actually run the review");
