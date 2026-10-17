@@ -16,8 +16,16 @@ const dbModule = await import("@octopus/db");
 const { prisma } = dbModule;
 let interceptTransaction: (() => Promise<never>) | undefined;
 if (scenario === "admission-failure" || scenario === "admission-slow") {
+  // Admission commits its own transaction with the review run; only the later recording transaction is intercepted.
+  let admissionCommitted = false;
   const recordingClient = new Proxy(prisma, { get(target, property, receiver) {
-    if (property === "$transaction" && interceptTransaction) return interceptTransaction;
+    if (property === "$transaction" && interceptTransaction) {
+      return (...args: Parameters<typeof prisma.$transaction>) => {
+        if (admissionCommitted) return interceptTransaction!();
+        admissionCommitted = true;
+        return Reflect.apply(Reflect.get(target, property, receiver), target, args);
+      };
+    }
     return Reflect.get(target, property, receiver);
   } });
   mock.module("@octopus/db", () => ({ ...dbModule, prisma: recordingClient }));
@@ -48,8 +56,9 @@ async function productionClaim() {
   const begin = source.indexOf("  const outcomeKey =", source.indexOf("async function processReviewInternal"));
   const end = source.indexOf("  if (claimed.count === 0)", begin);
   const js = new Bun.Transpiler({ loader: "ts" }).transformSync(`(async () => { ${source.slice(begin, end)} return claimed; })()`);
-  const fn = new Function("prisma", "pr", "pullRequestId", "startReviewOutcome", `const reviewingStale = new Date(0), queuedStale = new Date(0); return ${js}`);
-  return fn(prisma, { ...pr, repository: { ...repo, organization: org } }, pr.id, start) as Promise<{ count: number }>;
+  const fn = new Function("prisma", "pr", "pullRequestId", "startReviewOutcome", "claimToken", "claimHeadSha", "claimReviewRequestVersion",
+    `const reviewingStale = new Date(0), queuedStale = new Date(0); return ${js}`);
+  return fn(prisma, { ...pr, repository: { ...repo, organization: org } }, pr.id, start, randomUUID(), pr.headSha, pr.reviewRequestVersion) as Promise<{ count: number }>;
 }
 const migration = await readFile(new URL("../../../../../packages/db/prisma/migrations/20261016120000_review_attempt_outcomes/migration.sql", import.meta.url), "utf8");
 
@@ -273,8 +282,8 @@ try {
   } else if (scenario.startsWith("admission")) {
     const source = await readFile(new URL("../../review-request-admission.ts", import.meta.url), "utf8");
     // Keep the admission loop and SQL byte-for-byte identical to the base.
-    assert.equal(createHash("sha256").update(source.slice(source.indexOf("async function admitReviewRequestInternal"))).digest("hex"), "03d5b3e10855265f7a35392e99e66082caaf4ba689551fc2a669acb857de6b33");
-    assert.ok(!source.includes("$transaction("));
+    assert.equal(createHash("sha256").update(source.slice(source.indexOf("async function admitReviewRequestInternal"))).digest("hex"), "62411eb49ca22bc9dc9b910a5259aa796392140071a93669c6cb07a916b953f7");
+    assert.equal(source.split("$transaction(").length - 1, 1);
     if (scenario !== "admission-source") {
       const details = async () => ({ headSha: pr.headSha });
       mock.module("@/lib/github", () => ({ getPullRequestDetails: details }));
@@ -283,7 +292,9 @@ try {
         runWithForgejoRepository: async (_id: string, run: () => Promise<unknown>) => run(),
       }));
       await prisma.pullRequest.update({ where: { id: pr.id }, data: { status: "failed" } });
-      const { admitReviewRequest } = await import("../../review-request-admission");
+      const { admitReviewRequest: admit } = await import("../../review-request-admission");
+      const createRun = async () => ({ id: "fixture-run" });
+      const admitReviewRequest = (params: Parameters<typeof admit>[0], client?: Parameters<typeof admit>[1]) => admit(params, client, createRun);
       const params = { provider: "github" as const, installationId: 1, organizationId: org.id,
         repoId: repo.id, repoFullName: "fixture/review", prNumber: 1, prTitle: "Synthetic fixture", prUrl: "", prAuthor: "fixture",
         headSha: pr.headSha, triggerCommentId: null, triggerCommentBody: null };
@@ -363,6 +374,8 @@ try {
       },
       updateCurrentReview: async () => ({ count: 1 }),
       recordFirstReviewCompletion: async () => {},
+      attemptOutcomeForStatus: () => null,
+      resolveReviewConfig: (_attempt: unknown, live: unknown) => live,
     }));
     mock.module("@/lib/review-attempt-delivery", () => ({
       deliverReviewAttempt: async (_id: string, run: (progress: object, checkpoint: () => Promise<void>) => Promise<void>) => {

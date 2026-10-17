@@ -69,7 +69,7 @@ export async function exerciseStorageRace(scenario: string, repo: Repository) {
     getInstallationToken: async () => "fixture-token",
     getRepositoryDetails: async () => ({ default_branch: "main" }),
     getFileContent: async (_id: number, _owner: string, _name: string, _ref: string, path: string) => path === ".octopusignore" ? null : `export const value = '${content}-${path}';`,
-    addCommentReaction: async () => {}, getPullRequestDetails: async () => null, createCheckRun: async () => 1, updateCheckRun: async () => {},
+    addCommentReaction: async () => {}, getPullRequestDetails: async () => null, createCheckRun: async () => 1, updateCheckRun: async () => {}, isOwnCheckRun: () => false,
   }));
   const nativeFetch = globalThis.fetch;
   const timeoutError = new DOMException("Fixture client timeout", "TimeoutError");

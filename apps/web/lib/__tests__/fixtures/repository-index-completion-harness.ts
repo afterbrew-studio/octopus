@@ -256,7 +256,7 @@ try {
     mock.module("@/lib/github", () => ({
       getInstallationToken: async () => "fixture-token", getRepositoryDetails: async () => ({ default_branch: "main" }),
       getFileContent: async (_id: number, _owner: string, _name: string, _ref: string, path: string) => path === ".octopusignore" ? null : "export const a = 1;",
-      addCommentReaction: async () => {}, getPullRequestDetails: async () => null, createCheckRun: async () => 1, updateCheckRun: async () => {},
+      addCommentReaction: async () => {}, getPullRequestDetails: async () => null, createCheckRun: async () => 1, updateCheckRun: async () => {}, isOwnCheckRun: () => false,
     }));
     mock.module("next/server", () => ({ after: () => {}, NextRequest: Request, NextResponse: { json: Response.json } }));
     mock.module("next/cache", () => ({ revalidatePath: () => {} }));
