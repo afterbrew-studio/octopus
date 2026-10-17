@@ -80,6 +80,7 @@ const repos: Record<string, { id: string; fullName: string; reviewConfig: object
   "repo-k": { id: "repo-k", fullName: "fixture/repo-k", reviewConfig: {}, provider: "forgejo", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
   "repo-l": { id: "repo-l", fullName: "fixture/repo-l", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
   "repo-m": { id: "repo-m", fullName: "fixture/repo-m", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
+  "repo-m2": { id: "repo-m2", fullName: "fixture/repo-m2", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
   "repo-n": { id: "repo-n", fullName: "fixture/repo-n", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
   "repo-o": { id: "repo-o", fullName: "fixture/repo-o", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
   "repo-p": { id: "repo-p", fullName: "fixture/repo-p", reviewConfig: {}, provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main" },
@@ -153,6 +154,10 @@ const prs: Record<string, Row> = {
   },
   "pr-m": {
     id: "pr-m", repositoryId: "repo-m", number: 14, title: "Title", author: "author", url: "https://example.test/pr/14",
+    headSha: A, reviewRequestVersion: 1, status: "pending", reviewBody: null, claimToken: null, updatedAt: new Date(),
+  },
+  "pr-m2": {
+    id: "pr-m2", repositoryId: "repo-m2", number: 140, title: "Title", author: "author", url: "https://example.test/pr/140",
     headSha: A, reviewRequestVersion: 1, status: "pending", reviewBody: null, claimToken: null, updatedAt: new Date(),
   },
   "pr-n": {
@@ -422,7 +427,7 @@ const { deferReviewForRepository } = await import("@/lib/review-repository-prepa
 const analysisReady: Record<string, boolean> = {
   "repo-w": true, "repo-x": true, "repo-y": true, "repo-z": true, "repo-a": false, "repo-b": false, "repo-t": false, "repo-u": false, "repo-v": false, "repo-q": false, "repo-c": false, "repo-d": false,
   // E/F/G need no deferral; their repository is ready from the start.
-  "repo-e": true, "repo-f": true, "repo-g": true, "repo-h": true, "repo-i": true, "repo-i2": true, "repo-j": true, "repo-r": true, "repo-s": true, "repo-m": true, "repo-n": true, "repo-o": true, "repo-p": true, "repo-l": true,
+  "repo-e": true, "repo-f": true, "repo-g": true, "repo-h": true, "repo-i": true, "repo-i2": true, "repo-j": true, "repo-r": true, "repo-s": true, "repo-m": true, "repo-m2": true, "repo-n": true, "repo-o": true, "repo-p": true, "repo-l": true,
 };
 let interleaveNewAdmissionAfterBindingRead = false;
 // Scenario D: simulates the pull request moving WHILE this (slow, real AI)
@@ -771,6 +776,17 @@ await processReview("pr-m", undefined, "run-m");
 afterReservation = null;
 assert.equal(publishedReviews.length - reviewsBeforeGap, 0, "a worker that cannot reserve immediately before the provider call must send nothing");
 assert.equal(enqueuedAfter.length - jobsBeforeGap, 0, "and must record no verdict");
+assert.ok(!outcomeFinishes.includes("pr-m"), "nor a terminal outcome for the attempt it no longer owns");
+
+// M2. The claim is taken before the worker's first reservation, so the publication gate itself
+// refuses. The worker owns nothing, so it records no outcome and sends nothing.
+org.checkFailureThreshold = "high";
+onModelCall = () => { Object.assign(prs["pr-m2"], { claimToken: "worker-b" }); };
+const reviewsBeforeEarlyLoss = publishedReviews.length;
+await processReview("pr-m2", undefined, "run-m2");
+onModelCall = null;
+assert.equal(publishedReviews.length - reviewsBeforeEarlyLoss, 0, "a worker that lost the claim before publication must send nothing");
+assert.ok(!outcomeFinishes.includes("pr-m2"), "and must record no terminal outcome for an attempt it no longer owns");
 
 // N. A review POST whose answer is lost after GitHub applied it. It is not sent
 // again, nothing is posted in its place, and the verdict was recorded before the call.

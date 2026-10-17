@@ -2638,6 +2638,7 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
         console.log(
           `[reviewer] PR ${pr.id} was re-claimed while this worker was running; not publishing`,
         );
+        outcomeHandedOff = true;
         return;
       }
       const callMs = publicationCallTimeoutMs(computeStaleReclaimMs(queueConfig.reviewTimeoutSeconds));
