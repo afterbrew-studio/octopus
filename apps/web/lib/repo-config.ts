@@ -5,6 +5,7 @@ import { getFileContent as ghGetFileContent } from "@/lib/github";
 import { getFileContent as bbGetFileContent } from "@/lib/bitbucket";
 import { getFileContent as forgejoGetFileContent } from "@/lib/forgejo";
 import { createAiMessage } from "@/lib/ai-router";
+import { getReviewModel } from "@/lib/ai-client";
 import { logAiUsage } from "@/lib/ai-usage";
 import {
   DEFAULT_REPO_CONFIG_FILES,
@@ -22,7 +23,6 @@ export {
 };
 export type { RepoConfigExtracted };
 
-const EXTRACTOR_MODEL = "claude-haiku-4-5-20251001";
 const EXTRACTOR_MAX_TOKENS = 1_000;
 
 export type RepoConfigSource = {
@@ -147,9 +147,10 @@ export async function extractRepoConfigRules(
 
   let extractedRules: string;
   try {
+    const model = await getReviewModel(organizationId, repositoryId);
     const response = await createAiMessage(
       {
-        model: EXTRACTOR_MODEL,
+        model,
         maxTokens: EXTRACTOR_MAX_TOKENS,
         system: EXTRACTOR_SYSTEM_PROMPT,
         messages: [{ role: "user", content: userMessage }],
@@ -159,7 +160,7 @@ export async function extractRepoConfigRules(
     extractedRules = response.text.trim();
     await logAiUsage({
       provider: response.provider,
-      model: EXTRACTOR_MODEL,
+      model,
       operation: "repo-config-extract",
       inputTokens: response.usage.inputTokens,
       outputTokens: response.usage.outputTokens,
