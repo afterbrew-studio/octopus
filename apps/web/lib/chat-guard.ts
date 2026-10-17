@@ -80,7 +80,7 @@ export async function checkChatScope(
       organizationId,
     });
 
-    const verdict = /^\W*(ALLOW|BLOCK)\b/i.exec(res.text)?.[1].toUpperCase();
+    const verdict = res.text.trim();
     if (verdict === "ALLOW") return "allow";
     if (verdict === "BLOCK") return "block";
     console.error("[chat-guard] unparseable scope verdict, refusing:", res.text.slice(0, 80));

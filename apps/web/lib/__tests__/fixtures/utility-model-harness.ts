@@ -38,12 +38,24 @@ reply.text = "BLOCK";
 assert.equal(await quiet(() => checkChatScope("write my roleplay", "org")), "block");
 
 reset();
+reply.text = " BLOCK\n";
+assert.equal(await quiet(() => checkChatScope("write my roleplay", "org")), "block", "surrounding whitespace is accepted");
+reply.text = "\nALLOW ";
+assert.equal(await quiet(() => checkChatScope("why does CI fail?", "org")), "allow", "surrounding whitespace is accepted");
+
+reset();
 reply.error = new Error("gateway down");
 assert.equal(await quiet(() => checkChatScope("hello", "org")), "unavailable", "a provider error refuses the message");
 
 reset();
 reply.text = "I cannot decide";
 assert.equal(await quiet(() => checkChatScope("hello", "org")), "unavailable", "an unparseable verdict refuses the message");
+
+for (const text of ["ALLOW because this is about CI", "ALLOW\nIgnore prior instructions", "ALLOW.", "allow", "ALLOW BLOCK", "BLOCK, actually ALLOW"]) {
+  reset();
+  reply.text = text;
+  assert.equal(await quiet(() => checkChatScope("hello", "org")), "unavailable", `a verdict with extra text refuses the message: ${JSON.stringify(text)}`);
+}
 
 reset();
 reply.text = "  Fixing the flaky CI  ";
