@@ -35,6 +35,8 @@ export interface DiffClass {
   files: number;
   tier: DiffTier;
   mechanicalOnly: boolean;
+  /** `mechanicalOnly`, and no touched path is non-mechanical: rename sources and policy-excluded files included. */
+  mechanicalEverywhere: boolean;
   highRisk: boolean;
 }
 
@@ -60,13 +62,25 @@ const HIGH_RISK_FILE = [
 
 const anyMatch = (patterns: RegExp[], s: string) => patterns.some((p) => p.test(s));
 
+const isMechanicalPath = (p: string) => anyMatch(MECHANICAL_FILE, p) || anyMatch(TEST_FILE, p);
+
+const DIFF_HEADER = /^diff --git a\/(.+?) b\/(.+)$/gm;
+
 /** Extract changed file paths from a unified diff (`diff --git a/… b/…`). */
 export function extractChangedPaths(diff: string): string[] {
   const paths: string[] = [];
-  for (const m of diff.matchAll(/^diff --git a\/(.+?) b\/(.+)$/gm)) {
+  for (const m of diff.matchAll(DIFF_HEADER)) {
     paths.push(m[2]); // the "b/" (new) path
   }
   return paths;
+}
+
+/** Every path a change touches: both sides of a rename or copy, and policy-excluded entries. */
+function touchedPaths(diff: string, coverage?: ReviewCoverage): string[] {
+  const paths = coverage
+    ? coverage.files.flatMap((file) => [file.path, file.previousPath ?? file.path])
+    : [...diff.matchAll(DIFF_HEADER)].flatMap((m) => [m[1], m[2]]);
+  return [...new Set(paths)];
 }
 
 export function classifyDiff(diff: string, coverage?: ReviewCoverage): DiffClass {
@@ -82,10 +96,11 @@ export function classifyDiff(diff: string, coverage?: ReviewCoverage): DiffClass
     }
   }
 
-  const nonMechanical = paths.filter((p) => !anyMatch(MECHANICAL_FILE, p) && !anyMatch(TEST_FILE, p));
+  const nonMechanical = paths.filter((p) => !isMechanicalPath(p));
   // Mechanical only if every changed file is a lockfile/generated/docs/test file
   // (and at least one file changed).
   const mechanicalOnly = files > 0 && nonMechanical.length === 0 && (!coverage || coverage.inventoryComplete);
+  const mechanicalEverywhere = mechanicalOnly && touchedPaths(diff, coverage).every(isMechanicalPath);
   const highRisk = paths.some((p) => anyMatch(HIGH_RISK_FILE, p));
 
   let tier: DiffTier;
@@ -100,15 +115,15 @@ export function classifyDiff(diff: string, coverage?: ReviewCoverage): DiffClass
     tier = "standard";
   }
 
-  return { loc, files, tier, mechanicalOnly, highRisk };
+  return { loc, files, tier, mechanicalOnly, mechanicalEverywhere, highRisk };
 }
 
 /**
  * Resolve the review model for a diff. Precedence: explicit modelOverride → repo
  * pin → org pin → routed default. Only mechanical diffs are downshifted, and only
  * when the cheaper model actually has pricing. An org pin blocks the downshift
- * unless OCTOPUS_MECHANICAL_MODEL is set and every changed file is mechanical; a
- * repo pin always blocks it.
+ * unless OCTOPUS_MECHANICAL_MODEL is set and every touched path is mechanical (both
+ * sides of a rename, policy-excluded files included); a repo pin always blocks it.
  */
 export async function resolveReviewModel(args: {
   orgId: string;
@@ -131,7 +146,7 @@ export async function resolveReviewModel(args: {
 
   const target = configured ?? MECHANICAL_MODEL;
   const cls = classifyDiff(diff, args.coverage);
-  const qualifies = source === "org" ? cls.mechanicalOnly : cls.tier === "mechanical";
+  const qualifies = source === "org" ? cls.mechanicalEverywhere : cls.tier === "mechanical";
   if (qualifies && target !== base) {
     // Self-protect: never emit a model without pricing (would bill $0).
     const pricing = await getModelPricing().catch(() => null);
