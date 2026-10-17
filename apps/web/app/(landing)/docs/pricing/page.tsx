@@ -190,7 +190,7 @@ export default function PricingPage() {
           <FeatureCard
             icon={<IconRefresh className="size-4" />}
             title="Auto-Reload"
-            description="Configure automatic credit reload when your balance drops below a threshold. Saving with auto-reload enabled opens Add card if no saved card is found. Your draft is kept if you cancel, card setup fails, or the card is saved. After adding a card, review your settings and select Save Auto-Reload to apply them."
+            description="Configure automatic credit reload when your balance drops below a threshold. The saved-state label shows On, Off, or Paused separately from unsaved edits; the previous success message is hidden while edits are unsaved. The switch and amounts are disabled while saving. Changed saved settings received from the server update the switch and amounts; refreshes with unchanged settings preserve your draft. Saving with auto-reload enabled opens Add card if no saved card is found. Cancelling, failing, or completing card setup keeps your draft unless saved settings change. After adding a card, review your settings and select Save Auto-Reload to apply them."
           />
           <FeatureCard
             icon={<IconShieldCheck className="size-4" />}

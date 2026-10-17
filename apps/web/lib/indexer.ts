@@ -9,7 +9,7 @@ import * as bitbucketLib from "@/lib/bitbucket";
 import * as gitlabLib from "@/lib/gitlab";
 import * as forgejoLib from "@/lib/forgejo";
 import { ForgejoResponseTooLargeError } from "@/lib/forgejo-http";
-import { ensureCollection, upsertChunks, deleteRepoChunks, deleteRepoFileChunks } from "@/lib/qdrant";
+import { ensureCollection, upsertChunks, deleteRepoFileChunks } from "@/lib/qdrant";
 import { generateSparseVectors } from "@/lib/sparse-vector";
 import { parseOctopusIgnore, type Ignore } from "@/lib/octopus-ignore";
 import { shouldIndex, chunkText, treeBlobs, MAX_FILE_SIZE, exceedsMaxFileSize } from "@/lib/index-chunking";
@@ -48,7 +48,7 @@ export interface IndexStats {
 }
 
 export async function indexRepository(
-  repoId: string,
+  attempt: { repoId: string; indexAttemptId: string },
   fullName: string,
   defaultBranch: string,
   installationId: number,
@@ -59,6 +59,8 @@ export async function indexRepository(
   /** Pre-resolved token (e.g. GITHUB_TOKEN from Actions). Skips getInstallationToken when provided. */
   providedToken?: string,
 ): Promise<IndexStats> {
+  const { repoId } = attempt;
+  const owner = { ...attempt, signal };
   const startTime = Date.now();
 
   const allChunks: {
@@ -71,6 +73,7 @@ export async function indexRepository(
   let totalFileCount = 0;
   let processed = 0;
   let skipped = 0;
+  let failedFiles = 0;
   let contributorCount = 0;
   let contributors: Contributor[] = [];
   let resolvedDefaultBranch: string | undefined;
@@ -88,13 +91,13 @@ export async function indexRepository(
       totalFileCount = paths.length;
       emptyRepository = paths.length === 0;
       const ig = paths.includes(".octopusignore")
-        ? parseOctopusIgnore(await forgejoLib.getFileContent(organizationId, fullName, head, ".octopusignore"))
+        ? parseOctopusIgnore(await forgejoLib.getFileContent(organizationId, fullName, head, ".octopusignore", { strict: true }))
         : undefined;
       for (const filePath of paths.filter(p => shouldIndex(p, undefined, ig))) {
         signal?.throwIfAborted();
         let content: string;
         try {
-          content = await forgejoLib.getFileContent(organizationId, fullName, head, filePath);
+          content = await forgejoLib.getFileContent(organizationId, fullName, head, filePath, { strict: true });
         } catch (error) {
           if (!(error instanceof ForgejoResponseTooLargeError)) throw error;
           skipped++;
@@ -187,7 +190,7 @@ export async function indexRepository(
 
       const MAX_DEPTH = 50;
       async function walkDir(dir: string, prefix: string, depth = 0) {
-        if (depth > MAX_DEPTH) return;
+        if (depth > MAX_DEPTH) throw new Error("Repository exceeds the supported directory depth");
         const entries = await readdir(dir, { withFileTypes: true });
         for (const entry of entries) {
           if (entry.name === ".git") continue;
@@ -211,7 +214,7 @@ export async function indexRepository(
           ig = parseOctopusIgnore(ignoreContent);
           onLog("Found .octopusignore — applying custom ignore rules", "info");
         } catch {
-          onLog("Failed to read .octopusignore, continuing without it", "warning");
+          throw new Error("Indexing incomplete: could not read .octopusignore");
         }
       }
 
@@ -254,7 +257,7 @@ export async function indexRepository(
           }
           processed++;
         } catch {
-          skipped++;
+          failedFiles++;
         }
 
         if (processed > 0 && i % 100 === 0) {
@@ -343,6 +346,7 @@ export async function indexRepository(
 
     const treeData = emptyRepository ? { tree: [] } : await treeRes.json();
     if (!Array.isArray(treeData.tree)) throw new Error("Invalid repository tree response from GitHub");
+    if (treeData.truncated) throw new Error("GitHub returned a partial repository tree; indexing was not completed");
     const allItems = treeData.tree as TreeItem[];
     emptyRepository = allItems.length === 0;
     if (emptyRepository) {
@@ -355,13 +359,14 @@ export async function indexRepository(
     if (ignoreBlob) {
       try {
         const [owner, repoName] = fullName.split("/");
-        const ignoreContent = await ghGetFileContent(installationId, owner, repoName, activeBranch, ".octopusignore");
+        const ignoreContent = await ghGetFileContent(installationId, owner, repoName, activeBranch, ".octopusignore", token);
+        if (ignoreContent === null) throw new Error("Missing .octopusignore content");
         if (ignoreContent) {
           ig = parseOctopusIgnore(ignoreContent);
           onLog("Found .octopusignore — applying custom ignore rules", "info");
         }
       } catch {
-        onLog("Failed to fetch .octopusignore, continuing without it", "warning");
+        throw new Error("Indexing incomplete: could not read .octopusignore");
       }
     }
 
@@ -420,8 +425,9 @@ export async function indexRepository(
       }
     }
 
-    function skip(filePath: string, reason: string) {
-      skipped++;
+    function skip(filePath: string, reason: string, failed = true) {
+      if (failed) failedFiles++;
+      else skipped++;
       onLog(`Skipped ${filePath}: ${reason}`, "warning");
     }
 
@@ -464,14 +470,14 @@ export async function indexRepository(
         return;
       }
       if (!blobData.content) {
-        skip(filePath, "empty blob content");
+        skip(filePath, "empty blob content", false);
         return;
       }
 
       const content = Buffer.from(blobData.content, "base64").toString("utf-8");
 
       if (content.includes("\0")) {
-        skip(filePath, "binary content (null byte)");
+        skip(filePath, "binary content (null byte)", false);
         return;
       }
 
@@ -499,13 +505,17 @@ export async function indexRepository(
     onLog(`Processed ${processed} files, skipped ${skipped}, created ${allChunks.length} chunks`, "success");
   }
 
+  signal?.throwIfAborted();
+  if (failedFiles > 0) {
+    throw new Error(`Indexing incomplete: ${failedFiles} eligible file(s) could not be read`);
+  }
+
   if (allChunks.length === 0) {
     if (emptyRepository) {
       if (signal?.aborted) throw new Error("Indexing cancelled");
-      // An empty snapshot must not leave searchable chunks from an older tree.
       await ensureCollection();
-      await deleteRepoChunks(repoId);
     }
+    signal?.throwIfAborted();
     onLog("No indexable content found", "warning");
     return {
       totalFiles: totalFileCount,
@@ -524,11 +534,6 @@ export async function indexRepository(
   await ensureCollection();
   onLog("Vector database ready", "success");
 
-  // 4. Delete old chunks for this repo
-  onLog("Cleaning up previous index data...");
-  await deleteRepoChunks(repoId);
-  onLog("Previous data cleared", "success");
-
   // 5. Create embeddings in batches
   const texts = allChunks.map((c) => c.text);
   const totalBatches = Math.ceil(texts.length / 512);
@@ -546,6 +551,9 @@ export async function indexRepository(
 
     const { createEmbeddings: embed } = await import("@/lib/embeddings");
     const batchVectors = await embed(batch);
+    if (batchVectors.length !== batch.length || batchVectors.some(vector => vector.length === 0)) {
+      throw new Error("Indexing incomplete: embedding results do not cover every chunk");
+    }
     vectors.push(...batchVectors);
   }
 
@@ -575,7 +583,8 @@ export async function indexRepository(
 
   const qdrantBatches = Math.ceil(points.length / 100);
   onLog(`Storing ${points.length} vectors in database (${qdrantBatches} batch${qdrantBatches > 1 ? "es" : ""})...`);
-  await upsertChunks(points);
+  await upsertChunks(points, owner);
+  signal?.throwIfAborted();
   onLog(`Successfully stored ${points.length} vectors`, "success");
 
   return {
@@ -621,7 +630,7 @@ async function loadIncrementalIgnore(
  * The repo stays "indexed" throughout — no downtime window.
  */
 export async function incrementalIndex(
-  repoId: string,
+  owner: { repoId: string; activeIndexGeneration: string | null },
   fullName: string,
   defaultBranch: string,
   installationId: number,
@@ -629,6 +638,7 @@ export async function incrementalIndex(
   provider: string = "github",
   organizationId?: string,
 ): Promise<{ updatedFiles: number; removedFiles: number; newVectors: number }> {
+  const { repoId } = owner;
   const removed = changedFiles
     .filter((f) => f.status === "removed")
     .map((f) => f.filename);
@@ -645,7 +655,7 @@ export async function incrementalIndex(
   const allChangedPaths = [...new Set([...removed, ...addedOrModified])];
   if (allChangedPaths.length > 0) {
     await ensureCollection();
-    await deleteRepoFileChunks(repoId, allChangedPaths);
+    await deleteRepoFileChunks(owner, allChangedPaths);
   }
 
   // 2. Fetch and chunk only added/modified files
@@ -742,7 +752,7 @@ export async function incrementalIndex(
     },
   }));
 
-  await upsertChunks(points);
+  await upsertChunks(points, owner);
 
   return { updatedFiles: addedOrModified.length, removedFiles: removed.length, newVectors: points.length };
 }

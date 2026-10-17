@@ -1,3 +1,5 @@
+import "server-only";
+import { organizationCreationProvenance } from "@/lib/creation-provenance";
 import { prisma } from "@octopus/db";
 import { toBaseSlug, randomSlugSuffix } from "@/lib/slug";
 import { canUserCreateOrg, hasEverOwnedOrg } from "@/lib/org-limits";
@@ -99,6 +101,7 @@ export async function createOrgForUser(userId: string, userName: string) {
 
     const org = await tx.organization.create({
       data: {
+        ...await organizationCreationProvenance(tx, userId, "auto_default"),
         name: orgName,
         slug,
         members: {

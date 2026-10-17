@@ -1,9 +1,11 @@
+import "server-only";
 import { NextRequest, NextResponse } from "next/server";
+import { randomUUID } from "node:crypto";
 import { prisma } from "@octopus/db";
 import { pubby } from "@/lib/pubby";
 import { writeSyncLog, deleteSyncLogs } from "@/lib/elasticsearch";
 import { runIndexingInBackground } from "@/lib/indexing-runner";
-import { createAbortController } from "@/lib/indexing-abort";
+import { createAbortController, abortIndexing } from "@/lib/indexing-abort";
 import type { LogLevel } from "@/lib/indexer";
 
 const STALE_INDEX_MS = 10 * 60 * 1000;
@@ -36,6 +38,7 @@ export async function POST(
       defaultBranch: true,
       installationId: true,
       indexStatus: true,
+      indexAttemptId: true,
       updatedAt: true,
       organizationId: true,
       organization: { select: { githubInstallationId: true } },
@@ -75,11 +78,6 @@ export async function POST(
         { status: 409 },
       );
     }
-    // Stale — reset and continue
-    await prisma.repository.update({
-      where: { id: repo.id },
-      data: { indexStatus: "pending" },
-    });
   }
 
   const channel = `presence-org-${repo.organizationId}`;
@@ -90,7 +88,7 @@ export async function POST(
       message,
       level,
       timestamp,
-    });
+    }).catch(error => console.warn("[repository-index] log notification failed:", error));
     writeSyncLog({
       orgId: repo.organizationId,
       repoId: repo.id,
@@ -102,19 +100,14 @@ export async function POST(
 
   await deleteSyncLogs(repo.organizationId, repo.id);
 
-  await prisma.repository.update({
-    where: { id: repo.id },
-    data: { indexStatus: "indexing" },
+  const indexAttemptId = randomUUID();
+  const claim = await prisma.repository.updateMany({
+    where: { id: repo.id, indexStatus: repo.indexStatus, updatedAt: repo.updatedAt },
+    data: { indexStatus: "indexing", indexAttemptId },
   });
-
-  pubby.trigger(channel, "index-status", {
-    repoId: repo.id,
-    status: "indexing",
-  });
-
-  emitLog(`[admin] Reindex triggered for ${repo.fullName}`);
-
-  const abortController = createAbortController(repo.id);
+  if (!claim.count) return NextResponse.json({ error: "Repository state changed or indexing is already in progress" }, { status: 409 });
+  if (repo.indexStatus === "indexing" && repo.indexAttemptId) abortIndexing(repo.indexAttemptId);
+  const abortController = createAbortController(indexAttemptId);
 
   runIndexingInBackground(
     repo.id,
@@ -125,6 +118,7 @@ export async function POST(
     channel,
     emitLog,
     abortController,
+    indexAttemptId,
     repo.provider,
   );
 

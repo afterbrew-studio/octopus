@@ -1,8 +1,10 @@
 import "server-only";
+import { randomUUID } from "node:crypto";
+import { runRepositoryIndex, SupersededIndexError, isIndexingCancelled } from "@/lib/repository-index-completion";
 import { prisma } from "@octopus/db";
 import { enqueue } from "@/lib/queue";
 import type { LogLevel } from "@/lib/indexer";
-import { pubby } from "@/lib/pubby";
+import { notifyRepositoryIndex } from "@/lib/repository-index-notifications";
 import { deleteSyncLogs, writeSyncLog } from "@/lib/elasticsearch";
 import { createAbortController, clearAbortController } from "@/lib/indexing-abort";
 
@@ -67,58 +69,40 @@ export async function processRepositoryIndex(job: RepositoryIndexJob) {
   if (!repo || (repo.provider === "github" && (!installationId || (repo.installationId && repo.installationId !== installationId)))) return;
 
   // Share the reviewer's claim so a first PR and discovery cannot both index.
+  const indexAttemptId = randomUUID();
   const claim = await prisma.repository.updateMany({
     where: { id: repo.id, organizationId: job.organizationId, ...needsIndex },
-    data: { indexStatus: "indexing" },
+    data: { indexStatus: "indexing", indexAttemptId },
   });
   if (!claim.count) return;
 
-  const controller = createAbortController(repo.id);
-  let timedOut = false;
+  const controller = createAbortController(indexAttemptId);
   // Abort before pg-boss expires the attempt, so the catch can release its claim.
-  const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, 25 * 60_000);
+  const timeout = setTimeout(() => controller.abort(new DOMException("Repository indexing timed out", "TimeoutError")), 25 * 60_000);
   const channel = `presence-org-${job.organizationId}`;
-  const notify = (status: string) => pubby.trigger(channel, "index-status", { repoId: repo.id, status })
-    .catch((err: unknown) => console.warn("[repository-index] notification failed:", err));
   const log = (message: string, level: LogLevel = "info") => {
     writeSyncLog({ orgId: job.organizationId, repoId: repo.id, message, level, timestamp: Date.now() });
   };
   try {
-    const { indexRepository } = await import("@/lib/indexer");
-    await deleteSyncLogs(job.organizationId, repo.id);
-    await notify("indexing");
-    const stats = await indexRepository(
-      repo.id, repo.fullName, repo.defaultBranch, installationId ?? 0, log,
-      controller.signal, repo.provider, job.organizationId,
-    );
-    await prisma.repository.update({
-      where: { id: repo.id },
-      data: {
-        indexStatus: "indexed",
-        indexedAt: new Date(),
-        totalFiles: stats.totalFiles,
-        indexedFiles: stats.indexedFiles,
-        totalChunks: stats.totalChunks,
-        totalVectors: stats.totalVectors,
-        contributorCount: stats.contributorCount,
-        contributors: JSON.parse(JSON.stringify(stats.contributors)),
-        indexDurationMs: stats.durationMs,
-        ...(stats.resolvedDefaultBranch ? { defaultBranch: stats.resolvedDefaultBranch } : {}),
-      },
-    });
+    const stats = await runRepositoryIndex(repo.id, indexAttemptId, async () => {
+      const { indexRepository } = await import("@/lib/indexer");
+      await deleteSyncLogs(job.organizationId, repo.id);
+      void notifyRepositoryIndex(channel, repo.id);
+      return indexRepository(
+        { repoId: repo.id, indexAttemptId }, repo.fullName, repo.defaultBranch, installationId ?? 0, log,
+        controller.signal, repo.provider, job.organizationId,
+      );
+    }, controller.signal);
     log(`Indexing complete: ${stats.indexedFiles} files, ${stats.totalVectors} vectors`, "success");
-    await notify("indexed");
+    void notifyRepositoryIndex(channel, repo.id);
   } catch (error) {
-    const isCancelled = controller.signal.aborted && !timedOut;
-    await prisma.repository.updateMany({
-      where: { id: repo.id, organizationId: job.organizationId, indexStatus: "indexing" },
-      data: { indexStatus: isCancelled ? "pending" : "failed" },
-    });
+    if (error instanceof SupersededIndexError) return;
+    const isCancelled = isIndexingCancelled(controller.signal);
     log(`Indexing failed: ${error instanceof Error ? error.message : String(error)}`, "error");
-    await notify(isCancelled ? "cancelled" : "failed");
+    void notifyRepositoryIndex(channel, repo.id);
     if (!isCancelled) throw error;
   } finally {
     clearTimeout(timeout);
-    clearAbortController(repo.id);
+    clearAbortController(indexAttemptId);
   }
 }

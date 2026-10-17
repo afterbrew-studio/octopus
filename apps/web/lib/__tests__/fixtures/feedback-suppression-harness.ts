@@ -58,8 +58,15 @@ const pr = {
   headSha: "a".repeat(40), reviewRequestVersion: 1, status: "pending",
   claimToken: null as string | null,
 };
+const outcomeTransaction = {
+  pullRequest: { updateMany: async () => ({ count: 1 }) },
+  $executeRawUnsafe: async () => 0,
+  $executeRaw: async () => 0,
+  $queryRaw: async () => [{ lock: "0", statement: "0" }],
+};
 mock.module("@octopus/db", () => ({ prisma: {
-  repository: { findUnique: async () => repo },
+  $transaction: async (run: (tx: typeof outcomeTransaction) => Promise<unknown>) => run(outcomeTransaction),
+  repository: { findUnique: async () => repo, findMany: async () => [{ id: repo.id, activeIndexGeneration: null }] },
   systemConfig: { findUnique: async () => null },
   reviewIssue: { findMany: async () => [] },
   reviewAttempt: { findFirst: async () => null },

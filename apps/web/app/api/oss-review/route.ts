@@ -27,6 +27,7 @@ async function getOrCreateCommunityOrg(githubOwner: string) {
   return prisma.organization.upsert({
     where: { slug },
     create: {
+      creationSource: "community_bot",
       name: `${githubOwner} (Community)`,
       slug,
       type: ORG_TYPE.COMMUNITY,
