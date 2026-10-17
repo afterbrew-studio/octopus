@@ -129,6 +129,7 @@ import { writeSyncLog, deleteSyncLogs } from "@/lib/elasticsearch";
 import { logAiUsage } from "@/lib/ai-usage";
 import { resolveReviewModel } from "@/lib/review-routing";
 import { createAiMessage, getProviderForModel } from "@/lib/ai-router";
+import { getReviewModel } from "@/lib/ai-client";
 import { getOrgSpendLimitStatus, shouldGuardConcurrency } from "@/lib/cost";
 import fs from "node:fs";
 import path from "node:path";
@@ -191,8 +192,6 @@ async function emitReviewStatus(orgId: string, event: ReviewEvent) {
 
 // --- LLM-based reply intent classification ---
 
-const FEEDBACK_CLASSIFICATION_MODEL = "claude-sonnet-5";
-
 // GitLab commit-status context name — the merge-gating check GitLab MRs can
 // require. Kept as one constant so every finalize path uses the same name
 // (GitLab keys statuses by name; a mismatch would leave a stale "running" one).
@@ -221,9 +220,10 @@ function checkEmojiIntent(body: string): ReplyIntent | null {
  *
  * On LLM failure, falls back to "unclear" for all entries.
  */
-async function classifyReplyIntents(
+export async function classifyReplyIntents(
   entries: { findingTitle: string; replyText: string }[],
   orgId: string,
+  repoId: string,
 ): Promise<ReplyIntent[]> {
   if (entries.length === 0) return [];
 
@@ -247,9 +247,10 @@ Reply ONLY with a JSON array of strings, one per entry, in order. Example: ["dis
   const userMessage = lines.join("\n");
 
   try {
+    const model = await getReviewModel(orgId, repoId);
     const response = await createAiMessage(
       {
-        model: FEEDBACK_CLASSIFICATION_MODEL,
+        model,
         maxTokens: 256,
         thinking: "disabled",
         system: systemPrompt,
@@ -261,7 +262,7 @@ Reply ONLY with a JSON array of strings, one per entry, in order. Example: ["dis
     await logAiUsage({
       provider: response.provider,
       usedOwnKey: response.usedOwnKey,
-      model: FEEDBACK_CLASSIFICATION_MODEL,
+      model,
       operation: "feedback-classification",
       inputTokens: response.usage.inputTokens,
       outputTokens: response.usage.outputTokens,
@@ -515,6 +516,7 @@ async function syncTextDismissalsForPR(
           replyText: e.replyText,
         })),
         orgId,
+        issuesToClassify[0].issue.pullRequest.repositoryId,
       );
 
       for (let i = 0; i < issuesToClassify.length; i++) {
@@ -613,6 +615,7 @@ async function syncTextDismissalsForPR(
             replyText: c.body,
           })),
           orgId,
+          stillRemaining[0].pullRequest.repositoryId,
         );
         hasDismissalComment = intents.some((i) => i === "dismissed");
       }
