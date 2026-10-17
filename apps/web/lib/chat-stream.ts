@@ -20,7 +20,8 @@ import { CACHE_BREAKPOINT, type CacheTtl } from "@/lib/providers/system-cache";
  */
 
 export interface StreamChatParams {
-  orgId: string;
+  /** Null for a platform call with no organization. */
+  orgId: string | null;
   model: string;
   /** Stable instruction prefix; keep per-turn context in `system`. */
   systemCacheable?: string;
@@ -35,6 +36,8 @@ export interface StreamChatParams {
 export interface StreamChatResult {
   text: string;
   provider: AiProvider;
+  /** The provider's stop reason ("max_tokens" and "length" mean the answer was cut off). */
+  stopReason: string | null;
   usage: {
     inputTokens: number;
     outputTokens: number;
@@ -88,6 +91,7 @@ export async function streamChat(params: StreamChatParams): Promise<StreamChatRe
     return {
       text,
       provider,
+      stopReason: final.stop_reason,
       usage: {
         inputTokens: final.usage.input_tokens,
         outputTokens: final.usage.output_tokens,
@@ -112,5 +116,5 @@ export async function streamChat(params: StreamChatParams): Promise<StreamChatRe
     orgId,
   );
   if (res.text) await onDelta(res.text);
-  return { text: res.text, provider: res.provider, usage: res.usage };
+  return { text: res.text, provider: res.provider, stopReason: res.completion?.reason ?? null, usage: res.usage };
 }

@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@octopus/db";
 import { revalidatePath } from "next/cache";
-import Anthropic from "@anthropic-ai/sdk";
 import { readingTimeMinutes } from "@/lib/blog-reading";
 import { hashToken } from "@/lib/api-auth";
 import { hasScopes } from "@/lib/scopes";
+import { getPlatformReviewModel } from "@/lib/ai-client";
+import { createAiMessage } from "@/lib/ai-router";
 
 type AuthedToken = { id: string; tokenPrefix: string; scopes: string[] };
 
@@ -244,24 +245,23 @@ export async function POST(request: NextRequest) {
     let finalCategory = normalizeCategory(category);
 
     // Generate SEO metadata (excerpt / category / tags) if requested and any
-    // piece is missing. One Anthropic call fills ONLY the gaps; generation
+    // piece is missing. One model call fills ONLY the gaps; generation
     // failures must never block post creation.
     let finalExcerpt = excerpt;
     if (generateSeo && (!finalExcerpt || finalTags.length === 0 || finalCategory === null)) {
       try {
-        const client = new Anthropic();
-        const response = await client.messages.create({
-          model: "claude-sonnet-5",
-          max_tokens: 300,
-          thinking: { type: "disabled" },
+        const response = await createAiMessage({
+          model: await getPlatformReviewModel(),
+          maxTokens: 300,
+          thinking: "disabled",
           messages: [
             {
               role: "user",
               content: `Generate SEO metadata for this blog post. Return ONLY minified JSON, no prose or code fences, of the exact shape: {"excerpt": string (<=150 chars), "category": one of ["Engineering","Product","Company","Security","Guides"], "tags": 3-6 short lowercase topic strings}.\n\n${content.slice(0, 4000)}`,
             },
           ],
-        });
-        const text = response.content[0].type === "text" ? response.content[0].text.trim() : "";
+        }, null);
+        const text = response.text.trim();
         const cleaned = text.replace(/```(?:json)?/gi, "").trim();
         try {
           const parsed = JSON.parse(cleaned) as {

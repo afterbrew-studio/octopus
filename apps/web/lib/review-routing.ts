@@ -18,6 +18,16 @@ import { resolveReviewModelPin } from "@/lib/ai-client";
 /** Cheaper model for provably-mechanical diffs. Must exist in pricing (asserted in tests). */
 export const MECHANICAL_MODEL = "claude-haiku-4-5-20251001";
 
+/**
+ * `OCTOPUS_MECHANICAL_MODEL` replaces MECHANICAL_MODEL. Setting it also lets an
+ * org-level pin be downshifted, because a deployment that configures a mechanical
+ * model has no other way to use it when its org pins the review model. Only a diff
+ * made up entirely of mechanical files overrides a pin; the tiny-diff rule does not.
+ */
+function configuredMechanicalModel(): string | undefined {
+  return process.env.OCTOPUS_MECHANICAL_MODEL?.trim() || undefined;
+}
+
 export type DiffTier = "mechanical" | "standard" | "complex";
 
 export interface DiffClass {
@@ -25,6 +35,8 @@ export interface DiffClass {
   files: number;
   tier: DiffTier;
   mechanicalOnly: boolean;
+  /** `mechanicalOnly`, and no touched path is non-mechanical: rename sources and policy-excluded files included. */
+  mechanicalEverywhere: boolean;
   highRisk: boolean;
 }
 
@@ -50,13 +62,25 @@ const HIGH_RISK_FILE = [
 
 const anyMatch = (patterns: RegExp[], s: string) => patterns.some((p) => p.test(s));
 
+const isMechanicalPath = (p: string) => anyMatch(MECHANICAL_FILE, p) || anyMatch(TEST_FILE, p);
+
+const DIFF_HEADER = /^diff --git a\/(.+?) b\/(.+)$/gm;
+
 /** Extract changed file paths from a unified diff (`diff --git a/… b/…`). */
 export function extractChangedPaths(diff: string): string[] {
   const paths: string[] = [];
-  for (const m of diff.matchAll(/^diff --git a\/(.+?) b\/(.+)$/gm)) {
+  for (const m of diff.matchAll(DIFF_HEADER)) {
     paths.push(m[2]); // the "b/" (new) path
   }
   return paths;
+}
+
+/** Every path a change touches: both sides of a rename or copy, and policy-excluded entries. */
+function touchedPaths(diff: string, coverage?: ReviewCoverage): string[] {
+  const paths = coverage
+    ? coverage.files.flatMap((file) => [file.path, file.previousPath ?? file.path])
+    : [...diff.matchAll(DIFF_HEADER)].flatMap((m) => [m[1], m[2]]);
+  return [...new Set(paths)];
 }
 
 export function classifyDiff(diff: string, coverage?: ReviewCoverage): DiffClass {
@@ -72,10 +96,11 @@ export function classifyDiff(diff: string, coverage?: ReviewCoverage): DiffClass
     }
   }
 
-  const nonMechanical = paths.filter((p) => !anyMatch(MECHANICAL_FILE, p) && !anyMatch(TEST_FILE, p));
+  const nonMechanical = paths.filter((p) => !isMechanicalPath(p));
   // Mechanical only if every changed file is a lockfile/generated/docs/test file
   // (and at least one file changed).
   const mechanicalOnly = files > 0 && nonMechanical.length === 0 && (!coverage || coverage.inventoryComplete);
+  const mechanicalEverywhere = mechanicalOnly && touchedPaths(diff, coverage).every(isMechanicalPath);
   const highRisk = paths.some((p) => anyMatch(HIGH_RISK_FILE, p));
 
   let tier: DiffTier;
@@ -90,13 +115,15 @@ export function classifyDiff(diff: string, coverage?: ReviewCoverage): DiffClass
     tier = "standard";
   }
 
-  return { loc, files, tier, mechanicalOnly, highRisk };
+  return { loc, files, tier, mechanicalOnly, mechanicalEverywhere, highRisk };
 }
 
 /**
- * Resolve the review model for a diff. Precedence (unchanged): explicit
- * modelOverride → repo pin → org pin → routed default. Only mechanical diffs are
- * downshifted, and only when the cheaper model actually has pricing.
+ * Resolve the review model for a diff. Precedence: explicit modelOverride → repo
+ * pin → org pin → routed default. Only mechanical diffs are downshifted, and only
+ * when the cheaper model actually has pricing. An org pin blocks the downshift
+ * unless OCTOPUS_MECHANICAL_MODEL is set and every touched path is mechanical (both
+ * sides of a rename, policy-excluded files included); a repo pin always blocks it.
  */
 export async function resolveReviewModel(args: {
   orgId: string;
@@ -110,16 +137,21 @@ export async function resolveReviewModel(args: {
   // Explicit caller override always wins — never override a deliberate choice.
   if (modelOverride) return modelOverride;
 
-  // Single lookup that also tells us whether the model was an explicit repo/org
-  // pin (single source of truth for precedence lives in ai-client).
-  const { model: base, pinned } = await resolveReviewModelPin(orgId, repoId);
-  if (pinned) return base;
+  // Single lookup that also tells us where the model came from (single source
+  // of truth for precedence lives in ai-client).
+  const { model: base, source } = await resolveReviewModelPin(orgId, repoId);
+  if (source === "repo") return base;
+  const configured = configuredMechanicalModel();
+  if (source === "org" && !configured) return base;
 
+  const target = configured ?? MECHANICAL_MODEL;
   const cls = classifyDiff(diff, args.coverage);
-  if (cls.tier === "mechanical" && MECHANICAL_MODEL !== base) {
+  const qualifies = source === "org" ? cls.mechanicalEverywhere : cls.tier === "mechanical";
+  if (qualifies && target !== base) {
     // Self-protect: never emit a model without pricing (would bill $0).
     const pricing = await getModelPricing().catch(() => null);
-    if (pricing?.has(MECHANICAL_MODEL)) return MECHANICAL_MODEL;
+    if (pricing?.has(target)) return target;
+    if (configured) console.warn(`[review-routing] OCTOPUS_MECHANICAL_MODEL ${configured} has no catalog row; not downshifting`);
   }
   return base;
 }

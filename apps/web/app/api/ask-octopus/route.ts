@@ -1,18 +1,10 @@
 import "server-only";
 import { isPostgresSafeJson, readBoundedJson } from "@/lib/bounded-json";
-import Anthropic from "@anthropic-ai/sdk";
 import { prisma } from "@octopus/db";
 import { createEmbeddings } from "@/lib/embeddings";
 import { searchDocsChunks, ensureDocsCollection } from "@/lib/qdrant";
-
-let anthropicClient: Anthropic | null = null;
-
-function getAnthropicClient(): Anthropic {
-  if (!anthropicClient) {
-    anthropicClient = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
-  }
-  return anthropicClient;
-}
+import { getPlatformReviewModel } from "@/lib/ai-client";
+import { streamChat } from "@/lib/chat-stream";
 
 // Simple in-memory rate limiter (per IP, 10 requests/minute)
 const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
@@ -245,18 +237,7 @@ export async function POST(request: Request) {
       content: `<documentation_context>\n${context}\n</documentation_context>\n\nUser question: ${message}`,
     });
 
-    const client = getAnthropicClient();
-
-    // Stream the response
-    const aiStream = await client.messages.stream({
-      model: "claude-haiku-4-5-20251001",
-      // ~400 words ≈ 600 tokens; cap close to that as a hard ceiling so the
-      // model can't blow past the system-prompt length rule. The stop_reason
-      // path below appends a truncation note if we ever hit it.
-      max_tokens: 700,
-      system: SYSTEM_PROMPT,
-      messages,
-    });
+    const model = await getPlatformReviewModel();
 
     // Return as SSE stream
     const encoder = new TextEncoder();
@@ -271,19 +252,24 @@ export async function POST(request: Request) {
             encoder.encode(`data: ${JSON.stringify({ session_id: currentSessionId })}\n\n`),
           );
 
-          let stopReason: string | null = null;
-          for await (const event of aiStream) {
-            if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
-              fullResponse += event.delta.text;
+          const { stopReason } = await streamChat({
+            orgId: null,
+            model,
+            // ~400 words ≈ 600 tokens; cap close to that as a hard ceiling so the
+            // model can't blow past the system-prompt length rule. The stop reason
+            // check below appends a truncation note if we ever hit it.
+            maxTokens: 700,
+            system: SYSTEM_PROMPT,
+            messages,
+            onDelta: (text) => {
+              fullResponse += text;
               controller.enqueue(
-                encoder.encode(`data: ${JSON.stringify({ delta: event.delta.text })}\n\n`),
+                encoder.encode(`data: ${JSON.stringify({ delta: text })}\n\n`),
               );
-            } else if (event.type === "message_delta" && event.delta.stop_reason) {
-              stopReason = event.delta.stop_reason;
-            }
-          }
+            },
+          });
 
-          if (stopReason === "max_tokens") {
+          if (stopReason === "max_tokens" || stopReason === "length") {
             const truncationNote = "\n\n_(Response trimmed — I keep answers short. Ask a more specific follow-up if you need more detail.)_";
             fullResponse += truncationNote;
             controller.enqueue(

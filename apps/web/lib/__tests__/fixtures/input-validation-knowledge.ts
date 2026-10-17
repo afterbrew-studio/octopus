@@ -17,11 +17,14 @@ mock.module("@/lib/pubby", () => ({ pubby: { trigger: () => {} } }));
 mock.module("@/lib/events", () => ({ eventBus: { emit: () => {} } }));
 mock.module("@/lib/qdrant", () => ({ deleteKnowledgeDocumentChunks: async () => { mutations++; } }));
 mock.module("@/lib/knowledge-indexer", () => ({ indexKnowledgeDocument: async () => ({ totalChunks: 1, totalVectors: 1, durationMs: 1 }) }));
-mock.module("@/lib/crypto", () => ({ decryptStringMaybeLegacy: () => "fake-key" }));
 mock.module("@/lib/ai-usage", () => ({ logAiUsage: async () => {} }));
-mock.module("@anthropic-ai/sdk", () => ({ default: class {
-  messages = { create: async () => { providerCalls++; return { content: [{ type: "text", text: "Enhanced" }], usage: { input_tokens: 1, output_tokens: 1 } }; } };
-} }));
+mock.module("@/lib/ai-client", () => ({ getReviewModel: async () => "acp:model" }));
+mock.module("@/lib/ai-router", () => ({
+  createAiMessage: async () => {
+    providerCalls++;
+    return { text: "Enhanced", provider: "acp", usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0 } };
+  },
+}));
 mock.module("@octopus/db", () => ({ prisma: {
   organizationMember: { findFirst: async ({ where }: { where: { userId: string; organizationId: string; deletedAt: null } }) => {
     assert.equal(where.userId, "user_1"); assert.equal(where.deletedAt, null);

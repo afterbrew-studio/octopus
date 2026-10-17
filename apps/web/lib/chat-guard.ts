@@ -1,13 +1,14 @@
 import "server-only";
-import type Anthropic from "@anthropic-ai/sdk";
 import { prisma } from "@octopus/db";
+import { getUtilityModel } from "./ai-client";
+import { createAiMessage } from "./ai-router";
 import { logAiUsage } from "./ai-usage";
 
 /**
- * Abuse guards for the chat endpoints (web + CLI). Chat always runs on the
- * platform Anthropic key, so off-topic use (observed: external roleplay
- * frontends driving /api/chat as a free general-purpose LLM) burns platform
- * spend and creates provider-policy exposure regardless of the org's credits.
+ * Abuse guards for the chat endpoints (web + CLI). Off-topic use (observed:
+ * external roleplay frontends driving /api/chat as a free general-purpose LLM)
+ * burns platform spend and creates provider-policy exposure regardless of the
+ * org's credits.
  *
  * Two independent gates:
  * 1. Scope guard — a cheap classifier that rejects messages unrelated to
@@ -16,7 +17,6 @@ import { logAiUsage } from "./ai-usage";
  *    dollar budget for chat operations. CHAT_FREE_DAILY_CAP_USD (default 2).
  */
 
-const GUARD_MODEL = "claude-haiku-4-5-20251001";
 // Enough for the classifier to judge intent; keeps giant injected prompts
 // (roleplay system prompts run to tens of KB) from inflating guard cost.
 const GUARD_INPUT_CHARS = 2000;
@@ -35,50 +35,64 @@ BLOCK: creative writing, fiction, roleplay or persona instructions ("act as...",
 
 If genuinely unsure, reply ALLOW.`;
 
+export type ChatScopeVerdict = "allow" | "block" | "unavailable";
+
 /**
- * Classify whether a chat message is within Octopus Chat's scope.
- * Fails open: any classifier error allows the message — the guard must never
- * take down legitimate chat.
+ * Classify whether a chat message is within Octopus Chat's scope on the utility
+ * model. Fails closed: a classifier error or a verdict that is neither ALLOW nor
+ * BLOCK is "unavailable", and the caller refuses the message. Disable the guard
+ * with CHAT_SCOPE_GUARD=off.
  * ponytail: a classifier can be adversarially fooled; this kills naive LLM-proxy
  * abuse, not a determined attacker. Upgrade path: score full conversations async
  * and flag repeat offenders instead of hardening the inline check.
  */
 export async function checkChatScope(
-  client: Anthropic,
   message: string,
   organizationId: string,
-): Promise<boolean> {
+): Promise<ChatScopeVerdict> {
   try {
-    const res = await client.messages.create({
-      model: GUARD_MODEL,
-      max_tokens: 4,
-      system: GUARD_PROMPT,
-      messages: [
-        {
-          role: "user",
-          content: `<user_message>${message.slice(0, GUARD_INPUT_CHARS)}</user_message>`,
-        },
-      ],
-    });
+    const model = await getUtilityModel(organizationId);
+    const res = await createAiMessage(
+      {
+        model,
+        maxTokens: 16,
+        thinking: "disabled",
+        system: GUARD_PROMPT,
+        messages: [
+          {
+            role: "user",
+            content: `<user_message>${message.slice(0, GUARD_INPUT_CHARS)}</user_message>`,
+          },
+        ],
+      },
+      organizationId,
+    );
 
     await logAiUsage({
-      provider: "anthropic",
-      model: GUARD_MODEL,
+      provider: res.provider,
+      usedOwnKey: res.usedOwnKey,
+      model,
       operation: "chat-guard",
-      inputTokens: res.usage.input_tokens,
-      outputTokens: res.usage.output_tokens,
-      cacheReadTokens: res.usage.cache_read_input_tokens ?? 0,
-      cacheWriteTokens: res.usage.cache_creation_input_tokens ?? 0,
+      inputTokens: res.usage.inputTokens,
+      outputTokens: res.usage.outputTokens,
+      cacheReadTokens: res.usage.cacheReadTokens,
+      cacheWriteTokens: res.usage.cacheWriteTokens,
       organizationId,
     });
 
-    const verdict = res.content[0]?.type === "text" ? res.content[0].text.trim().toUpperCase() : "";
-    return verdict !== "BLOCK";
+    const verdict = res.text.trim();
+    if (verdict === "ALLOW") return "allow";
+    if (verdict === "BLOCK") return "block";
+    console.error("[chat-guard] unparseable scope verdict, refusing:", res.text.slice(0, 80));
+    return "unavailable";
   } catch (err) {
-    console.error("[chat-guard] scope check failed, allowing:", err);
-    return true;
+    console.error("[chat-guard] scope check failed, refusing:", err);
+    return "unavailable";
   }
 }
+
+export const GUARD_UNAVAILABLE_MESSAGE =
+  "Octopus Chat could not check this request right now, so it was not sent. Please try again in a moment.";
 
 export const OUT_OF_SCOPE_MESSAGE =
   "Octopus Chat answers questions about your code, repositories, pull requests, and reviews. This request looks unrelated to software work, so I can't help with it here.";

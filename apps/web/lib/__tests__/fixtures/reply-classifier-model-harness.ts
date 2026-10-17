@@ -4,8 +4,9 @@ import assert from "node:assert/strict";
 mock.module("server-only", () => ({}));
 
 /**
- * Reply classification runs on the model the repo or org is configured for, through the real
- * router, so a deployment with only gateway providers never reaches a vendor it has no key for.
+ * Reply classification runs on the utility model when one is configured, otherwise on the model
+ * the repo or org is configured for, through the real router, so a deployment with only gateway
+ * providers never reaches a vendor it has no key for.
  */
 
 const prisma = {
@@ -46,6 +47,7 @@ const quiet = [console.log, console.error];
 console.log = () => {};
 console.error = () => {};
 
+delete process.env.OCTOPUS_UTILITY_MODEL;
 const pinned = await classifyReplyIntents(entries, "org", "repo-pinned");
 assert.deepEqual(calls, [{ provider: "opencode", model: "opencode:glm-5.3" }], "the repo's pinned model is used, through its own provider");
 assert.deepEqual(pinned, ["dismissed", "accepted"], "the reply is classified rather than falling back to unclear");
@@ -55,6 +57,14 @@ calls.length = 0; usage.length = 0;
 await classifyReplyIntents(entries, "org", "repo-unpinned");
 assert.deepEqual(calls, [{ provider: "acp", model: "acp:org-model" }], "an unpinned repo uses the org's model");
 assert.equal(calls.some((call) => call.provider === "anthropic"), false, "classification never reaches the anthropic provider");
+
+calls.length = 0; usage.length = 0;
+reply = '["dismissed","accepted"]';
+process.env.OCTOPUS_UTILITY_MODEL = "acp:MiniMax-M3";
+await classifyReplyIntents(entries, "org", "repo-pinned");
+assert.deepEqual(calls, [{ provider: "acp", model: "acp:MiniMax-M3" }], "a configured utility model wins over the repo pin");
+assert.deepEqual(usage, ["acp:MiniMax-M3"], "usage is attributed to the utility model");
+delete process.env.OCTOPUS_UTILITY_MODEL;
 
 calls.length = 0; usage.length = 0;
 reply = 'Reasoning done.\n```json\n["accepted","unclear"]\n```';

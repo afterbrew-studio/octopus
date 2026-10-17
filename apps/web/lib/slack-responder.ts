@@ -1,4 +1,3 @@
-import Anthropic from "@anthropic-ai/sdk";
 import { prisma } from "@octopus/db";
 import { createEmbeddings } from "@/lib/embeddings";
 import {
@@ -11,16 +10,9 @@ import {
   upsertChatChunk,
 } from "@/lib/qdrant";
 import { logAiUsage } from "@/lib/ai-usage";
+import { getReviewModel } from "@/lib/ai-client";
+import { createAiMessage } from "@/lib/ai-router";
 import { generateSparseVector } from "@/lib/sparse-vector";
-
-let anthropicClient: Anthropic | null = null;
-
-function getAnthropicClient(): Anthropic {
-  if (!anthropicClient) {
-    anthropicClient = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
-  }
-  return anthropicClient;
-}
 
 type SlackQuestionParams = {
   question: string;
@@ -227,24 +219,30 @@ ${diagramContext || "No matching diagrams for this query."}
 ${chatHistoryContext || "No relevant previous conversations found."}
 </previous_conversations>`;
 
-    // 6. Call Claude (non-streaming)
-    const client = getAnthropicClient();
-    const response = await client.messages.create({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 2048,
-      system: systemPrompt,
-      messages: [{ role: "user", content: question }],
-    });
+    // 6. Call the org's review model (non-streaming)
+    const model = await getReviewModel(orgId);
+    const response = await createAiMessage(
+      {
+        model,
+        maxTokens: 2048,
+        system: systemPrompt,
+        messages: [{ role: "user", content: question }],
+      },
+      orgId,
+    );
 
-    const aiAnswer = response.content[0].type === "text" ? response.content[0].text : "";
+    const aiAnswer = response.text;
 
     // 9. Log AI usage
     await logAiUsage({
-      provider: "anthropic",
-      model: "claude-sonnet-4-20250514",
+      provider: response.provider,
+      usedOwnKey: response.usedOwnKey,
+      model,
       operation: "slack-command",
-      inputTokens: response.usage.input_tokens,
-      outputTokens: response.usage.output_tokens,
+      inputTokens: response.usage.inputTokens,
+      outputTokens: response.usage.outputTokens,
+      cacheReadTokens: response.usage.cacheReadTokens,
+      cacheWriteTokens: response.usage.cacheWriteTokens,
       organizationId: orgId,
     });
 

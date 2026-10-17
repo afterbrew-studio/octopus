@@ -13,10 +13,10 @@ import { prisma } from "@octopus/db";
 import { pubby } from "@/lib/pubby";
 import { eventBus } from "@/lib/events";
 import { deleteKnowledgeDocumentChunks } from "@/lib/qdrant";
-import Anthropic from "@anthropic-ai/sdk";
 import { logAiUsage } from "@/lib/ai-usage";
+import { getReviewModel } from "@/lib/ai-client";
+import { createAiMessage } from "@/lib/ai-router";
 import { knowledgeTemplates } from "@/lib/knowledge-templates";
-import { decryptStringMaybeLegacy } from "@/lib/crypto";
 
 export async function createKnowledgeDocument(
   _prevState: { error?: string },
@@ -536,30 +536,19 @@ export async function enhanceKnowledgeContent(
 
   if (!rawContent?.trim()) return { error: "Content is required." };
 
-  const model = "claude-haiku-4-5-20251001";
-
   try {
-    const org = await prisma.organization.findUnique({
-      where: { id: orgId },
-      select: { anthropicApiKey: true },
-    });
-
-    const client = new Anthropic({
-      apiKey: org?.anthropicApiKey
-        ? decryptStringMaybeLegacy(org.anthropicApiKey)
-        : process.env.ANTHROPIC_API_KEY!,
-    });
-
-    const response = await client.messages.create({
-      model,
-      max_tokens: 4096,
-      messages: [
-        {
-          role: "user",
-          content: rawContent.trim(),
-        },
-      ],
-      system: `You are a technical writing assistant that transforms rough notes, ideas, or informal descriptions into well-structured coding rule documents in English.
+    const model = await getReviewModel(orgId);
+    const response = await createAiMessage(
+      {
+        model,
+        maxTokens: 4096,
+        messages: [
+          {
+            role: "user",
+            content: rawContent.trim(),
+          },
+        ],
+        system: `You are a technical writing assistant that transforms rough notes, ideas, or informal descriptions into well-structured coding rule documents in English.
 
 Your task:
 - Take the user's raw input (which may be in any language) and convert it into a comprehensive, clear, and actionable set of coding rules/guidelines in English.
@@ -571,19 +560,21 @@ Your task:
 - Keep the document professional and concise — no fluff.
 
 Output ONLY the enhanced document content. Do not add meta-commentary or explanations about what you did.`,
-    });
+      },
+      orgId,
+    );
 
-    const text = response.content
-      .filter((b): b is Anthropic.TextBlock => b.type === "text")
-      .map((b) => b.text)
-      .join("");
+    const text = response.text;
 
     await logAiUsage({
-      provider: "anthropic",
+      provider: response.provider,
+      usedOwnKey: response.usedOwnKey,
       model,
       operation: "knowledge-enhance",
-      inputTokens: response.usage.input_tokens,
-      outputTokens: response.usage.output_tokens,
+      inputTokens: response.usage.inputTokens,
+      outputTokens: response.usage.outputTokens,
+      cacheReadTokens: response.usage.cacheReadTokens,
+      cacheWriteTokens: response.usage.cacheWriteTokens,
       organizationId: orgId,
     });
 

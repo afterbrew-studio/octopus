@@ -1,8 +1,7 @@
 import { beforeEach, describe, expect, it, mock } from "bun:test";
 
-// Locks the chat abuse-guard behavior: the scope classifier fails OPEN (a
-// guard outage must never break legitimate chat), and the free-tier daily cap
-// only applies to orgs that have never purchased credits.
+// Locks the free-tier daily cap: it only applies to orgs that have never
+// purchased credits. The scope classifier is covered in utility-model.test.ts.
 
 let purchaseRow: { id: string } | null;
 let chargedSum: number | null;
@@ -28,46 +27,8 @@ mock.module("../ai-usage", () => ({
   }),
 }));
 
-const { checkChatScope, checkFreeChatDailyCap, chatScopeGuardEnabled } =
+const { checkFreeChatDailyCap, chatScopeGuardEnabled } =
   await import("../chat-guard");
-
-function fakeClient(reply: string | Error) {
-  return {
-    messages: {
-      create: mock(() => {
-        if (reply instanceof Error) return Promise.reject(reply);
-        return Promise.resolve({
-          content: [{ type: "text", text: reply }],
-          usage: { input_tokens: 100, output_tokens: 2 },
-        });
-      }),
-    },
-    // Only the surface checkChatScope touches.
-  } as unknown as Parameters<typeof checkChatScope>[0];
-}
-
-describe("checkChatScope", () => {
-  beforeEach(() => {
-    usageLogs.length = 0;
-  });
-
-  it("allows when the classifier says ALLOW and logs guard usage", async () => {
-    const allowed = await checkChatScope(fakeClient("ALLOW"), "why does CI fail?", "org1");
-    expect(allowed).toBe(true);
-    expect(usageLogs).toHaveLength(1);
-    expect(usageLogs[0].operation).toBe("chat-guard");
-  });
-
-  it("blocks when the classifier says BLOCK", async () => {
-    const allowed = await checkChatScope(fakeClient("BLOCK"), "write my roleplay chapter", "org1");
-    expect(allowed).toBe(false);
-  });
-
-  it("fails open on classifier errors", async () => {
-    const allowed = await checkChatScope(fakeClient(new Error("api down")), "hello", "org1");
-    expect(allowed).toBe(true);
-  });
-});
 
 describe("checkFreeChatDailyCap", () => {
   beforeEach(() => {

@@ -1,7 +1,5 @@
 import "server-only";
 import { headers } from "next/headers";
-import Anthropic from "@anthropic-ai/sdk";
-import OpenAI from "openai";
 import { auth } from "@/lib/auth";
 import { prisma } from "@octopus/db";
 import { createEmbeddings } from "@/lib/embeddings";
@@ -23,56 +21,15 @@ import { generateSparseVector } from "@/lib/sparse-vector";
 import { requestAgentSearch, findClaudeAgent, requestAgentAnswer } from "@/lib/agent-search";
 import { getReviewModel } from "@/lib/ai-client";
 import { streamChat } from "@/lib/chat-stream";
+import { generateChatTitle, translateToEnglish } from "@/lib/chat-side-tasks";
 import {
   chatScopeGuardEnabled,
   checkChatScope,
   checkFreeChatDailyCap,
   dailyCapMessage,
+  GUARD_UNAVAILABLE_MESSAGE,
   OUT_OF_SCOPE_MESSAGE,
 } from "@/lib/chat-guard";
-
-let anthropicClient: Anthropic | null = null;
-
-function getAnthropicClient(): Anthropic {
-  if (!anthropicClient) {
-    anthropicClient = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
-  }
-  return anthropicClient;
-}
-
-let openaiClient: OpenAI | null = null;
-
-function getOpenAIClient(): OpenAI {
-  if (!openaiClient) {
-    openaiClient = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
-  }
-  return openaiClient;
-}
-
-async function translateToEnglish(text: string): Promise<string> {
-  // Skip translation for ASCII-only and Latin-extended text (accented chars like é, ñ, ü).
-  // Only translate when non-Latin scripts are detected (Cyrillic, CJK, Arabic, Turkish İ/ı, etc.)
-  const hasNonLatinScript = /[^\u0000-\u024F\u1E00-\u1EFF]/.test(text);
-  if (!hasNonLatinScript) return text;
-
-  try {
-    const res = await getOpenAIClient().chat.completions.create({
-      model: "gpt-4o-mini",
-      max_tokens: 1024,
-      messages: [
-        {
-          role: "system",
-          content:
-            "If the following text is already in English, return it as-is. Otherwise translate it to English. Return ONLY the translated text, nothing else.",
-        },
-        { role: "user", content: text },
-      ],
-    });
-    return res.choices[0]?.message?.content?.trim() || text;
-  } catch {
-    return text;
-  }
-}
 
 export async function POST(request: Request) {
   const session = await auth.api.getSession({ headers: await headers() });
@@ -186,7 +143,7 @@ export async function POST(request: Request) {
 
   // Abuse gates (lib/chat-guard.ts) — same placement rationale as the spend
   // gate: reject before context retrieval, queueing, or any main-model call.
-  const rejectChat = async (reason: string, msg: string) => {
+  const rejectChat = async (reason: string, msg: string, status = 402) => {
     const savedAssistantMsg = await prisma.chatMessage.create({
       data: { role: "assistant", content: msg, conversationId: conversation.id },
     });
@@ -202,7 +159,7 @@ export async function POST(request: Request) {
     console.warn(`[chat] Org ${orgId} rejected (${reason})`);
     return Response.json(
       { blocked: true, reason, conversationId: conversation.id, message: msg },
-      { status: 402 },
+      { status },
     );
   };
 
@@ -212,9 +169,12 @@ export async function POST(request: Request) {
   }
 
   if (chatScopeGuardEnabled()) {
-    const inScope = await checkChatScope(getAnthropicClient(), message, orgId);
-    if (!inScope) {
+    const verdict = await checkChatScope(message, orgId);
+    if (verdict === "block") {
       return rejectChat("out_of_scope", OUT_OF_SCOPE_MESSAGE);
+    }
+    if (verdict === "unavailable") {
+      return rejectChat("guard_unavailable", GUARD_UNAVAILABLE_MESSAGE, 503);
     }
   }
 
@@ -354,7 +314,7 @@ export async function POST(request: Request) {
   }
 
   // Translate user message to English for keyword detection (handles any language)
-  const englishMessage = await translateToEnglish(message);
+  const englishMessage = await translateToEnglish(message, orgId);
   const englishSearchText = `${englishMessage.toLowerCase()} ${recentHistoryText} ${repoContextLower}`;
 
   // Detect PR/activity related questions — fetch recent PRs for mentioned repos (or all if no repo mentioned)
@@ -843,30 +803,11 @@ ${agentResult ? `<local_agent_context>\nREAL-TIME results from a local agent run
         // Auto-generate title on first message
         if (isFirstMessage && fullResponse) {
           try {
-            const titleResponse = await getAnthropicClient().messages.create({
-              model: "claude-haiku-4-5-20251001",
-              max_tokens: 50,
-              messages: [
-                {
-                  role: "user",
-                  content: `Generate a very short title (max 6 words) summarizing the TOPIC of this developer question. Keep the same language as the question. Do NOT mention the language itself. Reply ONLY with the title, nothing else.\n\nQuestion: "${message}"`,
-                },
-              ],
-            });
-            const title =
-              titleResponse.content[0].type === "text"
-                ? titleResponse.content[0].text.trim()
-                : "New Chat";
-            await logAiUsage({
-              provider: "anthropic",
-              model: "claude-haiku-4-5-20251001",
-              operation: "chat-title",
-              inputTokens: titleResponse.usage.input_tokens,
-              outputTokens: titleResponse.usage.output_tokens,
-              cacheReadTokens: titleResponse.usage.cache_read_input_tokens ?? 0,
-              cacheWriteTokens: titleResponse.usage.cache_creation_input_tokens ?? 0,
-              organizationId: orgId,
-            });
+            const title = await generateChatTitle(
+              `Generate a very short title (max 6 words) summarizing the TOPIC of this developer question. Keep the same language as the question. Do NOT mention the language itself. Reply ONLY with the title, nothing else.\n\nQuestion: "${message}"`,
+              orgId,
+              "New Chat",
+            );
             await prisma.chatConversation.update({
               where: { id: conversation.id },
               data: { title },
@@ -1085,31 +1026,11 @@ async function streamAgentAnswer(opts: {
         // Auto-generate title on first message
         if (isFirstMessage) {
           try {
-            const client = getAnthropicClient();
-            const titleResponse = await client.messages.create({
-              model: "claude-haiku-4-5-20251001",
-              max_tokens: 50,
-              messages: [
-                {
-                  role: "user",
-                  content: `Generate a very short title (max 6 words) summarizing the TOPIC of this developer question. Keep the same language as the question. Do NOT mention the language itself. Reply ONLY with the title, nothing else.\n\nQuestion: "${message}"`,
-                },
-              ],
-            });
-            const title =
-              titleResponse.content[0].type === "text"
-                ? titleResponse.content[0].text.trim()
-                : "New Chat";
-            await logAiUsage({
-              provider: "anthropic",
-              model: "claude-haiku-4-5-20251001",
-              operation: "chat-title",
-              inputTokens: titleResponse.usage.input_tokens,
-              outputTokens: titleResponse.usage.output_tokens,
-              cacheReadTokens: titleResponse.usage.cache_read_input_tokens ?? 0,
-              cacheWriteTokens: titleResponse.usage.cache_creation_input_tokens ?? 0,
-              organizationId: orgId,
-            });
+            const title = await generateChatTitle(
+              `Generate a very short title (max 6 words) summarizing the TOPIC of this developer question. Keep the same language as the question. Do NOT mention the language itself. Reply ONLY with the title, nothing else.\n\nQuestion: "${message}"`,
+              orgId,
+              "New Chat",
+            );
             await prisma.chatConversation.update({
               where: { id: conversationId },
               data: { title },

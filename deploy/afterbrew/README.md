@@ -411,6 +411,54 @@ Tracked in rayf#142.
 
 Selecting which model a repository reviews with is per-organization, in the dashboard.
 
+### Cheap-tier models
+
+Two variables in `.env` send low-stakes work to a cheaper model than the review model. Both
+are optional; unset, Octopus behaves as upstream does.
+
+| Variable | Runs | Unset |
+|---|---|---|
+| `OCTOPUS_UTILITY_MODEL` | chat titles, chat translation, the chat scope guard, reply classification | the repo or org review model |
+| `OCTOPUS_MECHANICAL_MODEL` | reviews of lockfile, docs, test-only and tiny diffs | the built-in Haiku model, and only when no model is pinned |
+
+This deployment sets `OCTOPUS_UTILITY_MODEL=acp:MiniMax-M3` and
+`OCTOPUS_MECHANICAL_MODEL=acp:MiniMax-M3`, with `ACP_EXTRA_BODY={"thinking":{"type":"disabled"}}`
+because MiniMax-M3 otherwise spends the small token budgets of these calls on reasoning.
+
+The docs assistant and blog metadata have no organization, so they use the platform-default
+`llm` row of `available_models`. With no such row they use `OCTOPUS_UTILITY_MODEL`, and only
+when that is unset the built-in Claude model. A database error is never replaced by a
+fallback model.
+
+A repository's pinned model always wins over the mechanical downshift. The organization's pin
+does not, once `OCTOPUS_MECHANICAL_MODEL` is set, but only for a diff whose every file is a
+lockfile, generated, docs or test file. That includes the old path of a rename or copy and
+files excluded by policy, so moving source into docs keeps the pinned model. A tiny edit to
+source code keeps the pinned model.
+
+`OCTOPUS_MECHANICAL_MODEL` only takes effect for a model that has an `available_models` row:
+a model with no price would be billed at zero, so the router declines the downshift and logs
+`has no catalog row`. `OCTOPUS_UTILITY_MODEL` needs no row; the provider comes from the `acp:`
+prefix. An inactive row prices and routes the model without offering it in the model pickers.
+Gateway usage is never charged, so the prices are informational:
+
+```sql
+INSERT INTO available_models
+  (id, "modelId", "displayName", provider, category, "inputPrice", "outputPrice",
+   "isActive", "isPlatformDefault", "sortOrder", "createdAt", "updatedAt")
+VALUES
+  (gen_random_uuid()::text, 'acp:MiniMax-M3', 'MiniMax M3', 'acp', 'llm', 0, 0,
+   false, false, 100, now(), now())
+ON CONFLICT ("modelId") DO NOTHING;
+```
+
+The chat scope guard refuses a message it could not classify (provider error or an answer that
+is not ALLOW or BLOCK) rather than letting it through. `CHAT_SCOPE_GUARD=off` disables the guard.
+
+The public docs assistant and the blog SEO generator have no organization, so they use the
+platform default model (the `available_models` row with `isPlatformDefault` and category
+`llm`). Set one, or they fall back to a Claude model this deployment has no key for.
+
 ## Rotating secrets, and which one encrypts the data
 
 `generate-secrets.sh` refuses to overwrite an existing `.env`. The PostgreSQL password is

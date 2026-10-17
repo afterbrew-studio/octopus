@@ -98,7 +98,17 @@ type OrgKeys = {
   alibabaApiKey: string | null;
 };
 
-async function getOrgKeys(orgId: string): Promise<OrgKeys> {
+const NO_ORG_KEYS: OrgKeys = {
+  anthropicApiKey: null,
+  openaiApiKey: null,
+  googleApiKey: null,
+  grokApiKey: null,
+  openrouterApiKey: null,
+  alibabaApiKey: null,
+};
+
+async function getOrgKeys(orgId: string | null): Promise<OrgKeys> {
+  if (!orgId) return NO_ORG_KEYS;
   const org = await prisma.organization.findUnique({
     where: { id: orgId },
     select: {
@@ -152,10 +162,12 @@ function getOrgKeyForProvider(keys: OrgKeys, provider: AiProvider): string | nul
 /**
  * Create a message using the correct provider for the given model.
  * Automatically resolves provider from model ID and uses org-specific API keys.
+ * A null `orgId` is a platform call (no organization): platform keys and
+ * deployment-wide gateway config only.
  */
 export async function createAiMessage(
   params: AiCreateParams,
-  orgId: string,
+  orgId: string | null,
 ): Promise<AiResponse> {
   const admission = params.completeReviewAdmission;
   const window = admission?.window ?? params.executionWindow;
@@ -174,7 +186,7 @@ export async function createAiMessage(
       params.responseSchema === undefined &&
       ALWAYS_THINKING_MODEL_RX.test(params.model)
     ) {
-      params = { ...params, effort: await getReviewEffort(orgId) };
+      params = { ...params, effort: orgId ? await getReviewEffort(orgId) : undefined };
     }
     return { provider, orgKey };
   };
