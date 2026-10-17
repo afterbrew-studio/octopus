@@ -1,4 +1,6 @@
 import "server-only";
+import { randomUUID } from "node:crypto";
+import { createAbortController } from "@/lib/indexing-abort";
 import { authenticateApiToken } from "@/lib/api-auth";
 import { prisma } from "@octopus/db";
 import { runIndexingInBackground } from "@/lib/indexing-runner";
@@ -40,9 +42,10 @@ export async function POST(
   // same shape as a web-triggered one. A fresh AbortController + a no-op log
   // sink are fine here: the CLI polls status rather than subscribing to the
   // pubby channel (its events simply have no listener).
+  const indexAttemptId = randomUUID();
   const claim = await prisma.repository.updateMany({
     where: { id: repo.id, organizationId: result.org.id, isActive: true, dismissedAt: null, indexStatus: repo.indexStatus, indexedAt: repo.indexedAt },
-    data: { indexStatus: "indexing" },
+    data: { indexStatus: "indexing", indexAttemptId },
   });
   if (!claim.count) {
     return Response.json({ error: "Repository state changed or work is already in progress" }, { status: 409 });
@@ -56,7 +59,8 @@ export async function POST(
     repo.installationId,
     `repo-index-${repo.id}`,
     () => {},
-    new AbortController(),
+    createAbortController(indexAttemptId),
+    indexAttemptId,
     repo.provider,
   );
 

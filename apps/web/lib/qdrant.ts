@@ -1,3 +1,5 @@
+import "server-only";
+import type { RepositoryIndexOwner } from "@/lib/repository-index-storage";
 import { createHash } from "crypto";
 import { QdrantClient } from "@qdrant/js-client-rest";
 import { generateSparseVector } from "@/lib/sparse-vector";
@@ -6,9 +8,7 @@ import { getEmbedConfig } from "@/lib/embed-config";
 // Qdrant point IDs must be uint or UUID. Existing UUID inputs pass through
 // unchanged (so callers using crypto.randomUUID() are unaffected); non-UUID
 // strings (e.g. Prisma CUIDs) are mapped deterministically into a UUIDv5-shaped
-// string. Applied at every upsert call site via applyQdrantId() so the helper
-// is the single source of truth and any future caller passing a non-UUID is
-// handled correctly.
+// string.
 function toQdrantId(id: string): string {
   if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
     return id;
@@ -168,7 +168,10 @@ export async function upsertChunks(
     payload: Record<string, unknown>;
     sparseVector?: { indices: number[]; values: number[] };
   }[],
+  owner: RepositoryIndexOwner,
 ) {
+  const { getRepositoryIndexGeneration, repositoryCodeStorageId } = await import("@/lib/repository-index-storage");
+  if (points.some(point => point.payload.repoId !== owner.repoId)) throw new Error("Index points must belong to the claimed repository");
   // createEmbeddings returns [] for points whose org is over its spend limit;
   // qdrant rejects dim=0 dense vectors, so drop those points before sending.
   const originalCount = points.length;
@@ -180,7 +183,15 @@ export async function upsertChunks(
   const qdrant = getQdrantClient();
   // Qdrant accepts max 100 points per request
   for (let i = 0; i < points.length; i += 100) {
-    const slice = points.slice(i, i + 100).map((p) => ({ ...applyQdrantId(p.id, p.payload), vector: p.vector, sparseVector: p.sparseVector }));
+    const generation = await getRepositoryIndexGeneration(owner);
+    const slice = points.slice(i, i + 100).map((p) => ({
+      id: toQdrantId(JSON.stringify([owner.repoId, generation, p.id])),
+      payload: sanitizePayload({
+        ...p.payload, repoId: repositoryCodeStorageId(owner.repoId, generation),
+        logicalRepoId: owner.repoId, originalId: p.id, indexGeneration: generation,
+      }),
+      vector: p.vector, sparseVector: p.sparseVector,
+    }));
     const batch = slice.map((p) => ({
       id: p.id,
       vector: p.sparseVector
@@ -189,7 +200,7 @@ export async function upsertChunks(
       payload: p.payload,
     }));
     try {
-      await withQdrantRetry(() => qdrant.upsert(COLLECTION_NAME, { points: batch }), `upsert ${COLLECTION_NAME}`);
+      await withQdrantRetry(() => qdrant.upsert(COLLECTION_NAME, { points: batch, wait: true }), `upsert ${COLLECTION_NAME}`);
     } catch (error) {
       if (!isSparseVectorError(error)) throw error;
       console.warn("[qdrant] Falling back to dense-only upsert", { collection: COLLECTION_NAME, error: error instanceof Error ? error.message : error });
@@ -198,30 +209,21 @@ export async function upsertChunks(
         vector: p.vector,
         payload: p.payload,
       }));
-      await withQdrantRetry(() => qdrant.upsert(COLLECTION_NAME, { points: denseBatch }), `upsert ${COLLECTION_NAME} dense`);
+      await withQdrantRetry(() => qdrant.upsert(COLLECTION_NAME, { points: denseBatch, wait: true }), `upsert ${COLLECTION_NAME} dense`);
     }
   }
 }
 
-export async function deleteRepoChunks(repoId: string) {
-  const qdrant = getQdrantClient();
-  await qdrant.delete(COLLECTION_NAME, {
-    filter: {
-      must: [{ key: "repoId", match: { value: repoId } }],
-    },
-  });
-}
-
-export async function deleteRepoFileChunks(repoId: string, filePaths: string[]) {
+export async function deleteRepoFileChunks(owner: RepositoryIndexOwner, filePaths: string[]) {
   if (filePaths.length === 0) return;
-  const qdrant = getQdrantClient();
-  await qdrant.delete(COLLECTION_NAME, {
-    filter: {
-      must: [
-        { key: "repoId", match: { value: repoId } },
-        { key: "filePath", match: { any: filePaths } },
-      ],
-    },
+  const { getRepositoryIndexGeneration, repositoryCodeFilter } = await import("@/lib/repository-index-storage");
+  const generation = await getRepositoryIndexGeneration(owner);
+  await getQdrantClient().delete(COLLECTION_NAME, {
+    wait: true,
+    filter: { must: [
+      repositoryCodeFilter(owner.repoId, generation),
+      { key: "filePath", match: { any: filePaths } },
+    ] },
   });
 }
 
@@ -229,11 +231,12 @@ export async function getRepoChunks(
   repoId: string,
   limit = 50,
 ): Promise<string[]> {
+  const { getActiveRepositoryCodeFilter } = await import("@/lib/repository-index-storage");
+  const filter = await getActiveRepositoryCodeFilter([repoId]);
+  if (!filter) return [];
   const qdrant = getQdrantClient();
   const result = await qdrant.scroll(COLLECTION_NAME, {
-    filter: {
-      must: [{ key: "repoId", match: { value: repoId } }],
-    },
+    filter,
     limit,
     with_payload: true,
     with_vector: false,
@@ -252,7 +255,9 @@ export async function searchSimilarChunks(
 ): Promise<{ filePath: string; text: string; startLine: number; endLine: number; score: number }[]> {
   if (queryVector.length === 0) return [];
   const qdrant = getQdrantClient();
-  const filter = { must: [{ key: "repoId", match: { value: repoId } }] };
+  const { getActiveRepositoryCodeFilter } = await import("@/lib/repository-index-storage");
+  const filter = await getActiveRepositoryCodeFilter([repoId]);
+  if (!filter) return [];
 
   let points: { payload?: Record<string, unknown> | null; score: number }[];
 
@@ -306,12 +311,9 @@ export async function searchCodeChunksAcrossRepos(
   if (repoIds.length === 0) return [];
   if (queryVector.length === 0) return [];
   const qdrant = getQdrantClient();
-  const filter = {
-    should: repoIds.map((id) => ({
-      key: "repoId",
-      match: { value: id },
-    })),
-  };
+  const { getActiveRepositoryCodeFilter } = await import("@/lib/repository-index-storage");
+  const filter = await getActiveRepositoryCodeFilter(repoIds);
+  if (!filter) return [];
 
   let points: { payload?: Record<string, unknown> | null; score: number }[];
 
@@ -352,7 +354,7 @@ export async function searchCodeChunksAcrossRepos(
     text: (point.payload?.text as string) ?? "",
     startLine: (point.payload?.startLine as number) ?? 0,
     endLine: (point.payload?.endLine as number) ?? 0,
-    repoId: (point.payload?.repoId as string) ?? "",
+    repoId: ((point.payload?.logicalRepoId ?? point.payload?.repoId) as string) ?? "",
     score: point.score,
   }));
 }

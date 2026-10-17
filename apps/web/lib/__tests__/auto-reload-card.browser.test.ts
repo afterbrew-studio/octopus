@@ -14,7 +14,15 @@ it.skipIf(!process.env.PLAYWRIGHT_MODULE_PATH)("preserves auto-reload drafts thr
       builder.onResolve({ filter: /^\.\/purchase-dialog$/ }, () => ({ path: "purchase", namespace: "fixture" }));
       builder.onLoad({ filter: /.*/, namespace: "fixture" }, ({ path }) => ({ loader: "js", contents: {
         actions: `
-          export async function updateAutoReload(_, data) { window.billingFixture.saves.push(Object.fromEntries(data)); return window.billingFixture.saveError ? {error:window.billingFixture.saveError} : {success:true}; }
+          export async function updateAutoReload(_, data) {
+            const fixture=window.billingFixture;
+            fixture.saves.push(Object.fromEntries(data));
+            if(fixture.holdSave) await new Promise(resolve=>{fixture.releaseSave=resolve;});
+            if(fixture.saveError) return {error:fixture.saveError};
+            fixture.autoReloadConfig={enabled:data.get('enabled')==='true',pausedForDurableUpgrade:false,thresholdAmount:Number(data.get('thresholdAmount')),reloadAmount:Number(data.get('reloadAmount'))};
+            fixture.refresh();
+            return {success:true};
+          }
           export async function updateBillingEmail() { return {}; }
           export async function updateSpendLimit() { return {}; }
           export async function loadMoreTransactions() { return []; }
@@ -122,6 +130,76 @@ it.skipIf(!process.env.PLAYWRIGHT_MODULE_PATH)("preserves auto-reload drafts thr
     await save.click();
     await page.getByText("Auto-reload updated.", { exact: true }).waitFor();
     expect(await dialog.count()).toBe(0);
+    expect(await page.evaluate("window.billingFixture.saves")).toEqual([{ enabled: "true", thresholdAmount: "10", reloadAmount: "85" }]);
+    // A server refresh must replace stale saved settings without a full reload.
+    await page.goto(new URL("?enabled=1", server.url).href);
+    await page.evaluate("window.billingFixture.autoReloadConfig.enabled=false; window.billingFixture.refresh()");
+    await page.getByText("Off", { exact: true }).waitFor();
+    expect(await toggle.getAttribute("aria-checked")).toBe("false");
+    expect(await page.getByText("Saved setting: Off.", { exact: true }).count()).toBe(1);
+    await page.evaluate("window.billingFixture.autoReloadConfig={enabled:true,pausedForDurableUpgrade:false,thresholdAmount:22,reloadAmount:90}; window.billingFixture.refresh()");
+    await page.getByLabel("When balance falls below").waitFor();
+    expect(await toggle.getAttribute("aria-checked")).toBe("true");
+    expect(await page.getByLabel("When balance falls below").inputValue()).toBe("22");
+    expect(await page.getByLabel("Reload amount", { exact: true }).inputValue()).toBe("90");
+    expect(await page.getByText("Saved setting: On.", { exact: true }).count()).toBe(1);
+    // Equal saved values in a new server object must leave unsaved amounts alone.
+    await page.getByLabel("When balance falls below").fill("24");
+    await page.getByLabel("Reload amount", { exact: true }).fill("100");
+    await page.evaluate("window.billingFixture.autoReloadConfig={...window.billingFixture.autoReloadConfig}; window.billingFixture.refresh(); new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
+    expect(await page.getByLabel("When balance falls below").inputValue()).toBe("24");
+    expect(await page.getByLabel("Reload amount", { exact: true }).inputValue()).toBe("100");
+    expect(await page.getByText(/Changes not saved/).count()).toBe(1);
+    expect(await page.evaluate("window.billingFixture.saves.length")).toBe(0);
+    await page.evaluate("window.billingFixture.autoReloadConfig.pausedForDurableUpgrade=true; window.billingFixture.refresh()");
+    await page.getByText("Saved setting: Paused.", { exact: true }).waitFor();
+    expect(await page.getByLabel("When balance falls below").inputValue()).toBe("22");
+    expect(await page.getByLabel("Reload amount", { exact: true }).inputValue()).toBe("90");
+    expect(await page.getByText(/Changes not saved/).count()).toBe(0);
+    // Drafts are labelled and cannot change while their save is in flight.
+    await page.goto(new URL("?enabled=1", server.url).href);
+    await toggle.click();
+    await page.getByText(/Changes not saved\. Select Save Auto-Reload to apply them\./).waitFor();
+    await page.evaluate("window.billingFixture.holdSave=true");
+    await page.getByRole("button", { name: "Turn Off Auto-Reload", exact: true }).click();
+    await page.getByRole("button", { name: "Saving...", exact: true }).waitFor();
+    expect(await toggle.isDisabled()).toBe(true);
+    await page.evaluate("window.billingFixture.releaseSave()");
+    await page.getByText("Auto-reload updated.", { exact: true }).waitFor();
+    expect(await toggle.isDisabled()).toBe(false);
+    expect(await toggle.getAttribute("aria-checked")).toBe("false");
+    expect(await page.evaluate("window.billingFixture.autoReloadConfig.enabled")).toBe(false);
+    expect(await page.evaluate("window.billingFixture.saves")).toEqual([{ enabled: "false", thresholdAmount: "10", reloadAmount: "50" }]);
+    expect(await page.getByText(/Changes not saved\. Select Save Auto-Reload to apply them\./).count()).toBe(0);
+    // A rejected save must not present the draft as persisted.
+    await page.goto(new URL("?enabled=1", server.url).href);
+    await page.evaluate("window.billingFixture.saveError='Fixture save failure'");
+    await toggle.click();
+    await page.getByRole("button", { name: "Turn Off Auto-Reload", exact: true }).click();
+    await page.getByText("Fixture save failure", { exact: true }).waitFor();
+    expect(await page.evaluate("window.billingFixture.autoReloadConfig.enabled")).toBe(true);
+    expect(await page.getByText(/Saved setting: On/).count()).toBe(1);
+    expect(await page.getByText(/Changes not saved/).count()).toBe(1);
+    expect(await page.getByText("Auto-reload updated.", { exact: true }).count()).toBe(0);
+    // Amount edits are also frozen until the submitted values are saved.
+    await page.goto(new URL("?enabled=1", server.url).href);
+    await page.getByLabel("Reload amount", { exact: true }).fill("85");
+    await page.evaluate("window.billingFixture.holdSave=true");
+    await save.click();
+    await page.getByRole("button", { name: "Saving...", exact: true }).waitFor();
+    expect(await toggle.isDisabled()).toBe(true);
+    expect(await page.getByLabel("Reload amount", { exact: true }).isDisabled()).toBe(true);
+    expect(await page.getByLabel("When balance falls below").isDisabled()).toBe(true);
+    await page.evaluate("window.billingFixture.releaseSave()");
+    await page.getByText("Auto-reload updated.", { exact: true }).waitFor();
+    expect(await page.evaluate("window.billingFixture.autoReloadConfig.reloadAmount")).toBe(85);
+    expect(await page.getByLabel("Reload amount", { exact: true }).isDisabled()).toBe(false);
+    // A new draft must hide success from the preceding save without submitting.
+    await page.getByLabel("Reload amount", { exact: true }).fill("95");
+    expect(await page.getByText(/Saved setting: On/).count()).toBe(1);
+    expect(await page.getByText(/Changes not saved/).count()).toBe(1);
+    expect(await page.getByText("Auto-reload updated.", { exact: true }).count()).toBe(0);
+    expect(await page.evaluate("window.billingFixture.autoReloadConfig.reloadAmount")).toBe(85);
     expect(await page.evaluate("window.billingFixture.saves")).toEqual([{ enabled: "true", thresholdAmount: "10", reloadAmount: "85" }]);
     expect(externalRequests).toEqual([]);
   } finally {

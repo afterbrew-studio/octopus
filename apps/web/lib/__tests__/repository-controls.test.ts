@@ -10,8 +10,8 @@ describe("repository onboarding controls", () => {
     expect(code, `${stdout}\n${stderr}`).toBe(0);
     expect(stdout).toContain("PASS one-off review preparation preserves disabled automatic reviews");
   });
-  for (const name of ["repository-controls-actions-harness.ts", "repository-controls-render-harness.tsx"]) {
-    it(name.includes("actions") ? "enforces permissions and reports rejected index requests" : "renders saved review settings and provider-specific recovery", async () => {
+  for (const name of ["repository-controls-actions-harness.ts", "repository-controls-render-harness.tsx", "repository-index-status-harness.tsx"]) {
+    it(name.includes("actions") ? "enforces permissions and reports rejected index requests" : name.includes("status") ? "refreshes current state after delayed index notifications" : "renders saved review settings and provider-specific recovery", async () => {
       const child = Bun.spawn([process.execPath, fileURLToPath(new URL(`./fixtures/${name}`, import.meta.url))], {
         cwd: fileURLToPath(new URL("../../", import.meta.url)), stdout: "pipe", stderr: "pipe",
       });

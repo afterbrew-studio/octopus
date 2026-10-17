@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { getPubbyClient } from "@/lib/pubby-client";
 import { getRepositoryConnectionRecovery } from "@/lib/repository-connection-recovery";
 import {
@@ -109,7 +110,7 @@ export function IndexingLogs({
   provider: string;
 }) {
   const [logs, setLogs] = useState<LogEntry[]>([]);
-  const [status, setStatus] = useState(initialStatus);
+  const router = useRouter();
   const scrollRef = useRef<HTMLDivElement>(null);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
@@ -118,7 +119,6 @@ export function IndexingLogs({
   // transition as well, so finishing before the subscription mounts is safe.
   useEffect(() => {
     const controller = new AbortController();
-    setStatus(initialStatus);
     setFetchError(null);
     if (initialStatus === "indexing") setLogs([]);
     fetch(`/api/sync-logs?orgId=${encodeURIComponent(orgId)}&repoId=${encodeURIComponent(repoId)}`, { signal: controller.signal })
@@ -155,9 +155,9 @@ export function IndexingLogs({
     };
 
     const handleStatus = (raw: unknown) => {
-      const data = raw as { repoId: string; status: string };
+      const data = raw as { repoId: string };
       if (data.repoId !== repoId) return;
-      setStatus(data.status);
+      router.refresh();
     };
 
     channel.bind("index-log", handleLog);
@@ -167,7 +167,7 @@ export function IndexingLogs({
       channel.unbind("index-log", handleLog);
       channel.unbind("index-status", handleStatus);
     };
-  }, [repoId, orgId]);
+  }, [repoId, orgId, router]);
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -175,7 +175,7 @@ export function IndexingLogs({
     }
   }, [logs]);
 
-  const isComplete = status !== "indexing";
+  const isComplete = initialStatus !== "indexing";
   const displayLogs = mergeProgressLogs(logs);
   const recovery = getRepositoryConnectionRecovery(provider, orgId, `/repositories?repo=${repoId}`);
 
@@ -201,10 +201,10 @@ export function IndexingLogs({
             Running
           </span>
         )}
-        {status === "indexed" && (
+        {initialStatus === "indexed" && (
           <span className="ml-auto text-xs text-emerald-400">Completed</span>
         )}
-        {status === "failed" && (
+        {initialStatus === "failed" && (
           <span className="ml-auto text-xs text-red-400">Failed</span>
         )}
       </div>
@@ -219,7 +219,7 @@ export function IndexingLogs({
             <button type="button" className="mt-1 underline underline-offset-2" onClick={() => setReload((value) => value + 1)}>Retry loading logs</button>
           </div>
         )}
-        {logs.length === 0 && status === "indexing" && (
+        {logs.length === 0 && initialStatus === "indexing" && (
           <div className="flex items-center gap-2 text-zinc-500">
             <IconLoader2 className="size-3.5 animate-spin" />
             Waiting for logs...
@@ -253,7 +253,7 @@ export function IndexingLogs({
           );
         })}
 
-        {status === "failed" && (
+        {initialStatus === "failed" && (
           <div className="mt-3 border-t border-zinc-800 pt-3">
             <a
               href={recovery.href}

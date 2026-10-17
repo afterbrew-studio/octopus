@@ -445,7 +445,7 @@ export async function POST(request: NextRequest) {
 
     const repo = await prisma.repository.findUnique({
       where: { id: resolvedRepositoryTenant.repositoryId },
-      select: { id: true, fullName: true, defaultBranch: true, indexStatus: true, organizationId: true },
+      select: { id: true, fullName: true, defaultBranch: true, indexStatus: true, organizationId: true, activeIndexGeneration: true },
     });
 
     if (repo && repo.organizationId === resolvedRepositoryTenant.organizationId) {
@@ -477,7 +477,7 @@ export async function POST(request: NextRequest) {
           if (files.length > 0) {
             const { incrementalIndex } = await import("@/lib/indexer");
             const result = await incrementalIndex(
-              repo.id,
+              { repoId: repo.id, activeIndexGeneration: repo.activeIndexGeneration },
               repo.fullName,
               repo.defaultBranch,
               installationId,
@@ -485,19 +485,19 @@ export async function POST(request: NextRequest) {
               "github",
               repo.organizationId,
             );
-            await prisma.repository.update({
-              where: { id: repo.id },
-              data: { indexedAt: new Date(), indexStatus: "indexed" },
+            await prisma.repository.updateMany({
+              where: { id: repo.id, indexStatus: "indexed", activeIndexGeneration: repo.activeIndexGeneration, indexedAt: { not: null } },
+              data: { indexedAt: new Date() },
             });
             console.log(`[webhook] PR #${prNumber} merged — incremental index: ${result.updatedFiles} updated, ${result.removedFiles} removed, ${result.newVectors} vectors`);
           } else {
             // Fallback: mark as stale if we can't get file list
-            await prisma.repository.update({ where: { id: repo.id }, data: { indexStatus: "stale" } });
+            await prisma.repository.updateMany({ where: { id: repo.id, indexStatus: "indexed", activeIndexGeneration: repo.activeIndexGeneration }, data: { indexStatus: "stale" } });
             console.log(`[webhook] PR #${prNumber} merged, no changed files found via API, marked as stale`);
           }
         } catch (err) {
           // Fallback: mark as stale on any error
-          await prisma.repository.update({ where: { id: repo.id }, data: { indexStatus: "stale" } });
+          await prisma.repository.updateMany({ where: { id: repo.id, indexStatus: "indexed", activeIndexGeneration: repo.activeIndexGeneration }, data: { indexStatus: "stale" } });
           console.warn(`[webhook] PR #${prNumber} incremental index failed, marked as stale:`, err);
         }
       } else {
@@ -505,7 +505,7 @@ export async function POST(request: NextRequest) {
         if (repo.indexStatus !== "indexed") {
           console.log(`[webhook] PR #${prNumber} merged, repo not yet indexed (${repo.indexStatus}), skipping incremental`);
         } else {
-          await prisma.repository.update({ where: { id: repo.id }, data: { indexStatus: "stale" } });
+          await prisma.repository.updateMany({ where: { id: repo.id, indexStatus: "indexed", activeIndexGeneration: repo.activeIndexGeneration }, data: { indexStatus: "stale" } });
           console.log(`[webhook] PR #${prNumber} merged, no installationId, marked as stale`);
         }
       }

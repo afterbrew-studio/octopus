@@ -1,10 +1,11 @@
 import "server-only";
+import { recordRepositoryIndexCompletion } from "@/lib/repository-index-completion";
 import crypto from "node:crypto";
 import { prisma } from "@octopus/db";
 import { chunkText, shouldIndex, MAX_FILE_SIZE } from "@/lib/index-chunking";
 import { createEmbeddings } from "@/lib/embeddings";
 import { generateSparseVectors } from "@/lib/sparse-vector";
-import { upsertChunks, deleteRepoChunks } from "@/lib/qdrant";
+import { upsertChunks } from "@/lib/qdrant";
 import { type Ignore } from "@/lib/octopus-ignore";
 
 /**
@@ -56,6 +57,7 @@ export async function indexLocalBatch(
   fullName: string,
   organizationId: string,
   files: LocalFile[],
+  claim: { attemptId: string; upload: { id: string } },
   ig?: Ignore,
 ): Promise<IndexLocalBatchResult> {
   let indexed = 0;
@@ -140,7 +142,7 @@ export async function indexLocalBatch(
     },
   }));
 
-  await upsertChunks(points);
+  await upsertChunks(points, { repoId, indexAttemptId: claim.attemptId, uploadId: claim.upload.id });
 
   return { indexedInBatch: indexed, skippedInBatch: skipped, chunksInBatch: points.length };
 }
@@ -159,41 +161,29 @@ export async function prepareRepoForLocalIndex(
   provider: "github" | "gitlab" | "bitbucket",
   fullName: string,
   defaultBranch: string,
+  upload: { totalBatches: number; totalFiles: number },
 ): Promise<
-  | { ok: true; repoId: string; reIndex: boolean }
+  | { ok: true; repoId: string; reIndex: boolean; uploadId: string }
   | { ok: false; reason: "managed-by-platform"; repoId: string }
   | { ok: false; reason: "in-flight"; repoId: string }
 > {
+  const uploadState = {
+    id: crypto.randomUUID(), nextBatch: 0, totalBatches: upload.totalBatches,
+    totalFiles: upload.totalFiles, paths: [] as string[], verified: true,
+  };
   const existing = await prisma.repository.findFirst({
     where: { organizationId, provider, fullName, isActive: true },
     select: { id: true, installationId: true, externalId: true, indexStatus: true, updatedAt: true },
   });
 
   if (existing) {
-    // Only ever claim/wipe CLI-created rows (externalId "cli:<provider>:<fullName>").
+    // Only ever claim CLI-created rows (externalId "cli:<provider>:<fullName>").
     // A row with an installationId OR any non-`cli:` externalId is managed by the
     // platform webhook / GitHub-Action flow (the Action creates rows with a
-    // numeric externalId and installationId=null) — never hijack or wipe those.
+    // numeric externalId and installationId=null) — never hijack those.
     if (existing.installationId != null || !existing.externalId?.startsWith("cli:")) {
       return { ok: false, reason: "managed-by-platform", repoId: existing.id };
     }
-    // Re-index guard: if a concurrent run is mid-way (indexStatus="indexing"
-    // and updated within the IN_FLIGHT_WINDOW_MS staleness window), reject
-    // this batch instead of wiping the in-flight run's chunks. Without
-    // this, a second `octp review --index` collides with the first — run
-    // B's first batch deletes A's already-upserted chunks and resets
-    // counters, then A's later batches keep upserting under A's repoId,
-    // ending in a partially-mixed chunk set and inconsistent counters.
-    //
-    // ATOMIC CLAIM: the prior implementation read+returned then updated,
-    // which was a textbook TOCTOU — two concurrent runs both saw status
-    // != "indexing", both passed the guard, both wiped. The current
-    // pattern issues ONE `updateMany` that conditionally flips status
-    // to "indexing" only if the existing row is not already in-flight.
-    // Whichever caller's updateMany count comes back as 1 owns the run;
-    // count===0 means someone else flipped it first, so we return
-    // in-flight without wiping. Postgres serialises updateMany on the
-    // matching rows, so there is no window between the WHERE and SET.
     const inFlightCutoff = new Date(Date.now() - IN_FLIGHT_WINDOW_MS);
     const claim = await prisma.repository.updateMany({
       where: {
@@ -205,6 +195,8 @@ export async function prepareRepoForLocalIndex(
       },
       data: {
         indexStatus: "indexing",
+        localIndexUpload: uploadState,
+        indexAttemptId: null,
         indexedFiles: 0,
         totalFiles: 0,
         totalChunks: 0,
@@ -215,9 +207,7 @@ export async function prepareRepoForLocalIndex(
     if (claim.count === 0) {
       return { ok: false, reason: "in-flight", repoId: existing.id };
     }
-    // We hold the claim now — safe to wipe chunks without racing another run.
-    await deleteRepoChunks(existing.id);
-    return { ok: true, repoId: existing.id, reIndex: true };
+    return { ok: true, repoId: existing.id, reIndex: true, uploadId: uploadState.id };
   }
 
   // New row. `externalId` would normally be the platform's repo ID — we don't
@@ -238,48 +228,100 @@ export async function prepareRepoForLocalIndex(
       isActive: true,
       autoReview: false, // no webhooks for CLI-local repos — auto-review doesn't apply
       indexStatus: "indexing",
+      localIndexUpload: uploadState,
     },
     select: { id: true },
   });
-  return { ok: true, repoId: repo.id, reIndex: false };
+  return { ok: true, repoId: repo.id, reIndex: false, uploadId: uploadState.id };
 }
 
-/**
- * Apply per-batch progress to the Repository row. Called after each batch
- * succeeds. `commit` flips the status to "indexed" on the final batch.
- */
+type UploadState = {
+  id: string;
+  nextBatch: number;
+  totalBatches: number;
+  totalFiles: number;
+  paths: string[];
+  verified: boolean;
+};
+
+export class LocalIndexConflict extends Error {}
+
+/** Claim one ordered batch before performing embeddings or vector writes. */
+export async function claimLocalIndexBatch(
+  repoId: string,
+  batchIndex: number,
+  totalBatches: number,
+  files: LocalFile[],
+  uploadId?: string,
+): Promise<{ attemptId: string; upload: UploadState }> {
+  const repo = await prisma.repository.findUniqueOrThrow({ where: { id: repoId } });
+  const upload = repo.localIndexUpload as UploadState | null;
+  if (!upload || repo.indexStatus !== "indexing" || repo.indexAttemptId ||
+      upload.nextBatch !== batchIndex || upload.totalBatches !== totalBatches ||
+      (uploadId !== undefined && uploadId !== upload.id)) {
+    throw new LocalIndexConflict("Upload is no longer current or batch is out of order");
+  }
+  const paths = [...upload.paths, ...files.map(file => file.path)];
+  if (new Set(paths).size !== paths.length || paths.length > upload.totalFiles ||
+      (batchIndex === totalBatches - 1 && paths.length !== upload.totalFiles)) {
+    throw new LocalIndexConflict("Upload contains duplicate files or does not match the declared file count");
+  }
+  const attemptId = crypto.randomUUID();
+  const claimed = await prisma.repository.updateMany({
+    where: { id: repoId, updatedAt: repo.updatedAt, indexStatus: "indexing", indexAttemptId: null,
+      localIndexUpload: { path: ["id"], equals: upload.id } },
+    data: { indexAttemptId: attemptId },
+  });
+  if (!claimed.count) throw new LocalIndexConflict("Another batch owns this upload");
+  return { attemptId, upload: {
+    ...upload, paths, nextBatch: batchIndex + 1,
+    verified: upload.verified && (batchIndex === 0 || uploadId === upload.id),
+  } };
+}
+
+/** Final status and milestones share the same batch-ownership transaction. */
 export async function recordLocalIndexProgress(
   repoId: string,
   startedAt: number | null,
   delta: { indexedFiles: number; totalChunks: number; totalVectors: number; totalFiles?: number },
   commit: boolean,
+  claim: { attemptId: string; upload: UploadState },
 ): Promise<void> {
-  await prisma.repository.update({
-    where: { id: repoId },
-    data: {
-      indexedFiles: { increment: delta.indexedFiles },
-      totalChunks: { increment: delta.totalChunks },
-      totalVectors: { increment: delta.totalVectors },
-      ...(delta.totalFiles != null ? { totalFiles: delta.totalFiles } : {}),
-      ...(commit
-        ? {
-            indexStatus: "indexed",
-            indexedAt: new Date(),
-            // Only report a duration when the start time is reliable (a
-            // single-batch upload, where the finalizing request also began the
-            // index). Multi-batch uploads are stateless per request with no
-            // persisted whole-index start, so report null rather than a
-            // misleading last-batch-only duration.
-            indexDurationMs: startedAt != null ? Date.now() - startedAt : null,
-          }
-        : {}),
-    },
+  await prisma.$transaction(async tx => {
+    const saved = await tx.repository.updateMany({
+      where: { id: repoId, indexStatus: "indexing", indexAttemptId: claim.attemptId },
+      data: {
+        indexAttemptId: null,
+        localIndexUpload: claim.upload,
+        indexedFiles: { increment: delta.indexedFiles },
+        totalChunks: { increment: delta.totalChunks },
+        totalVectors: { increment: delta.totalVectors },
+        totalFiles: claim.upload.totalFiles,
+        ...(commit ? {
+          indexStatus: "indexed",
+          activeIndexGeneration: claim.upload.id,
+          indexDurationMs: startedAt != null ? Date.now() - startedAt : null,
+        } : {}),
+      },
+    });
+    if (!saved.count) throw new LocalIndexConflict("Upload was cancelled or replaced");
+    if (!commit) return;
+    const repo = await tx.repository.findUniqueOrThrow({ where: { id: repoId } });
+    if (repo.totalChunks > 0 && repo.totalVectors === repo.totalChunks && repo.indexedFiles > 0) {
+      if (claim.upload.verified) {
+        await recordRepositoryIndexCompletion(tx, repoId);
+      } else {
+        // Legacy clients send no upload ID. Preserve latest-completion behavior,
+        // but never infer a first-success milestone from an unverified session.
+        await tx.repository.update({ where: { id: repoId }, data: { indexedAt: new Date() } });
+      }
+    }
   });
 }
 
-export async function markLocalIndexFailed(repoId: string): Promise<void> {
-  await prisma.repository.update({
-    where: { id: repoId },
-    data: { indexStatus: "failed" },
+export async function markLocalIndexFailed(repoId: string, attemptId: string): Promise<void> {
+  await prisma.repository.updateMany({
+    where: { id: repoId, indexStatus: "indexing", indexAttemptId: attemptId },
+    data: { indexStatus: "failed", indexAttemptId: null },
   });
 }

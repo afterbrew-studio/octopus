@@ -53,13 +53,16 @@ const IMPORT_RE =
 async function scrollRepoChunks(
   repoId: string,
 ): Promise<ScrollPoint[]> {
+  const { getActiveRepositoryCodeFilter } = await import("@/lib/repository-index-storage");
+  const filter = await getActiveRepositoryCodeFilter([repoId]);
+  if (!filter) return [];
   const qdrant = getQdrantClient();
   const points: ScrollPoint[] = [];
   let offset: string | number | undefined = undefined;
 
   while (points.length < MAX_CHUNKS_SCANNED) {
     const result = await qdrant.scroll(COLLECTION_NAME, {
-      filter: { must: [{ key: "repoId", match: { value: repoId } }] },
+      filter,
       limit: 256,
       offset,
       with_payload: true,

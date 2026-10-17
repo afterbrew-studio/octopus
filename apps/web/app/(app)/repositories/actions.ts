@@ -675,6 +675,7 @@ export async function removeRepository(
       fullName: true,
       organizationId: true,
       indexStatus: true,
+      indexAttemptId: true,
       organization: {
         select: {
           members: {
@@ -695,7 +696,7 @@ export async function removeRepository(
   }
 
   abortAnalysis(repoId);
-  abortIndexing(repoId);
+  if (repo.indexAttemptId) abortIndexing(repo.indexAttemptId);
 
   await prisma.repository.update({
     where: { id: repoId },

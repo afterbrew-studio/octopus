@@ -187,6 +187,27 @@ export function BillingSettings({
     autoReloadPaused,
   );
 
+  const savedAutoReloadKey = JSON.stringify([
+    autoReloadActive,
+    autoReloadPaused,
+    autoReloadConfig?.thresholdAmount ?? 10,
+    autoReloadConfig?.reloadAmount ?? 50,
+  ]);
+  const [lastSavedAutoReloadKey, setLastSavedAutoReloadKey] = useState(savedAutoReloadKey);
+  // Card setup refreshes the page too. Keep the draft unless saved settings changed.
+  if (lastSavedAutoReloadKey !== savedAutoReloadKey) {
+    setLastSavedAutoReloadKey(savedAutoReloadKey);
+    setAutoReloadEnabled(autoReloadActive);
+    setThresholdAmount(String(autoReloadConfig?.thresholdAmount ?? 10));
+    setReloadAmount(String(autoReloadConfig?.reloadAmount ?? 50));
+  }
+  const autoReloadDirty = autoReloadEnabled !== autoReloadActive || (
+    autoReloadEnabled && (
+      Number(thresholdAmount) !== (autoReloadConfig?.thresholdAmount ?? 10) ||
+      Number(reloadAmount) !== (autoReloadConfig?.reloadAmount ?? 50)
+    )
+  );
+
   const [planPending, startPlanTransition] = useTransition();
   const [planError, setPlanError] = useState<string | null>(null);
 
@@ -297,10 +318,14 @@ export function BillingSettings({
               <Switch
                 checked={autoReloadEnabled}
                 onCheckedChange={(checked) => setAutoReloadEnabled(checked)}
-                disabled={!canManageBilling}
+                disabled={!canManageBilling || autoReloadPending}
                 aria-label="Enable auto-reload"
               />
             </div>
+            <p className="text-xs text-muted-foreground" role="status">
+              Saved setting: {autoReloadStatus === "on" ? "On" : autoReloadStatus === "paused" ? "Paused" : "Off"}.
+              {autoReloadDirty && " Changes not saved. Select Save Auto-Reload to apply them."}
+            </p>
             <input type="hidden" name="enabled" value={String(autoReloadEnabled)} />
             {!autoReloadEnabled && (
               <>
@@ -336,7 +361,7 @@ export function BillingSettings({
                       step={1}
                       value={thresholdAmount}
                       onChange={(event) => setThresholdAmount(event.target.value)}
-                      disabled={!canManageBilling}
+                      disabled={!canManageBilling || autoReloadPending}
                       className="pl-7"
                     />
                   </div>
@@ -356,7 +381,7 @@ export function BillingSettings({
                       step={1}
                       value={reloadAmount}
                       onChange={(event) => setReloadAmount(event.target.value)}
-                      disabled={!canManageBilling}
+                      disabled={!canManageBilling || autoReloadPending}
                       className="pl-7"
                     />
                   </div>
@@ -374,7 +399,7 @@ export function BillingSettings({
                 {autoReloadState.error}
               </p>
             )}
-            {autoReloadState.success && !autoReloadCardNotice && (
+            {autoReloadState.success && !autoReloadCardNotice && !autoReloadDirty && (
               <p className="text-sm text-green-600">Auto-reload updated.</p>
             )}
 

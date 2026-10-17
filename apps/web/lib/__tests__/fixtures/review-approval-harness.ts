@@ -1,3 +1,4 @@
+import "./review-outcome-stub";
 import { mock } from "bun:test";
 import assert from "node:assert/strict";
 import type { AiCreateParams } from "@/lib/providers";
@@ -44,7 +45,7 @@ const pr = {
   headSha: "a".repeat(40), reviewRequestVersion: 2, status: "pending", reviewBody: null as string | null, reviewCoverage: null,
   firstReviewCompletedAt: null as Date | null, claimToken: null as string | null,
 };
-mock.module("@octopus/db", () => ({ prisma: {
+const db = {
   reviewAttempt: { findFirst: async () => (prior ? { coverage: prior } : null) },
   repository: { findUnique: async () => repo, updateMany: async () => ({ count: 1 }), update: async () => repo },
   systemConfig: { findUnique: async () => null },
@@ -56,7 +57,8 @@ mock.module("@octopus/db", () => ({ prisma: {
       return { count: 1 };
     },
   },
-} }));
+};
+mock.module("@octopus/db", () => ({ prisma: { ...db, $transaction: async (run: (tx: typeof db) => Promise<unknown>) => run(db) } }));
 mock.module("@/lib/embeddings", () => ({ createEmbeddings: async (texts: string[]) => texts.map(() => [1, 0, 0]) }));
 mock.module("@/lib/qdrant", () => ({
   searchSimilarChunks: async () => [], searchKnowledgeChunks: async () => [], searchReviewChunks: async () => [],

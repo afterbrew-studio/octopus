@@ -1,3 +1,5 @@
+import "server-only";
+import { findPendingInvitation } from "@/lib/creation-provenance";
 import { headers, cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
@@ -87,14 +89,7 @@ export default async function AppLayout({
 
   if (!hasOrg) {
     // Check for pending invitation first
-    const pendingInvitation = await prisma.organizationInvitation.findFirst({
-      where: {
-        email: session.user.email,
-        status: "pending",
-        expiresAt: { gt: new Date() },
-      },
-      select: { token: true },
-    });
+    const pendingInvitation = await findPendingInvitation(session.user.email);
 
     if (pendingInvitation) {
       redirect(`/invitation/${pendingInvitation.token}`);

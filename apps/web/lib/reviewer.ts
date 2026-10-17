@@ -1,7 +1,10 @@
 import "server-only";
+import { ReviewOutcomeRecorder, startReviewOutcome, deferReviewOutcome } from "@/lib/review-attempt-outcome";
+import { runRepositoryIndex, SupersededIndexError } from "@/lib/repository-index-completion";
 import crypto from "node:crypto";
 import { prisma, type Prisma } from "@octopus/db";
 import { pubby } from "@/lib/pubby";
+import { notifyRepositoryIndex } from "@/lib/repository-index-notifications";
 import {
   searchSimilarChunks,
   searchKnowledgeChunks,
@@ -841,10 +844,14 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
     // this run's own request: another execution of it is live, and finalizing the
     // run here would end that one too.
     const current = await prisma.pullRequest.findUnique({ where: { id: pullRequestId }, select: { headSha: true, reviewRequestVersion: true } });
-    if (current && current.headSha === pr.headSha && current.reviewRequestVersion === pr.reviewRequestVersion) return "lost";
+    if (current && current.headSha === pr.headSha && current.reviewRequestVersion === pr.reviewRequestVersion) {
+      outcomeHandedOff = true;
+      return "lost";
+    }
     if (reviewRunId) {
       await finalizeAttempt(reviewRunId, "superseded", "pull request moved before repository preparation could defer this run");
     }
+    outcomeRecord.superseded();
     return "superseded";
   };
 
@@ -877,23 +884,29 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
   // snapshot and this run would review someone else's request.
   const claimHeadSha = reviewRun ? (reviewRun.headSha ?? pr.headSha) : pr.headSha;
   const claimReviewRequestVersion = reviewRun ? (reviewRun.reviewRequestVersion ?? pr.reviewRequestVersion) : pr.reviewRequestVersion;
-  const claimed = await prisma.pullRequest.updateMany({
-    where: {
-      id: pullRequestId,
-      headSha: claimHeadSha,
-      reviewRequestVersion: claimReviewRequestVersion,
-      OR: [
-        // Fresh-claim: never seen / explicitly retryable
-        { status: "pending" },
-        { status: "failed" },
-        // Locked-claim: in-flight reviews block re-claim until their stale window passes.
-        // This prevents webhook retries from double-processing a PR that's still being
-        // reviewed (or whose internal-cli clone+claude is still running).
-        { status: "reviewing", updatedAt: { lt: reviewingStale } },
-        { status: "queued", updatedAt: { lt: queuedStale } },
-      ],
-    },
-    data: { status: "reviewing", updatedAt: new Date(), claimToken },
+  const outcomeKey = { organizationId: pr.repository.organization.id, repositoryId: pr.repository.id,
+    pullRequestId: pr.id, requestVersion: claimReviewRequestVersion };
+  const claimed = await prisma.$transaction(async tx => {
+    const claimed = await tx.pullRequest.updateMany({
+      where: {
+        id: pullRequestId,
+        headSha: claimHeadSha,
+        reviewRequestVersion: claimReviewRequestVersion,
+        OR: [
+          // Fresh-claim: never seen / explicitly retryable
+          { status: "pending" },
+          { status: "failed" },
+          // Locked-claim: in-flight reviews block re-claim until their stale window passes.
+          // This prevents webhook retries from double-processing a PR that's still being
+          // reviewed (or whose internal-cli clone+claude is still running).
+          { status: "reviewing", updatedAt: { lt: reviewingStale } },
+          { status: "queued", updatedAt: { lt: queuedStale } },
+        ],
+      },
+      data: { status: "reviewing", updatedAt: new Date(), claimToken },
+    });
+    if (claimed.count) await startReviewOutcome(outcomeKey, new Date(), tx);
+    return claimed;
   });
   if (claimed.count === 0) {
     // A bound run's claim just missed. That is either a genuinely in-flight
@@ -927,6 +940,12 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
   let adaptiveProcessingWindow: ReviewExecutionWindow | undefined;
   let attemptCoverage: ReviewCoverage | undefined;
   let attemptSaved = false;
+  const outcomeRecord = new ReviewOutcomeRecorder(outcomeKey);
+  let recordReviewMain = false;
+  let outcomeDeferred = false;
+  let outcomeHandedOff = false;
+  let outcomeArchiveId: string | null = null;
+  try {
 
   // 3-tier config: system defaults -> org defaults -> repo overrides
   // The frozen decision, if this job carries one -- already loaded above,
@@ -994,16 +1013,19 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
   };
 
   const attemptLabel = (id = attemptId) => `Review attempt: ${id}. Head: ${pr.headSha ?? "unknown"}.\n\n`;
-  const providerCreateComment = (prNumber: number, body: string, publishedAttemptId = attemptId, publicationWindow?: ReviewExecutionWindow) =>
-    isGitHub
+  const providerCreateComment = async (prNumber: number, body: string, publishedAttemptId = attemptId, publicationWindow?: ReviewExecutionWindow) => {
+    const id = await (isGitHub
       ? ghCreatePullRequestComment(installationId!, owner, repoName, prNumber, attemptLabel(publishedAttemptId) + body)
       : usesProjectApi
         ? projectProvider.createPullRequestComment(org.id, projectPath, prNumber, attemptLabel(publishedAttemptId) + body, publicationWindow)
-        : bitbucket.createPullRequestComment(org.id, owner, repoName, prNumber, attemptLabel(publishedAttemptId) + body, publicationWindow);
+        : bitbucket.createPullRequestComment(org.id, owner, repoName, prNumber, attemptLabel(publishedAttemptId) + body, publicationWindow));
+    if (recordReviewMain) outcomeRecord.mainPosted();
+    return id;
+  };
 
   const publishMainComment = (body: string, expectedReviewBody?: string, publishedAttemptId = attemptId, publicationWindow?: ReviewExecutionWindow) => isGitHub
     ? publishReviewSummary({ pullRequestId: pr.id, headSha: pr.headSha, reviewRequestVersion: pr.reviewRequestVersion,
-      installationId: installationId!, owner, repo: repoName, prNumber: pr.number, body: attemptLabel(publishedAttemptId) + body, expectedReviewBody, executionWindow: publicationWindow, claim })
+      installationId: installationId!, owner, repo: repoName, prNumber: pr.number, body: attemptLabel(publishedAttemptId) + body, expectedReviewBody, executionWindow: publicationWindow, claim, onPosted: () => { if (recordReviewMain) outcomeRecord.mainPosted(); } })
     : createReviewAttemptComment(pr.id, pr.headSha, pr.reviewRequestVersion, () => providerCreateComment(pr.number, body, publishedAttemptId, publicationWindow), undefined, claim);
 
   const providerUpdateComment = async (commentId: number, body: string, publishedAttemptId = attemptId, publicationWindow?: ReviewExecutionWindow) => {
@@ -1017,6 +1039,7 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
       } else {
         await bitbucket.updatePullRequestComment(org.id, owner, repoName, pr.number, commentId, attemptLabel(publishedAttemptId) + body, publicationWindow);
       }
+      if (recordReviewMain) outcomeRecord.mainPosted();
     } catch (err) {
       // If the comment was deleted externally, create a new one and update the reference
       if (err instanceof Error && err.message.includes("404")) {
@@ -1055,7 +1078,10 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
         try {
           await writeUnderClaim(claim, { status: "failed", errorMessage: reason });
         } catch (err) {
-          if (err instanceof ClaimLostError) return "lost";
+          if (err instanceof ClaimLostError) {
+            outcomeHandedOff = true;
+            return "lost";
+          }
           throw err;
         }
         if (reviewRunId) await finalizeAttempt(reviewRunId, "cancelled", reason);
@@ -1067,7 +1093,10 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
       const held = await deferReviewForRepository(pullRequestId, pr.headSha, pr.reviewRequestVersion, reviewRunId, claim, {
         delaySeconds: holdDelaySeconds(attempt), runState: HELD_STATE, hold, payload: { holdToken: hold.token, holdAttempt: hold.attempt },
       });
-      if (held) return "deferred";
+      if (held) {
+        outcomeDeferred = true;
+        return "deferred";
+      }
       return finalizeSupersededDefer();
     }
   }
@@ -1203,9 +1232,10 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
 
       // Atomic claim: only one process can transition to "indexing" at a time.
       // If another process is already indexing, wait for it to finish instead of starting a parallel index.
+      const indexAttemptId = crypto.randomUUID();
       const claimResult = await prisma.repository.updateMany({
         where: { id: repo.id, indexStatus: { notIn: ["indexed", "indexing"] } },
-        data: { indexStatus: "indexing" },
+        data: { indexStatus: "indexing", indexAttemptId },
       });
       let shouldRunIndexing = claimResult.count > 0;
 
@@ -1234,13 +1264,16 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
               "> 🐙 **Octopus Review** — Repository indexing is in progress.\n>\n> This review has been re-queued and will start automatically once indexing completes.",
             );
           }
-          if (await deferReviewForRepository(pullRequestId, pr.headSha, pr.reviewRequestVersion, reviewRunId, claim)) return "deferred";
+          if (await deferReviewForRepository(pullRequestId, pr.headSha, pr.reviewRequestVersion, reviewRunId, claim)) {
+            outcomeDeferred = true;
+            return "deferred";
+          }
           return finalizeSupersededDefer();
         } else {
           // Peer failed -- attempt conditional reclaim
           const reclaimed = await prisma.repository.updateMany({
             where: { id: repo.id, indexStatus: { notIn: ["indexed", "indexing"] } },
-            data: { indexStatus: "indexing" },
+            data: { indexStatus: "indexing", indexAttemptId },
           });
           let finalCheckStatus: string | null = null;
           if (reclaimed.count === 0) {
@@ -1276,21 +1309,7 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
 
       // ── Run indexing (only if we hold the claim) ──
       if (shouldRunIndexing) {
-        if (reviewCommentId) {
-          await providerUpdateComment(
-            reviewCommentId,
-            "> 🐙 **Octopus Review** — This repository hasn't been indexed yet.\n>\n> Indexing in progress... this may take a few minutes. (Step 1/3)",
-          );
-        }
-
         const indexChannel = `presence-org-${org.id}`;
-        await deleteSyncLogs(org.id, repo.id);
-
-        pubby.trigger(indexChannel, "index-status", {
-          repoId: repo.id,
-          status: "indexing",
-        }).catch((err) => console.error("[reviewer] Pubby index-status trigger failed:", err));
-
         const emitIndexLog = (message: string, level: LogLevel = "info") => {
           const timestamp = Date.now();
           pubby.trigger(indexChannel, "index-log", {
@@ -1308,40 +1327,38 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
           });
         };
 
-        const indexStats = await indexRepository(
-          repo.id,
-          repo.fullName,
-          repo.defaultBranch,
-          installationId ?? 0,
-          emitIndexLog,
-          undefined,
-          repo.provider,
-          repo.organizationId,
-        );
+        const indexStats = await runRepositoryIndex(repo.id, indexAttemptId, async () => {
+          if (reviewCommentId) {
+            await providerUpdateComment(
+              reviewCommentId,
+              "> 🐙 **Octopus Review** — This repository hasn't been indexed yet.\n>\n> Indexing in progress... this may take a few minutes. (Step 1/3)",
+            );
+          }
 
-        await prisma.repository.update({
-          where: { id: repo.id },
-          data: {
-            indexStatus: "indexed",
-            analysisStatus: "none",
-            indexedAt: new Date(),
-            indexedFiles: indexStats.indexedFiles,
-            totalFiles: indexStats.totalFiles,
-            totalChunks: indexStats.totalChunks,
-            totalVectors: indexStats.totalVectors,
-            indexDurationMs: indexStats.durationMs,
-            contributorCount: indexStats.contributorCount,
-            contributors: JSON.parse(JSON.stringify(indexStats.contributors)),
-            ...(indexStats.resolvedDefaultBranch ? { defaultBranch: indexStats.resolvedDefaultBranch } : {}),
-          },
+          await deleteSyncLogs(org.id, repo.id);
+
+          void notifyRepositoryIndex(indexChannel, repo.id);
+
+          return indexRepository(
+            { repoId: repo.id, indexAttemptId }, repo.fullName, repo.defaultBranch, installationId ?? 0,
+            emitIndexLog, undefined, repo.provider, repo.organizationId,
+          );
+        }).catch(async error => {
+          if (!(error instanceof SupersededIndexError)) {
+            void notifyRepositoryIndex(indexChannel, repo.id);
+          }
+          throw error;
         });
+
+        const current = await prisma.repository.updateMany({
+          where: { id: repo.id, indexStatus: "indexed", indexAttemptId },
+          data: { analysisStatus: "none" },
+        });
+        if (!current.count) throw new SupersededIndexError();
 
         emitIndexLog(`Indexing complete: ${indexStats.indexedFiles} files, ${indexStats.totalVectors} vectors`, "success");
 
-        pubby.trigger(indexChannel, "index-status", {
-          repoId: repo.id,
-          status: "indexed",
-        }).catch((err) => console.error("[reviewer] Pubby index-status trigger failed:", err));
+        void notifyRepositoryIndex(indexChannel, repo.id);
 
         console.log(`[reviewer] Indexing complete: ${indexStats.indexedFiles} files, ${indexStats.totalVectors} vectors`);
 
@@ -1437,7 +1454,10 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
         );
         // Same deferral as repository preparation: parked at `pending` so the
         // retry's claim can take it, run kept alive by the "deferred" outcome.
-        if (await deferReviewForRepository(pullRequestId, pr.headSha, pr.reviewRequestVersion, reviewRunId, claim)) return "deferred";
+        if (await deferReviewForRepository(pullRequestId, pr.headSha, pr.reviewRequestVersion, reviewRunId, claim)) {
+          outcomeDeferred = true;
+          return "deferred";
+        }
         return finalizeSupersededDefer();
       }
     }
@@ -1457,7 +1477,10 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
           "> 🐙 **Octopus Review** — Repository indexing or analysis is in progress.\n>\n> This review will retry automatically once repository preparation completes.",
         );
       }
-      if (await deferReviewForRepository(pullRequestId, pr.headSha, pr.reviewRequestVersion, reviewRunId, claim)) return "deferred";
+      if (await deferReviewForRepository(pullRequestId, pr.headSha, pr.reviewRequestVersion, reviewRunId, claim)) {
+        outcomeDeferred = true;
+        return "deferred";
+      }
       return finalizeSupersededDefer();
     }
     if (isForgejoConnector) {
@@ -1515,6 +1538,7 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
         // enqueue throws we fall through to the outer catch which marks the
         // PR failed; if the post-update fails we still have a job that will
         // drive the PR to "completed"/"failed" via post-large-review-result.
+        outcomeHandedOff = true;
         await enqueue("process-large-review", {
           pullRequestId: pr.id,
           // Carried so internal-cli can echo it back with the result. It is not in
@@ -1630,9 +1654,17 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
       const body = applyReviewCoverage("No changed text hunks were supplied for review.", coverage, attemptId);
       await saveReviewAttempt(attemptId, pr.id, coverage, body, [], claim);
       attemptSaved = true;
-      if (isGitHub) reviewCommentId = await publishMainComment(body, body);
-      else if (reviewCommentId) await providerUpdateComment(reviewCommentId, body);
-      else await publishMainComment(body);
+      outcomeArchiveId = attemptId;
+      outcomeRecord.assessment(coverage, attemptId);
+      recordReviewMain = true;
+      try {
+        await outcomeRecord.publish(async () => {
+          if (isGitHub) reviewCommentId = await publishMainComment(body, body);
+          else if (reviewCommentId) await providerUpdateComment(reviewCommentId, body);
+          else return await publishMainComment(body);
+          return reviewCommentId;
+        });
+      } finally { recordReviewMain = false; }
       const result = reviewCheckResult(coverage, false, 0);
       if (checkRunId && isGitHub && installationId) {
         await ghUpdateCheckRun(installationId, owner, repoName, checkRunId, result.conclusion, { title: result.title, summary: result.summary });
@@ -2606,6 +2638,7 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
         console.log(
           `[reviewer] PR ${pr.id} was re-claimed while this worker was running; not publishing`,
         );
+        outcomeHandedOff = true;
         return;
       }
       const callMs = publicationCallTimeoutMs(computeStaleReclaimMs(queueConfig.reviewTimeoutSeconds));
@@ -2670,6 +2703,7 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
         try {
           assertProcessingActive();
           const reviewId = await submitReview(summaryLine, dedupedComments);
+          if (reviewId !== null && dedupedComments.length > 0) outcomeRecord.inlinePosted();
           inlineReviewSucceeded = true;
           console.log(`[reviewer] PR review submitted with ${dedupedComments.length} inline comments, ${nonInlineWithUnmappable.length} in summary (${reviewEvent}), reviewId: ${reviewId ?? "unresolved"}`);
 
@@ -2769,6 +2803,7 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
               comment.path, comment.line, comment.body,
             );
           }
+          outcomeRecord.inlinePosted();
         } catch (err) {
           console.error(`[reviewer] Failed to post inline comment on ${comment.path}:${comment.line}:`, err);
           failedInlineComments.push(comment);
@@ -2871,16 +2906,24 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
 
     // The final scored comment becomes visible only after its immutable outcome is durable.
     assertProcessingActive();
-    if (isGitHub) {
-      reviewCommentId = await publishMainComment(mainCommentBody, effectiveReviewBody, attemptId, completeReviewAdmission?.window);
-    } else if (reviewCommentId) {
-      await providerUpdateComment(reviewCommentId, mainCommentBody, attemptId, completeReviewAdmission?.window);
-      console.log(`[reviewer] Placeholder comment updated — commentId: ${reviewCommentId}`);
-    } else {
-      const newCommentId = await publishMainComment(mainCommentBody, undefined, attemptId, completeReviewAdmission?.window);
-      reviewCommentId = newCommentId;
-      console.log(`[reviewer] New review comment created — commentId: ${newCommentId}`);
-    }
+    outcomeArchiveId = attemptId;
+    outcomeRecord.assessment(coverage, attemptId);
+    recordReviewMain = true;
+    try {
+      await outcomeRecord.publish(async () => {
+        if (isGitHub) {
+          reviewCommentId = await publishMainComment(mainCommentBody, effectiveReviewBody, attemptId, completeReviewAdmission?.window);
+        } else if (reviewCommentId) {
+          await providerUpdateComment(reviewCommentId, mainCommentBody, attemptId, completeReviewAdmission?.window);
+          console.log(`[reviewer] Placeholder comment updated — commentId: ${reviewCommentId}`);
+        } else {
+          const newCommentId = await publishMainComment(mainCommentBody, undefined, attemptId, completeReviewAdmission?.window);
+          reviewCommentId = newCommentId;
+          console.log(`[reviewer] New review comment created — commentId: ${newCommentId}`);
+        }
+        return reviewCommentId;
+      });
+    } finally { recordReviewMain = false; }
 
     if (promoted && mergedIssues.length > 0) {
       console.log(
@@ -3040,6 +3083,7 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
     // Not a review failure: the pull request is already parked for a retry that
     // could not be scheduled, and recording a failure here would end the run.
     if (err instanceof DeferralEnqueueError) {
+      outcomeDeferred = true;
       console.error(`[reviewer] PR ${pr.id} deferred but its retry was not scheduled:`, err);
       throw err;
     }
@@ -3047,12 +3091,14 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
       && (adaptiveProcessingWindow.signal.aborted || adaptiveProcessingWindow.remainingMs() <= 0)) {
       err = new ReviewProcessingExpiredError();
     }
+    outcomeHandedOff = false;
     const errorMessage =
       err instanceof Error ? err.message : "Unknown error";
     // Losing the claim ends this worker's part: the row and everything published
     // for it now belong to whoever holds it, so nothing more is written or sent.
     if (err instanceof ClaimLostError) {
       console.log(`[reviewer] PR ${pr.id} was re-claimed; stopping without publishing`);
+      outcomeHandedOff = true;
       return;
     }
     console.error(`[reviewer] Review failed for PR #${pr.number}:`, err);
@@ -3081,13 +3127,18 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
     if (failureBody && attemptCoverage) {
       try {
         await saveReviewAttempt(failureAttemptId, pr.id, attemptCoverage, failureBody, undefined, claim);
+        outcomeArchiveId = failureAttemptId;
       } catch (e) {
         if (!(e instanceof ClaimLostError)) console.error("[reviewer] Failed to archive interrupted assessment:", e);
-        else return;
+        else {
+          outcomeHandedOff = true;
+          return;
+        }
       }
     }
     if (!ownsClaim) {
       console.log(`[reviewer] PR ${pr.id} was re-claimed; not publishing or recording this worker's failure`);
+      outcomeHandedOff = true;
       return;
     }
 
@@ -3124,23 +3175,12 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
         .catch((e) => console.error("[reviewer] Failed to set provider failed status:", e));
     }
 
-    // If indexing was in progress, mark it as failed (check current DB state, not stale in-memory value)
-    const repoStatusNow = await prisma.repository.findUnique({ where: { id: repo.id }, select: { indexStatus: true } }).catch(() => null);
-    if (repoStatusNow?.indexStatus === "indexing") {
-      await prisma.repository.update({
-        where: { id: repo.id },
-        data: { indexStatus: "failed" },
-      }).catch((e) => console.error("[reviewer] Failed to update repo index status:", e));
-
-      pubby.trigger(`presence-org-${org.id}`, "index-status", {
-        repoId: repo.id,
-        status: "failed",
-      }).catch((e) => console.error("[reviewer] Pubby index-status failed trigger failed:", e));
-    }
-
     const failedUpdate = await updateUnderClaim(claim, { status: "failed", errorMessage }, WHILE_FINISHING)
       .catch((e) => { console.error("[reviewer] Failed to update PR status:", e); return false; });
-    if (!failedUpdate) return;
+    if (!failedUpdate) {
+      outcomeHandedOff = true;
+      return;
+    }
 
     await emitReviewStatus(org.id, {
       ...baseEvent,
@@ -3156,5 +3196,12 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
       prTitle: pr.title,
       error: errorMessage,
     });
+  }
+  } finally {
+    if (outcomeDeferred) await deferReviewOutcome(outcomeKey);
+    else if (!outcomeHandedOff) {
+      outcomeRecord.assessment(attemptCoverage, outcomeArchiveId);
+      await outcomeRecord.finish(new Date());
+    }
   }
 }

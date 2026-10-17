@@ -275,7 +275,7 @@ export async function getRepositoryTree(organizationId: string, fullName: string
   throw new Error("Forgejo repository tree could not be fetched completely");
 }
 
-export async function getFileContent(organizationId: string, fullName: string, branch: string, filePath: string): Promise<string> {
+export async function getFileContent(organizationId: string, fullName: string, branch: string, filePath: string, options: { strict?: boolean } = {}): Promise<string> {
   if (filePath.split("/").some(part => !part || part === "." || part === "..") || /[\\\x00-\x1f]/.test(filePath)) throw new Error("Invalid Forgejo file path");
   const auth = await credentials(organizationId);
   try {
@@ -287,7 +287,7 @@ export async function getFileContent(organizationId: string, fullName: string, b
     }
     return Buffer.from(result.content, "base64").toString("utf8");
   } catch (error) {
-    if (error instanceof ForgejoHttpError && error.status === 404) return "";
+    if (error instanceof ForgejoHttpError && error.status === 404 && !options.strict) return "";
     throw error;
   }
 }

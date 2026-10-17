@@ -201,6 +201,33 @@ await assert.rejects(api.getFileContent("org-fixture", "team/repo", head, "../ou
 replies = [{ body: [{ id: 1, name: "repo", full_name: "team/repo" }] }, { body: [] }];
 assert.equal((await api.listUserRepos("org-fixture")).length, 1);
 assert.equal(replies.length, 0);
+for (const strict of [false, true]) {
+  replies = [{ body: { type: "file", encoding: "base64", content: "" } }];
+  assert.equal(await api.getFileContent("org-fixture", "team/repo", head, "empty.ts", { strict }), "");
+  replies = [{ status: 404, body: { message: "Not Found" } }];
+  const missing = api.getFileContent("org-fixture", "team/repo", head, "missing.ts", { strict });
+  if (strict) await assert.rejects(missing, error => error instanceof http.ForgejoHttpError && error.status === 404);
+  else assert.equal(await missing, "");
+}
+let vectorWrites = 0;
+mock.module("@/lib/qdrant", () => ({
+  ensureCollection: async () => {},
+  upsertChunks: async () => { vectorWrites++; }, deleteRepoFileChunks: async () => {},
+}));
+mock.module("@/lib/embeddings", () => ({ createEmbeddings: async (texts: string[]) => texts.map(() => [0.1]) }));
+const { indexRepository } = await import("@/lib/indexer");
+for (const missingPath of ["missing.ts", ".octopusignore"]) {
+  const paths = missingPath === ".octopusignore" ? [".octopusignore", "good.ts"] : ["good.ts", "missing.ts"];
+  replies = [
+    { body: { commit: { id: head } } },
+    { body: { tree: paths.map(path => ({ path, type: "blob" })), total_count: paths.length, truncated: false } },
+    ...(missingPath === "missing.ts" ? [{ body: { type: "file", encoding: "base64", content: Buffer.from("export const good = 1;").toString("base64") } }] : []),
+    { status: 404, body: { message: "Not Found" } },
+  ];
+  await assert.rejects(() => indexRepository({ repoId: "repo-fixture", indexAttemptId: "attempt-fixture" }, "team/repo", "main", 0, undefined, undefined, "forgejo", "org-fixture"), http.ForgejoHttpError);
+  assert.equal(replies.length, 0);
+  assert.equal(vectorWrites, 0);
+}
 if (previousRuntimeSelfHosted === undefined) delete process.env.OCTOPUS_SELF_HOSTED;
 else process.env.OCTOPUS_SELF_HOSTED = previousRuntimeSelfHosted;
 console.log("Forgejo transport and adapter checks passed");

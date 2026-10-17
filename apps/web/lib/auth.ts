@@ -1,4 +1,5 @@
 import "server-only";
+import { userCreationProvenance } from "./creation-provenance";
 import { signupMarketingVisit } from "./marketing-capture";
 import { betterAuth } from "better-auth";
 import { APIError, getIp } from "better-auth/api";
@@ -91,6 +92,8 @@ export const auth = betterAuth({
     : {}),
   user: {
     additionalFields: {
+      arrivalSource: { type: "string", required: false, input: false, returned: false },
+      signupMethod: { type: "string", required: false, input: false, returned: false },
       marketingVisitId: { type: "string", required: false, input: false, returned: false },
       // Declared so the adapter persists the signupIp the user.create.before
       // hook stamps (transformInput drops fields not in the schema). Never
@@ -221,6 +224,7 @@ export const auth = betterAuth({
           return {
             data: {
               ...user,
+              ...await userCreationProvenance(normalizedEmail, ctx),
               email: normalizedEmail,
               marketingVisitId: await signupMarketingVisit(requestHeaders ? new Headers(requestHeaders).get("cookie") : null),
               ...(ip ? { signupIp: ip } : {}),
