@@ -23,12 +23,15 @@ mock.module("@/lib/presence", () => ({ clearPresence() {} }));
 mock.module("@/lib/events/bus", () => ({ eventBus: { emit() {} } }));
 let starts = 0;
 let aborts = 0;
-mock.module("@/lib/indexing-abort", () => ({ createAbortController: () => new AbortController(), abortIndexing: () => { aborts++; return true; } }));
+let replaceBeforeCancel = false;
+let abortedAttempt: string | undefined;
+mock.module("@/lib/indexing-abort", () => ({ createAbortController: () => new AbortController(), abortIndexing: (attempt: string) => { aborts++; abortedAttempt = attempt; return true; } }));
 mock.module("@/lib/indexing-runner", () => ({ runIndexingInBackground: async () => { starts++; } }));
 
 const row = {
   id: "repo", fullName: "team/project", provider: "github", isActive: true, dismissedAt: null as Date | null,
   defaultBranch: "main", installationId: 1 as number | null, indexStatus: "pending", indexedAt: null as Date | null,
+  indexAttemptId: null as string | null,
   updatedAt: new Date(), organizationId: "org", autoReview: true,
   organization: { githubInstallationId: 1 as number | null, members: [{ role: "owner", scopes: [] as string[] }] },
 };
@@ -38,7 +41,16 @@ let connectorReady = true;
 const writes: Record<string, unknown>[] = [];
 mock.module("@octopus/db", () => ({ prisma: {
   repository: {
-    findUnique: async () => exists ? row : null,
+    findUnique: async () => exists ? { ...row } : null,
+    updateMany: async ({ where, data }: { where: { indexStatus: string; indexAttemptId?: string | null; updatedAt?: Date }; data: Record<string, unknown> }) => {
+      if (replaceBeforeCancel && data.indexStatus === "pending") {
+        replaceBeforeCancel = false;
+        row.indexAttemptId = "replacement";
+      }
+      if (where.indexStatus !== row.indexStatus || (where.indexAttemptId !== undefined && where.indexAttemptId !== row.indexAttemptId)
+        || (where.updatedAt && where.updatedAt.getTime() !== row.updatedAt.getTime())) return { count: 0 };
+      writes.push(data); Object.assign(row, data); return { count: 1 };
+    },
     update: async ({ data }: { data: Record<string, unknown> }) => { writes.push(data); Object.assign(row, data); return row; },
   },
   bitbucketIntegration: { findUnique: async () => connected ? { id: "connection" } : null },
@@ -96,8 +108,18 @@ assert.deepEqual(await indexRepository("repo"), {});
 assert.equal(starts, 1);
 assert.equal(row.autoReview, false, "manual indexing must preserve disabled automatic reviews");
 assert.equal(row.indexStatus, "indexing");
+const attempt = row.indexAttemptId;
+assert.ok(attempt);
 assert.deepEqual(await cancelIndexing("repo"), {});
+assert.equal(abortedAttempt, attempt);
+assert.equal(row.indexStatus, "pending");
 assert.equal(aborts, 1);
+row.indexStatus = "indexing";
+replaceBeforeCancel = true;
+assert.match((await cancelIndexing("repo")).error!, /no longer current/);
+assert.equal(aborts, 1);
+assert.equal(row.indexStatus, "indexing");
+assert.equal(row.indexAttemptId, "replacement");
 row.indexStatus = "indexed";
 assert.match((await cancelIndexing("repo")).error!, /not currently indexing/);
 console.log("Repository action permission, readiness, cooldown, toggle and indexing checks passed");

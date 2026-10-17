@@ -1,5 +1,6 @@
 import "server-only";
 import crypto from "node:crypto";
+import { recordReviewAdmissionAfterCommit } from "./review-attempt-outcome";
 import { prisma, Prisma, type PullRequest } from "@octopus/db";
 import * as github from "@/lib/github";
 import * as bitbucket from "@/lib/bitbucket";
@@ -112,9 +113,13 @@ export async function admitReviewRequest(
   client: Prisma.TransactionClient = prisma,
   createRun: CreateRunForAdmission,
 ): Promise<AdmissionResult> {
-  return params.provider === "forgejo"
+  const admission = await (params.provider === "forgejo"
     ? forgejo.runWithForgejoRepository(params.repoId, () => admitReviewRequestInternal(params, client, createRun))
-    : admitReviewRequestInternal(params, client, createRun);
+    : admitReviewRequestInternal(params, client, createRun));
+  if (admission.started && client === prisma) {
+    recordReviewAdmissionAfterCommit(admission.pullRequest.id, admission.pullRequest.reviewRequestVersion);
+  }
+  return admission;
 }
 
 async function admitReviewRequestInternal(params: ReviewRequestParams, client: Prisma.TransactionClient, createRun: CreateRunForAdmission): Promise<AdmissionResult> {

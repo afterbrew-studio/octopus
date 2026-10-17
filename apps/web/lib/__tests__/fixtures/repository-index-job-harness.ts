@@ -5,12 +5,26 @@ mock.module("server-only", () => ({}));
 const row = {
   id: "repo-1", provider: "github", organizationId: "org-1", fullName: "acme/new", defaultBranch: "main",
   installationId: 123, indexStatus: "pending", totalFiles: 0,
+  indexAttemptId: null as string | null, indexedAt: null as Date | null, firstIndexedAt: null as Date | null,
   organization: { githubInstallationId: 123 as number | null },
 };
 let currentRow: typeof row | null = row;
 let claimCount = 1;
 let indexFailure: Error | null = null;
 let cancelled = false;
+let timedOut = false;
+let timeoutCallback: (() => void) | undefined;
+const realSetTimeout = globalThis.setTimeout;
+globalThis.setTimeout = ((callback: () => void, ms?: number, ...args: unknown[]) => {
+  if (ms === 25 * 60_000) timeoutCallback = callback;
+  return realSetTimeout(callback, ms, ...args);
+}) as typeof setTimeout;
+let populated = false;
+let preparationFailure = false;
+let replaceAttempt = false;
+let transactionActive = false;
+let transactions = 0;
+const notifications: string[] = [];
 const queued: unknown[][] = [];
 const indexCalls: unknown[][] = [];
 const writes: Array<{ data: Record<string, unknown> }> = [];
@@ -24,27 +38,56 @@ mock.module("@/lib/indexing-abort", () => ({
   createAbortController: () => { controller = new AbortController(); return controller; },
   clearAbortController: () => {},
 }));
-mock.module("@octopus/db", () => ({
-  prisma: {
-    repository: {
-      findMany: async (args: { where: Record<string, unknown> }) => { queries.push(args); return [{ id: "repo-1" }]; },
-      findFirst: async (args: { where: Record<string, unknown> }) => { queries.push(args); return currentRow; },
-      updateMany: async (args: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
-        claims.push(args); return { count: claimCount };
-      },
-      update: async (args: { data: Record<string, unknown> }) => { writes.push(args); return {}; },
-    },
+const update = async (args: { where: { id?: string; indexStatus?: string; indexAttemptId?: string; OR?: unknown[] }; data: Record<string, unknown> }) => {
+  (transactionActive ? writes : claims).push(args);
+  if (!claimCount || !currentRow || (args.where.id && args.where.id !== currentRow.id)
+    || (typeof args.where.indexStatus === "string" && args.where.indexStatus !== currentRow.indexStatus)
+    || (args.where.indexAttemptId !== undefined && args.where.indexAttemptId !== currentRow.indexAttemptId)) return { count: 0 };
+  if (args.where.OR && !(["pending", "failed"].includes(currentRow.indexStatus) || (currentRow.indexStatus === "indexed" && currentRow.totalFiles === 0))) return { count: 0 };
+  Object.assign(currentRow, args.data);
+  return { count: 1 };
+};
+const db = {
+  $executeRaw: async (_strings: TemplateStringsArray, completedAt: Date) => {
+    assert.ok(transactionActive);
+    assert.ok(currentRow);
+    if (!currentRow.indexedAt) currentRow.firstIndexedAt = completedAt;
+    currentRow.indexedAt = completedAt;
+    return 1;
   },
-}));
-mock.module("@/lib/pubby", () => ({ pubby: { trigger: async () => {} } }));
-mock.module("@/lib/elasticsearch", () => ({ writeSyncLog: () => {}, deleteSyncLogs: async () => {} }));
+  $transaction: async (run: (tx: unknown) => Promise<unknown>) => {
+    const before = structuredClone(currentRow);
+    transactionActive = true;
+    transactions++;
+    try { return await run(db); }
+    catch (error) { Object.assign(currentRow!, before); throw error; }
+    finally { transactionActive = false; }
+  },
+  repository: {
+    findUniqueOrThrow: async () => ({ ...currentRow }),
+    findMany: async (args: { where: Record<string, unknown> }) => { queries.push(args); return [{ id: "repo-1" }]; },
+    findFirst: async (args: { where: Record<string, unknown> }) => { queries.push(args); return currentRow ? { ...currentRow } : null; },
+    updateMany: update,
+  },
+};
+mock.module("@octopus/db", () => ({ prisma: db }));
+mock.module("@/lib/pubby", () => ({ pubby: { trigger: async () => { notifications.push(currentRow!.indexStatus); } } }));
+mock.module("@/lib/elasticsearch", () => ({ writeSyncLog: () => {}, deleteSyncLogs: async () => {
+  assert.ok(currentRow?.indexAttemptId);
+  if (preparationFailure) throw new Error("Index setup failed");
+} }));
 mock.module("@/lib/indexer", () => ({
   indexRepository: async (...args: unknown[]) => {
     indexCalls.push(args);
-    if (cancelled) { controller.abort(); throw new Error("Indexing cancelled"); }
+    if (cancelled) { controller.abort(); throw controller.signal.reason; }
+    if (timedOut) { assert.ok(timeoutCallback); timeoutCallback(); throw controller.signal.reason; }
+    if (replaceAttempt) {
+      Object.assign(currentRow!, { indexStatus: "indexing", indexAttemptId: "replacement" });
+      throw new Error("Old worker failed after replacement");
+    }
     if (indexFailure) throw indexFailure;
     return {
-      indexedFiles: 0, totalFiles: 0, totalChunks: 0, totalVectors: 0,
+      indexedFiles: populated ? 1 : 0, totalFiles: populated ? 1 : 0, totalChunks: populated ? 1 : 0, totalVectors: populated ? 1 : 0,
       contributors: [], contributorCount: 0, durationMs: 12, resolvedDefaultBranch: "master",
     };
   },
@@ -103,9 +146,39 @@ assert.equal(indexCalls.at(-1)?.[6], "forgejo", "Forgejo jobs must not use GitHu
 cancelled = true;
 await processRepositoryIndex(job);
 assert.equal(claims.at(-1)?.data.indexStatus, "pending", "cancelled work must release its claim");
+assert.equal(notifications.at(-1), "pending");
+cancelled = false;
+timedOut = true;
+await assert.rejects(() => processRepositoryIndex(job), { name: "TimeoutError" });
+assert.equal(currentRow?.indexStatus, "failed");
+assert.equal(notifications.at(-1), "failed");
+assert.equal(currentRow?.firstIndexedAt, null);
+timedOut = false;
 const priorQueries = queries.length;
 await enqueuePendingRepositoryIndexes("org-1", undefined, ["bitbucket", "gitlab", "unrecognized"]);
 assert.equal(queries.length, priorQueries, "provider-scoped setup must not expand the indexing allowlist");
 await enqueuePendingRepositoryIndexes("org-1", undefined, ["forgejo", "bitbucket"]);
 assert.deepEqual(queries.at(-1)?.where.provider, { in: ["forgejo"] }, "a retry must not index a different provider");
+cancelled = false;
+populated = true;
+await processRepositoryIndex(job);
+assert.ok(currentRow?.firstIndexedAt);
+assert.equal(currentRow?.indexedAt, currentRow?.firstIndexedAt);
+assert.ok(transactions > 0);
+const firstDate = currentRow?.firstIndexedAt;
+preparationFailure = true;
+currentRow!.indexStatus = "pending";
+const beforeFailure = indexCalls.length;
+await assert.rejects(() => processRepositoryIndex(job), /Index setup failed/);
+assert.equal(indexCalls.length, beforeFailure);
+assert.equal(currentRow?.indexStatus, "failed");
+assert.equal(currentRow?.firstIndexedAt, firstDate);
+preparationFailure = false;
+replaceAttempt = true;
+notifications.length = 0;
+await processRepositoryIndex(job);
+assert.equal(currentRow?.indexStatus, "indexing");
+assert.equal(currentRow?.indexAttemptId, "replacement");
+assert.deepEqual(notifications, ["indexing"]);
+globalThis.setTimeout = realSetTimeout;
 console.log("Repository queue, tenant, claim, empty snapshot, failure, retry and cancellation checks passed");

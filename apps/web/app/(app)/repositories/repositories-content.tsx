@@ -2024,14 +2024,9 @@ export function RepositoriesContent({
     const pubby = getPubbyClient();
     const channel = pubby.subscribe(`presence-org-${orgId}`);
 
-    const handleIndexStatus = (raw: unknown) => {
-      const data = raw as { repoId: string; status: string };
-      const resolvedStatus = data.status === "cancelled" ? "pending" : data.status;
-      setStatuses((prev) => ({ ...prev, [data.repoId]: resolvedStatus }));
-      if (data.status === "indexed" || data.status === "cancelled") {
-        router.refresh();
-        setDetailRefreshKey((k) => k + 1);
-      }
+    const handleIndexStatus = () => {
+      router.refresh();
+      setDetailRefreshKey((k) => k + 1);
     };
 
     const handleAnalysisStatus = (raw: unknown) => {

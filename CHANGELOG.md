@@ -7,6 +7,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-10-17
+
+### Fixed
+
+- Keep the auto-reload switch aligned with saved billing settings after a refresh, while preserving unsaved drafts during card setup.
+- Show saved auto-reload status and unsaved changes clearly. Prevent editing the switch or amounts while settings are being saved.
+
+### Upgrade notes
+
+- No database migrations or billing configuration changes. Update web and review workers; existing auto-reload preferences remain unchanged.
+
+## [1.3.0] - 2026-10-16
+
+### Added
+
+- Record how new accounts and organizations were created to improve onboarding analytics. Historical or uncertain provenance stays unknown.
+- Track review attempts and distinguish published, incomplete, failed and superseded outcomes.
+
+### Fixed
+
+- Keep superseded large-review attempts from appearing as successfully completed reviews.
+- Index account and invitation lookups used during signup to avoid scanning growing tables.
+
+### Upgrade notes
+
+- Apply the three additive creation-provenance, review-outcome and lookup-index migrations before updating web and review workers. No historical records are backfilled.
+- The restricted analytics repository view can now expose the first verified index timestamp. Applying the view update and refreshing PostHog discovery remain separate operator actions; this application rollout does not change analytics schedules or access.
+- Rolling back the application image to 1.2.17 is compatible with the additive schema. Retain the new tables, columns and indexes.
+
+## [1.2.17] - 2026-10-14
+
+### Fixed
+
+- Preserve the first verified successful repository index date across later reindexing.
+- Failed, cancelled, partial and empty indexing runs no longer establish a first successful index date. Older unverified dates remain unknown.
+- Prevent superseded indexing attempts and older workers from overwriting or deleting a replacement index during deployment.
+- Keep existing CLI uploads working; clients using verified upload batches can establish the first successful index date.
+
+### Upgrade notes
+
+- Apply the three additive repository-index migrations before updating web and review workers. No historical dates are backfilled.
+- Retain existing vector data during the upgrade. Downgrading to a pre-generation release requires draining indexing work and rebuilding affected indexes; a binary downgrade alone does not restore current index coverage.
+- Existing analytics connectors, schedules and credentials stay unchanged. Exporting the new milestone into reporting views remains a separate change.
+
+## [1.2.16] - 2026-10-10
+
+### Fixed
+
+- Blog pages and search suggestions reject malformed, repeated or oversized query parameters; invalid page numbers no longer reach the database.
+- Organization member updates reject malformed or oversized JSON, and billing history pagination and repository indexing actions reject invalid arguments before database access.
+
+### Improved
+
+- Vendor console access supports explicit grants and revocation independently of organization permissions.
+- Product analytics setup includes restricted reporting views and a documented activation funnel.
+
+### Upgrade notes
+
+- Apply the two additive user-access migrations introduced since 1.2.15 before updating web and review workers. Explicit revocation overrides bootstrap console access.
+- No provider credential changes or automatic retries of earlier requests. Existing analytics connectors and schedules do not need to be recreated.
+
 ## [1.2.15] - 2026-10-06
 
 ### Fixed

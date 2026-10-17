@@ -90,6 +90,7 @@ async function main() {
   const org = await prisma.organization.create({
     data: {
       id: orgId,
+      creationSource: "demo_seed",
       name: "Acme Inc",
       slug: "acme-inc",
       githubInstallationId: 58201347,

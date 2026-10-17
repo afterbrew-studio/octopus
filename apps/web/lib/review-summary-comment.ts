@@ -7,6 +7,7 @@ import { createPullRequestComment, updatePullRequestComment, getInstallationToke
 import { assertReviewProcessingActive, reviewPublicationSignal, type ReviewExecutionWindow } from "./review-capacity";
 
 type SummaryTarget = {
+  onPosted?: () => void | Promise<void>;
   executionWindow?: ReviewExecutionWindow;
   pullRequestId: string;
   headSha: string | null;
@@ -90,6 +91,13 @@ export async function publishReviewSummary(target: SummaryTarget): Promise<numbe
             creationRejected = error instanceof Error && /^Failed to create PR comment: (400|401|403|404|410|422|429)$/.test(error.message);
             throw error;
           }
+        }
+        try {
+          void Promise.resolve(target.onPosted?.()).catch(() => {
+            console.warn("[review-summary] publication observer failed");
+          });
+        } catch {
+          console.warn("[review-summary] publication observer failed");
         }
         await tx.pullRequest.updateMany({ where: { id: target.pullRequestId }, data: { reviewCommentId: id } });
         return id;

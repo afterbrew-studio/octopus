@@ -6,33 +6,30 @@ let listenerRegistered = false;
 function ensureListener() {
   if (listenerRegistered) return;
   listenerRegistered = true;
-  onCancel("indexing", (repoId) => {
-    const c = controllers.get(repoId);
+  onCancel("indexing", (indexAttemptId) => {
+    const c = controllers.get(indexAttemptId);
     if (!c) return;
     c.abort();
-    controllers.delete(repoId);
+    controllers.delete(indexAttemptId);
   });
 }
 
-export function createAbortController(repoId: string): AbortController {
+export function createAbortController(indexAttemptId: string): AbortController {
   ensureListener();
-  const existing = controllers.get(repoId);
-  if (existing) existing.abort();
-
   const controller = new AbortController();
-  controllers.set(repoId, controller);
+  controllers.set(indexAttemptId, controller);
   return controller;
 }
 
-export function abortIndexing(repoId: string): boolean {
-  publishCancel("indexing", repoId);
-  const controller = controllers.get(repoId);
+export function abortIndexing(indexAttemptId: string): boolean {
+  publishCancel("indexing", indexAttemptId);
+  const controller = controllers.get(indexAttemptId);
   if (!controller) return false;
   controller.abort();
-  controllers.delete(repoId);
+  controllers.delete(indexAttemptId);
   return true;
 }
 
-export function clearAbortController(repoId: string) {
-  controllers.delete(repoId);
+export function clearAbortController(indexAttemptId: string) {
+  controllers.delete(indexAttemptId);
 }

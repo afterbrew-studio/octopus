@@ -15,11 +15,19 @@ model User {
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
+  arrivalSource String? // signup | invite | system; set only at creation.
+  signupMethod String? // github | magic_link | google | microsoft | password; set only at creation.
+
   onboardingCompleted Boolean @default(false)
   onboardingStep      Int     @default(0)
 
   bannedAt     DateTime?
   bannedReason String?
+
+  // Vendor console access; granted only by the separate octopus-admin app.
+  adminConsoleAccess Boolean @default(false)
+  // Explicit revocation overrides the console's bootstrap email configuration.
+  adminConsoleAccessRevoked Boolean @default(false)
 
   // Set true for seeded admin accounts (self-host first-boot) so the user is
   // forced to change the password before any other UI renders. Cleared when
@@ -107,6 +115,8 @@ model Verification {
 }
 
 model Organization {
+  creationSource String? // auto_default | user_created | community_bot | demo_seed; set only at creation.
+  creatorFirstOrganization Boolean? // All memberships, including removed ones; user-created paths only.
   id                   String   @id @default(cuid())
   name                 String
   slug                 String   @unique
@@ -236,6 +246,8 @@ model Organization {
   incidentComms         IncidentComm[]
 
   @@map("organizations")
+  reviewAttemptOutcomes ReviewAttemptOutcome[]
+
 }
 
 // One row per (incident, organization) admin communication — the idempotency
@@ -285,6 +297,7 @@ model OrganizationMember {
   emailNotificationPreferences EmailNotificationPreference[]
 
   @@unique([organizationId, userId])
+  @@index([userId])
   @@map("organization_members")
 }
 
@@ -306,6 +319,7 @@ model OrganizationInvitation {
 
   @@index([organizationId, status])
   @@index([token])
+  @@index([email, status, expiresAt])
   @@map("organization_invitations")
 }
 
@@ -323,6 +337,10 @@ model Repository {
   webhookSetupStatus Json?
   indexStatus    String   @default("pending") // pending | indexing | indexed | failed
   indexedAt      DateTime?
+  firstIndexedAt DateTime?
+  indexAttemptId String?
+  activeIndexGeneration String?
+  localIndexUpload Json?
   indexedFiles   Int      @default(0)
   totalFiles     Int      @default(0)
   totalChunks    Int      @default(0)
@@ -1793,4 +1811,24 @@ model MarketingCashObservation {
 
   @@index([sourceId, createdAt], map: "marketing_cash_observations_source_idx")
   @@map("marketing_cash_observations")
+}
+
+// Retained facts use plain repository/PR/archive IDs so deleting a PR preserves them.
+model ReviewAttemptOutcome {
+  organizationId String
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  repositoryId String
+  pullRequestId String
+  requestVersion Int
+  kind String
+  outcome String?
+  tries Int
+  firstTriedAt DateTime
+  finishedAt DateTime?
+  publishedAt DateTime?
+  resultArchiveId String?
+
+  @@id([pullRequestId, requestVersion])
+  @@index([organizationId, publishedAt])
+  @@map("review_attempt_outcomes")
 }

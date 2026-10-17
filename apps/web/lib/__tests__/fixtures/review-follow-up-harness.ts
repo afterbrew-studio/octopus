@@ -1,3 +1,4 @@
+import "./review-outcome-stub";
 import { mock } from "bun:test";
 import assert from "node:assert/strict";
 import type { AiCreateParams } from "@/lib/providers";
@@ -7,6 +8,10 @@ mock.module("server-only", () => ({}));
 const directCommentFailure = process.argv.includes("--direct-forgejo-comment-failure");
 const preserveAutoReview = process.argv.includes("--preserve-auto-review");
 const firstCompletion = process.argv.includes("--first-review-completion");
+let indexPreparation: "normal" | "fail" | "replace" | "replace-success" = "normal";
+let indexingCalls = 0;
+let indexTransactions = 0;
+let inIndexTransaction = false;
 let completionFailure: "summary" | "check" | null = null;
 const reviewUpdates: unknown[] = [];
 let nativeFailure = false;
@@ -25,7 +30,7 @@ let adaptiveAbort = new AbortController();
 let adaptiveRemaining = 900000;
 let validatorCalls = 0;
 let usageCount = 0;
-const events: { type?: string; status?: string }[] = [];
+const events: { type?: string; status?: string; eventName?: string }[] = [];
 let completedSnapshot: string | undefined;
 globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
   assert.ok(init?.signal);
@@ -56,7 +61,8 @@ const org = { id: "org", defaultReviewConfig: {}, reviewLanguage: "en" };
 const repo = {
   id: "repo", fullName: "fixture/repo", organization: org, reviewConfig: {},
   provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main",
-  organizationId: "org", autoReview: false,
+  organizationId: "org", autoReview: false, indexAttemptId: null as string | null,
+  indexedAt: null as Date | null, firstIndexedAt: null as Date | null,
 };
 const pr = {
   id: "pr", repository: repo, number: 1, title: "Handle missing values", author: "fixture",
@@ -64,15 +70,35 @@ const pr = {
   firstReviewCompletedAt: null as Date | null,
   claimToken: null as string | null,
 };
-mock.module("@octopus/db", () => ({ prisma: {
+const db = {
+  $transaction: async (run: (tx: unknown) => Promise<unknown>) => {
+    const before = structuredClone(repo);
+    inIndexTransaction = true;
+    try { return await run(db); }
+    catch (error) { Object.assign(repo, before); throw error; }
+    finally { inIndexTransaction = false; }
+  },
+  $executeRaw: async (_strings: TemplateStringsArray, completedAt: Date) => {
+    assert.ok(inIndexTransaction);
+    indexTransactions++;
+    if (!repo.indexedAt) repo.firstIndexedAt = completedAt;
+    repo.indexedAt = completedAt;
+    return 1;
+  },
   reviewAttempt: { findFirst: async (query: unknown) => {
     assert.deepEqual(query, { where: { pullRequestId: "pr" }, orderBy: { createdAt: "desc" }, select: { coverage: true } });
     if (lookupFailure) throw new Error("fixture lookup failure");
     return prior ? { coverage: prior } : null;
   } },
   repository: {
-    findUnique: async () => repo,
-    updateMany: async ({ data }: { data: Record<string, unknown> }) => { Object.assign(repo, data); return { count: 1 }; },
+    findUnique: async () => ({ ...repo }),
+    findUniqueOrThrow: async () => ({ ...repo }),
+    updateMany: async ({ where, data }: { where: { id: string; indexStatus?: string | { notIn: string[] }; indexAttemptId?: string }; data: Record<string, unknown> }) => {
+      if (where.id !== repo.id || (where.indexAttemptId !== undefined && where.indexAttemptId !== repo.indexAttemptId)
+        || (typeof where.indexStatus === "string" && where.indexStatus !== repo.indexStatus)
+        || (typeof where.indexStatus === "object" && where.indexStatus.notIn.includes(repo.indexStatus))) return { count: 0 };
+      Object.assign(repo, data); return { count: 1 };
+    },
     update: async ({ data }: { data: Record<string, unknown> }) => { Object.assign(repo, data); return repo; },
   },
   systemConfig: { findUnique: async () => null },
@@ -95,7 +121,8 @@ mock.module("@octopus/db", () => ({ prisma: {
     }
     return { count: 1 };
   } },
-} }));
+};
+mock.module("@octopus/db", () => ({ prisma: db }));
 mock.module("@/lib/embeddings", () => ({ createEmbeddings: async (texts: string[]) => texts.map(() => [1, 0, 0]) }));
 mock.module("@/lib/qdrant", () => ({
   searchSimilarChunks: async () => [], searchKnowledgeChunks: async () => [], searchReviewChunks: async () => [],
@@ -144,6 +171,15 @@ const published: { body: string; comments: unknown[] }[] = [];
 const checkConclusions: string[] = [];
 const individualComments: { path: string; line: number; body: string }[] = [];
 mock.module("@/lib/review-summary-comment", () => ({ publishReviewSummary: async (target: { body: string; headSha: string; reviewRequestVersion: number; expectedReviewBody?: string; executionWindow?: ReviewExecutionWindow }) => {
+  if (target.body.includes("Indexing in progress")) {
+    assert.ok(repo.indexAttemptId, "Preparation must already own the claim");
+    if (indexPreparation === "fail") throw new Error("Index setup failed");
+    if (indexPreparation === "replace" || indexPreparation === "replace-success") {
+      repo.indexStatus = "indexing";
+      repo.indexAttemptId = "replacement-attempt";
+      if (indexPreparation === "replace") throw new Error("Cancelled setup resumed after restart");
+    }
+  }
   if (firstCompletion && pr.status === "completed" && completionFailure === "summary") {
     completionFailure = null;
     assert.equal(pr.firstReviewCompletedAt, null, "Archiving the result must not complete onboarding before publication");
@@ -259,10 +295,11 @@ mock.module("@/lib/queue", () => ({
   enqueue: async () => {}, enqueueAfter: async () => "job",
 }));
 mock.module("@/lib/cost", () => ({ getOrgSpendLimitStatus: async () => ({ blocked: false }), shouldGuardConcurrency: async () => false }));
-mock.module("@/lib/pubby", () => ({ pubby: { trigger: async (_channel: string, _name: string, data: { status?: string }) => { events.push(data); } } }));
+mock.module("@/lib/pubby", () => ({ pubby: { trigger: async (_channel: string, _name: string, data: { status?: string }) => { events.push({ ...data, status: _name === "index-status" ? repo.indexStatus : data.status, eventName: _name }); } } }));
 mock.module("@/lib/events", () => ({ eventBus: { emit: (event: { type: string }) => { events.push(event); } } }));
 mock.module("@/lib/indexer", () => ({ indexRepository: async () => {
   if (!preserveAutoReview) throw new Error("unexpected indexing");
+  indexingCalls++;
   return { indexedFiles: 1, totalFiles: 1, totalChunks: 1, totalVectors: 1, durationMs: 1, contributorCount: 0, contributors: [] };
 } }));
 mock.module("@/lib/review-repository-preparation", () => ({
@@ -337,6 +374,24 @@ if (preserveAutoReview) {
   assert.equal(repo.indexStatus, "indexed", "the real reviewer must exercise automatic preparation");
   assert.equal(repo.autoReview, false, "a one-off review must not enable automatic reviews");
   assert.equal(archived.at(-1)?.coverage.assessment?.state, "completed");
+  assert.equal(indexingCalls, 1);
+  assert.equal(indexTransactions, 1);
+  assert.ok(repo.firstIndexedAt);
+  const firstIndex = repo.firstIndexedAt;
+  for (const mode of ["fail", "replace", "replace-success"] as const) {
+    indexPreparation = mode;
+    repo.indexStatus = "pending";
+    events.length = 0;
+    const errors = console.error;
+    console.error = () => {};
+    try { await processReview("pr"); } finally { console.error = errors; }
+    assert.equal(repo.indexStatus, mode === "fail" ? "failed" : "indexing");
+    assert.equal(indexingCalls, mode === "replace-success" ? 2 : 1, "Only successful setup reaches the indexer");
+    assert.deepEqual(repo.firstIndexedAt, firstIndex);
+    assert.equal(repo.autoReview, false);
+    assert.equal(events.some(event => event.eventName === "index-status" && event.status === "failed"), mode === "fail");
+    if (mode !== "fail") assert.equal(repo.indexAttemptId, "replacement-attempt");
+  }
   console.log("PASS one-off review preparation preserves disabled automatic reviews");
   process.exit(0);
 }

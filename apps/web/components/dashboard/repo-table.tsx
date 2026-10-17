@@ -356,12 +356,7 @@ export function RepoTable({
     const pubby = getPubbyClient();
     const channel = pubby.subscribe(`presence-org-${orgId}`);
 
-    const handleStatus = (raw: unknown) => {
-      const data = raw as { repoId: string; status: string; needsAccess?: boolean };
-      const resolvedStatus = data.status === "cancelled" ? "pending" : data.status;
-      setStatuses((prev) => ({ ...prev, [data.repoId]: resolvedStatus }));
-      router.refresh();
-    };
+    const handleStatus = () => router.refresh();
 
     const handleReviewRequested = (raw: unknown) => {
       const data = raw as {

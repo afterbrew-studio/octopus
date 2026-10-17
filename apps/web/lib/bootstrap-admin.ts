@@ -1,4 +1,5 @@
 import "server-only";
+import { withSystemSignup } from "./creation-provenance";
 import { randomBytes } from "node:crypto";
 import { prisma } from "@octopus/db";
 import { auth } from "./auth";
@@ -83,13 +84,13 @@ export async function bootstrapDefaultAdmin(): Promise<void> {
       }
       const adminPassword = envPassword || randomBytes(18).toString("base64url");
 
-      const result = await auth.api.signUpEmail({
+      const result = await withSystemSignup(() => auth.api.signUpEmail({
         body: {
           email: DEFAULT_ADMIN_EMAIL,
           password: adminPassword,
           name: DEFAULT_ADMIN_NAME,
         },
-      });
+      }));
       const userId = result.user?.id;
       if (!userId) {
         console.error("[bootstrap-admin] signUpEmail returned no user id");

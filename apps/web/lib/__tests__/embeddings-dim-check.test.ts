@@ -1,9 +1,9 @@
 import { describe, it, expect, mock, beforeEach } from "bun:test";
-import { QDRANT_DENSE_VECTOR_SIZE } from "@/lib/qdrant";
 
 // `server-only` is a Next.js marker module that throws if imported from a
 // non-server context. The test runner is "non-server" enough to trip it.
 mock.module("server-only", () => ({}));
+const { QDRANT_DENSE_VECTOR_SIZE } = await import("@/lib/qdrant");
 
 // Mock the AI/usage/cost helpers — none of them are exercised by the
 // assertion path we're testing.
