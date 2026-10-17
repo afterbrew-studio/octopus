@@ -9,28 +9,20 @@ import {
 } from "@/lib/qdrant";
 import { logAiUsage } from "@/lib/ai-usage";
 import { rerankDocuments } from "@/lib/reranker";
-import Anthropic from "@anthropic-ai/sdk";
 import { requestAgentSearch } from "@/lib/agent-search";
 import { getReviewModel } from "@/lib/ai-client";
 import { buildCliChatSystemPrompt } from "@/lib/cli-chat-prompt";
 import { streamChat } from "@/lib/chat-stream";
+import { generateChatTitle } from "@/lib/chat-side-tasks";
 import { getOrgSpendLimitStatus } from "@/lib/cost";
 import {
   chatScopeGuardEnabled,
   checkChatScope,
   checkFreeChatDailyCap,
   dailyCapMessage,
+  GUARD_UNAVAILABLE_MESSAGE,
   OUT_OF_SCOPE_MESSAGE,
 } from "@/lib/chat-guard";
-
-let anthropicClient: Anthropic | null = null;
-
-function getAnthropicClient(): Anthropic {
-  if (!anthropicClient) {
-    anthropicClient = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
-  }
-  return anthropicClient;
-}
 
 export async function POST(request: Request) {
   const result = await authenticateApiToken(request);
@@ -71,12 +63,19 @@ export async function POST(request: Request) {
     );
   }
   if (chatScopeGuardEnabled()) {
-    const inScope = await checkChatScope(getAnthropicClient(), message, orgId);
-    if (!inScope) {
+    const verdict = await checkChatScope(message, orgId);
+    if (verdict === "block") {
       console.warn(`[chat-cli] Org ${orgId} rejected (out_of_scope)`);
       return Response.json(
         { blocked: true, reason: "out_of_scope", message: OUT_OF_SCOPE_MESSAGE },
         { status: 402 },
+      );
+    }
+    if (verdict === "unavailable") {
+      console.warn(`[chat-cli] Org ${orgId} rejected (guard_unavailable)`);
+      return Response.json(
+        { blocked: true, reason: "guard_unavailable", message: GUARD_UNAVAILABLE_MESSAGE },
+        { status: 503 },
       );
     }
   }
@@ -248,29 +247,11 @@ export async function POST(request: Request) {
         // Auto-generate title on first message
         if (conversation.messages.length === 0 && fullResponse) {
           try {
-            const titleResponse = await getAnthropicClient().messages.create({
-              model: "claude-haiku-4-5-20251001",
-              max_tokens: 50,
-              messages: [
-                {
-                  role: "user",
-                  content: `Generate a very short title (max 6 words) for this question. Same language as the question. Reply ONLY with the title.\n\nQuestion: "${message}"`,
-                },
-              ],
-            });
-            const title = titleResponse.content[0].type === "text"
-              ? titleResponse.content[0].text.trim()
-              : "CLI Chat";
-            await logAiUsage({
-              provider: "anthropic",
-              model: "claude-haiku-4-5-20251001",
-              operation: "chat-title",
-              inputTokens: titleResponse.usage.input_tokens,
-              outputTokens: titleResponse.usage.output_tokens,
-              cacheReadTokens: titleResponse.usage.cache_read_input_tokens ?? 0,
-              cacheWriteTokens: titleResponse.usage.cache_creation_input_tokens ?? 0,
-              organizationId: orgId,
-            });
+            const title = await generateChatTitle(
+              `Generate a very short title (max 6 words) for this question. Same language as the question. Reply ONLY with the title.\n\nQuestion: "${message}"`,
+              orgId,
+              "CLI Chat",
+            );
             await prisma.chatConversation.update({
               where: { id: conversation.id },
               data: { title },
