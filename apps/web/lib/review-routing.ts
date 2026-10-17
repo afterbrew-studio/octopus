@@ -21,7 +21,8 @@ export const MECHANICAL_MODEL = "claude-haiku-4-5-20251001";
 /**
  * `OCTOPUS_MECHANICAL_MODEL` replaces MECHANICAL_MODEL. Setting it also lets an
  * org-level pin be downshifted, because a deployment that configures a mechanical
- * model has no other way to use it when its org pins the review model.
+ * model has no other way to use it when its org pins the review model. Only a diff
+ * made up entirely of mechanical files overrides a pin; the tiny-diff rule does not.
  */
 function configuredMechanicalModel(): string | undefined {
   return process.env.OCTOPUS_MECHANICAL_MODEL?.trim() || undefined;
@@ -106,7 +107,8 @@ export function classifyDiff(diff: string, coverage?: ReviewCoverage): DiffClass
  * Resolve the review model for a diff. Precedence: explicit modelOverride → repo
  * pin → org pin → routed default. Only mechanical diffs are downshifted, and only
  * when the cheaper model actually has pricing. An org pin blocks the downshift
- * unless OCTOPUS_MECHANICAL_MODEL is set; a repo pin always does.
+ * unless OCTOPUS_MECHANICAL_MODEL is set and every changed file is mechanical; a
+ * repo pin always blocks it.
  */
 export async function resolveReviewModel(args: {
   orgId: string;
@@ -129,7 +131,8 @@ export async function resolveReviewModel(args: {
 
   const target = configured ?? MECHANICAL_MODEL;
   const cls = classifyDiff(diff, args.coverage);
-  if (cls.tier === "mechanical" && target !== base) {
+  const qualifies = source === "org" ? cls.mechanicalOnly : cls.tier === "mechanical";
+  if (qualifies && target !== base) {
     // Self-protect: never emit a model without pricing (would bill $0).
     const pricing = await getModelPricing().catch(() => null);
     if (pricing?.has(target)) return target;

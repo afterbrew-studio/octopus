@@ -426,7 +426,8 @@ This deployment sets `OCTOPUS_UTILITY_MODEL=acp:MiniMax-M3` and
 because MiniMax-M3 otherwise spends the small token budgets of these calls on reasoning.
 
 A repository's pinned model always wins over the mechanical downshift. The organization's pin
-does not, once `OCTOPUS_MECHANICAL_MODEL` is set.
+does not, once `OCTOPUS_MECHANICAL_MODEL` is set, but only for a diff whose every file is a
+lockfile, generated, docs or test file. A tiny edit to source code keeps the pinned model.
 
 `OCTOPUS_MECHANICAL_MODEL` only takes effect for a model that has an `available_models` row:
 a model with no price would be billed at zero, so the router declines the downshift and logs
