@@ -425,6 +425,11 @@ This deployment sets `OCTOPUS_UTILITY_MODEL=acp:MiniMax-M3` and
 `OCTOPUS_MECHANICAL_MODEL=acp:MiniMax-M3`, with `ACP_EXTRA_BODY={"thinking":{"type":"disabled"}}`
 because MiniMax-M3 otherwise spends the small token budgets of these calls on reasoning.
 
+The docs assistant and blog metadata have no organization, so they use the platform-default
+`llm` row of `available_models`. With no such row they use `OCTOPUS_UTILITY_MODEL`, and only
+when that is unset the built-in Claude model. A database error is never replaced by a
+fallback model.
+
 A repository's pinned model always wins over the mechanical downshift. The organization's pin
 does not, once `OCTOPUS_MECHANICAL_MODEL` is set, but only for a diff whose every file is a
 lockfile, generated, docs or test file. A tiny edit to source code keeps the pinned model.

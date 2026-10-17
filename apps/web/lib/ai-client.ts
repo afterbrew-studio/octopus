@@ -3,13 +3,17 @@ import { prisma } from "@octopus/db";
 export const HARDCODED_REVIEW_MODEL = "claude-sonnet-5";
 export const HARDCODED_EMBED_MODEL = "text-embedding-3-large";
 
+async function findPlatformDefault(category: "llm" | "embedding"): Promise<string | null> {
+  const model = await prisma.availableModel.findFirst({
+    where: { category, isPlatformDefault: true, isActive: true },
+    select: { modelId: true },
+  });
+  return model?.modelId ?? null;
+}
+
 async function getPlatformDefault(category: "llm" | "embedding"): Promise<string | null> {
   try {
-    const model = await prisma.availableModel.findFirst({
-      where: { category, isPlatformDefault: true, isActive: true },
-      select: { modelId: true },
-    });
-    return model?.modelId ?? null;
+    return await findPlatformDefault(category);
   } catch (error) {
     console.error(`Failed to fetch platform default for ${category}:`, error);
     return null;
@@ -24,9 +28,16 @@ export interface ResolvedReviewModel {
   pinned: boolean;
 }
 
-/** The model an organization falls back to when neither it nor a repo pins one. */
+function configuredUtilityModel(): string | null {
+  return process.env.OCTOPUS_UTILITY_MODEL?.trim() || null;
+}
+
+/**
+ * The model for callers with no organization. Without a platform default it is the
+ * configured utility model, then the hardcoded default. A lookup error propagates.
+ */
 export async function getPlatformReviewModel(): Promise<string> {
-  return (await getPlatformDefault("llm")) ?? HARDCODED_REVIEW_MODEL;
+  return (await findPlatformDefault("llm")) ?? configuredUtilityModel() ?? HARDCODED_REVIEW_MODEL;
 }
 
 /**
@@ -50,7 +61,7 @@ export async function resolveReviewModelPin(orgId: string, repoId?: string): Pro
   });
   if (org?.defaultModelId) return { model: org.defaultModelId, source: "org", pinned: true };
 
-  return { model: await getPlatformReviewModel(), source: "platform", pinned: false };
+  return { model: (await getPlatformDefault("llm")) ?? HARDCODED_REVIEW_MODEL, source: "platform", pinned: false };
 }
 
 export async function getReviewModel(orgId: string, repoId?: string): Promise<string> {
@@ -63,7 +74,7 @@ export async function getReviewModel(orgId: string, repoId?: string): Promise<st
  * unset, they run on the review model.
  */
 export async function getUtilityModel(orgId: string, repoId?: string): Promise<string> {
-  return process.env.OCTOPUS_UTILITY_MODEL?.trim() || getReviewModel(orgId, repoId);
+  return configuredUtilityModel() ?? getReviewModel(orgId, repoId);
 }
 
 export async function getEmbedModel(orgId: string, repoId?: string): Promise<string> {

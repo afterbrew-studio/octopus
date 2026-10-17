@@ -7,7 +7,7 @@ import { calls, usage, reply, reset, quiet, prisma, ORG_MODEL } from "./gateway-
  */
 
 const UTILITY = "acp:MiniMax-M3";
-const { getUtilityModel } = await import("@/lib/ai-client");
+const { getUtilityModel, getPlatformReviewModel, getReviewModel, HARDCODED_REVIEW_MODEL } = await import("@/lib/ai-client");
 const { checkChatScope } = await import("@/lib/chat-guard");
 const { generateChatTitle, translateToEnglish } = await import("@/lib/chat-side-tasks");
 
@@ -23,6 +23,28 @@ assert.equal(await getUtilityModel("org"), UTILITY, "set: the trimmed utility mo
 assert.equal(lookups, 0, "set: no organization lookup");
 process.env.OCTOPUS_UTILITY_MODEL = "   ";
 assert.equal(await getUtilityModel("org"), ORG_MODEL, "blank: the review model");
+org.findUnique = original;
+
+// The platform model, for callers with no organization.
+const models = prisma.availableModel as { findFirst: () => Promise<unknown> };
+const noRow = models.findFirst;
+const PLATFORM = "acp:platform-default";
+delete process.env.OCTOPUS_UTILITY_MODEL;
+assert.equal(await getPlatformReviewModel(), HARDCODED_REVIEW_MODEL, "no row, no utility model: the hardcoded default");
+process.env.OCTOPUS_UTILITY_MODEL = `  ${UTILITY}  `;
+assert.equal(await getPlatformReviewModel(), UTILITY, "no row, utility model set: the trimmed utility model");
+process.env.OCTOPUS_UTILITY_MODEL = "   ";
+assert.equal(await getPlatformReviewModel(), HARDCODED_REVIEW_MODEL, "no row, blank utility model: the hardcoded default");
+process.env.OCTOPUS_UTILITY_MODEL = UTILITY;
+models.findFirst = async () => ({ modelId: PLATFORM });
+assert.equal(await getPlatformReviewModel(), PLATFORM, "a platform row wins over the utility model");
+models.findFirst = async () => { throw new Error("database down"); };
+await assert.rejects(quiet(() => getPlatformReviewModel()), /database down/, "a lookup error propagates instead of becoming a fallback model");
+
+// Review resolution keeps its own fallback: the utility model never stands in for it.
+models.findFirst = noRow;
+org.findUnique = async () => ({ defaultModelId: null });
+assert.equal(await getReviewModel("org"), HARDCODED_REVIEW_MODEL, "no pin, no row: the review model ignores the utility model");
 org.findUnique = original;
 
 process.env.OCTOPUS_UTILITY_MODEL = UTILITY;

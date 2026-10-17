@@ -124,4 +124,42 @@ const text = (stream: ReadableStream | null) => new Response(stream).text();
   noAnthropic();
 }
 
+// Without a platform default row, the docs assistant and blog fall back to the utility model; a lookup error is not a fallback.
+{
+  const availableModel = prisma.availableModel as { findFirst: () => Promise<unknown> };
+  const platformRow = availableModel.findFirst;
+  const UTILITY = "acp:utility";
+  process.env.OCTOPUS_UTILITY_MODEL = UTILITY;
+  availableModel.findFirst = async () => null;
+
+  reset();
+  const { POST: ask } = await import("@/app/api/ask-octopus/route");
+  const askRequest = () => new Request("http://localhost/api/ask-octopus", {
+    method: "POST", headers: { "user-agent": "Mozilla/5.0", "x-forwarded-for": "203.0.113.7" }, body: JSON.stringify({ message: "what is octopus?" }),
+  });
+  await text((await quiet(() => ask(askRequest()))).body);
+  assert.deepEqual(calls, [{ provider: "acp", model: UTILITY }], "the docs assistant uses the utility model when there is no platform row");
+  noAnthropic();
+
+  reset();
+  availableModel.findFirst = async () => { throw new Error("database down"); };
+  const failed = await quiet(() => ask(askRequest()));
+  assert.equal(failed.status, 500, "a platform lookup error fails the request");
+  assert.deepEqual(calls, [], "and calls no model");
+
+  reset();
+  const { POST: blog } = await import("@/app/api/blog/route");
+  const { NextRequest } = await import("next/server");
+  const created = await (await quiet(() => blog(new NextRequest("http://localhost/api/blog", {
+    method: "POST",
+    headers: { authorization: "Bearer token", "content-type": "application/json" },
+    body: JSON.stringify({ title: "Post", content: "Body text", generateSeo: true }),
+  })))).json();
+  assert.deepEqual(calls, [], "blog calls no model on a platform lookup error");
+  assert.equal(created.id, "post", "and the post is still created without generated metadata");
+
+  availableModel.findFirst = platformRow;
+  delete process.env.OCTOPUS_UTILITY_MODEL;
+}
+
 console.log("PASS answers run on the configured models");
