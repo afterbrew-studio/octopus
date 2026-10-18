@@ -22,11 +22,18 @@ let priorComments: { id: number; user: string; path: string; line: number; body:
 const events: string[] = [];
 const validationModels: string[] = [];
 const archived: { coverage: ReviewCoverage }[] = [];
+// Scripted replies consumed one per model call before `reply` applies; `error` fails the call.
+let queue: { text: string; finish?: string; error?: boolean }[] = [];
+const calls: { model: string; content: string }[] = [];
+const usage: { model: string; operation: string }[] = [];
 
 class FakeOpenAI {
-  chat = { completions: { create: async () => ({
-    model: "gpt-fixture", choices: [{ finish_reason: "stop", message: { content: reply } }], usage: { prompt_tokens: 1, completion_tokens: 1 },
-  }) } };
+  chat = { completions: { create: async (body: { model: string; messages: { role: string; content: string }[] }) => {
+    calls.push({ model: body.model, content: body.messages.at(-1)?.content ?? "" });
+    const next = queue.shift();
+    if (next?.error) throw new Error("fixture provider failure");
+    return { model: "gpt-fixture", choices: [{ finish_reason: next?.finish ?? "stop", message: { content: next?.text ?? reply } }], usage: { prompt_tokens: 1, completion_tokens: 1 } };
+  } } };
 }
 mock.module("openai", () => ({ default: FakeOpenAI }));
 
@@ -70,8 +77,9 @@ mock.module("@/lib/qdrant", () => ({
 mock.module("@/lib/reranker", () => ({ rerankDocuments: async () => [] }));
 mock.module("@/lib/knowledge-context", () => ({ getAlwaysIncludeKnowledge: async () => [], mergeKnowledgeChunks: () => [] }));
 let resolvedModel = "gpt-fixture";
-mock.module("@/lib/review-routing", () => ({ resolveReviewModel: async () => resolvedModel }));
-mock.module("@/lib/ai-usage", () => ({ logAiUsage: async () => {} }));
+let downshiftedFrom: string | null = null;
+mock.module("@/lib/review-routing", () => ({ resolveReviewRoute: async () => ({ model: resolvedModel, downshiftedFrom }) }));
+mock.module("@/lib/ai-usage", () => ({ logAiUsage: async (entry: { model: string; operation: string }) => { usage.push({ model: entry.model, operation: entry.operation }); } }));
 mock.module("@/lib/ai-router", () => ({
   getProviderForModel: async () => { throw new Error("Legacy fixture must not resolve adaptive capacity"); },
   createAiMessage: async (params: AiCreateParams) => {
@@ -206,5 +214,63 @@ validationModels.length = 0;
 await submittedEvent(report([finding]));
 assert.deepEqual(validationModels, ["opencode:glm-5.3"], "validation must run on the review's resolved model");
 resolvedModel = "gpt-fixture";
+
+// A response the format validator rejects is regenerated once, on the model the review would have
+// used without a downshift, and only the accepted attempt is verified and posted.
+const malformed = "## 🐙 Octopus Review\n### Summary\nLooks fine.";
+const rejectionReason = "Review headings missing or duplicated";
+const logged: string[] = [];
+const log = console.log;
+console.log = (...parts: unknown[]) => { logged.push(parts.join(" ")); };
+async function run(script: typeof queue) {
+  queue = script; calls.length = 0; usage.length = 0; logged.length = 0;
+  const event = await submittedEvent(report([]));
+  queue = [];
+  return { event, retryLines: logged.filter(line => line.includes("Review format retry")) };
+}
+prior = null; priorComments = [];
+
+const single = await run([]);
+assert.equal(single.event, "APPROVE");
+assert.equal(calls.length, 1, "a valid first response makes exactly one call");
+assert.deepEqual(usage.map(u => u.model), ["gpt-fixture"]);
+assert.equal(single.retryLines.length, 0);
+
+const recovered = await run([{ text: malformed }, { text: report([]) }]);
+assert.equal(recovered.event, "APPROVE", "a format-rejected response followed by a valid one is verified");
+assert.equal(calls.length, 2, "exactly one retry");
+assert.equal(archived.at(-1)!.coverage.assessment?.state, "completed");
+assert.equal(archived.at(-1)!.coverage.assessment?.requests.length, 1, "the stored assessment is the accepted attempt's");
+assert.ok(calls[1].content.startsWith(calls[0].content), "the retry resends the original request");
+assert.ok(calls[1].content.includes(`rejected by the review format validator: ${rejectionReason}`), "the retry names the rejection reason");
+assert.deepEqual(usage.map(u => [u.model, u.operation]), [["gpt-fixture", "review"], ["gpt-fixture", "review"]], "each attempt is metered");
+assert.equal(recovered.retryLines.length, 1);
+assert.ok(recovered.retryLines[0].includes(`reason="${rejectionReason}"`) && recovered.retryLines[0].includes("from=gpt-fixture to=gpt-fixture"));
+
+resolvedModel = "acp:mechanical"; downshiftedFrom = "opencode:pinned";
+const downshifted = await run([{ text: malformed }, { text: report([]) }]);
+assert.equal(downshifted.event, "APPROVE");
+assert.deepEqual(calls.map(c => c.model), ["acp:mechanical", "opencode:pinned"], "a downshifted review retries on the pinned model");
+assert.deepEqual(usage.map(u => u.model), ["acp:mechanical", "opencode:pinned"], "each attempt is metered against the model that ran");
+assert.ok(downshifted.retryLines[0].includes("from=acp:mechanical to=opencode:pinned"));
+const downshiftedValid = await run([]);
+assert.equal(downshiftedValid.event, "APPROVE");
+assert.deepEqual(calls.map(c => c.model), ["acp:mechanical"], "a valid downshifted response is not retried");
+resolvedModel = "gpt-fixture"; downshiftedFrom = null;
+
+const bothRejected = await run([{ text: malformed }, { text: malformed }]);
+assert.equal(bothRejected.event, "COMMENT", "a response rejected twice is never verified");
+assert.equal(calls.length, 2, "exactly one retry, never a second");
+assert.equal(archived.at(-1)!.coverage.assessment?.state, "incomplete");
+assert.equal(archived.at(-1)!.coverage.assessment?.responseValidation?.state, "invalid");
+
+const providerError = await run([{ text: "", error: true }]);
+assert.equal(providerError.event, undefined, "a provider failure submits no review");
+assert.equal(calls.length, 1, "a provider failure is not retried by the format path");
+
+const truncated = await run([{ text: malformed, finish: "length" }]);
+assert.equal(truncated.event, "COMMENT");
+assert.equal(calls.length, 1, "a truncated response is not retried");
+console.log = log;
 
 console.log("PASS ordinary review approval requires a verified, finding-free review");

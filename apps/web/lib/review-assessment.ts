@@ -257,6 +257,13 @@ export function recordNoModelAssessment(coverage: ReviewCoverage): void {
   };
 }
 
+/** The validator's reason when a normally completed response failed format validation; null otherwise. */
+export function reviewFormatRejection(coverage: ReviewCoverage): string | null {
+  const { assessment } = coverage;
+  return assessment?.responseValidation?.state === "invalid" && assessment.completion?.state === "completed"
+    ? assessment.responseValidation.reason : null;
+}
+
 /** The caller persists assessment evidence without response text alongside the final outcome. */
 export async function executeCoveredReview(
   request: AiCreateParams, coverage: ReviewCoverage, template: string,

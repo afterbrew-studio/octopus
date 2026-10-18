@@ -28,7 +28,7 @@ mock.module("@octopus/db", () => ({
   },
 }));
 
-const { resolveReviewModel, MECHANICAL_MODEL } = await import("@/lib/review-routing");
+const { resolveReviewModel, resolveReviewRoute, MECHANICAL_MODEL } = await import("@/lib/review-routing");
 
 const lockfile = "diff --git a/bun.lock b/bun.lock\n--- a/bun.lock\n+++ b/bun.lock\n@@ -1 +1 @@\n-old\n+new\n";
 const source = "diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1,0 +1,12 @@\n"
@@ -96,6 +96,14 @@ orgModel = ORG_PIN;
 
 repoModel = REPO_PIN;
 assert.equal(await resolve(lockfile), REPO_PIN, "configured: a repo pin is respected");
+repoModel = null;
+
+const route = (diff: string, modelOverride?: string) => resolveReviewRoute({ orgId: "org", repoId: "repo", diff, modelOverride });
+assert.deepEqual(await route(lockfile), { model: MECHANICAL, downshiftedFrom: ORG_PIN }, "a downshift reports the model it replaced");
+assert.deepEqual(await route(source), { model: ORG_PIN, downshiftedFrom: null }, "no downshift reports none");
+assert.deepEqual(await route(lockfile, "acp:explicit"), { model: "acp:explicit", downshiftedFrom: null }, "an explicit override reports none");
+repoModel = REPO_PIN;
+assert.deepEqual(await route(lockfile), { model: REPO_PIN, downshiftedFrom: null }, "a repo pin reports none");
 repoModel = null;
 
 process.env.OCTOPUS_MECHANICAL_MODEL = "acp:no-catalog-row";
