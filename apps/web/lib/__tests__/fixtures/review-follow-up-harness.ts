@@ -133,7 +133,7 @@ mock.module("@/lib/qdrant", () => ({
 }));
 mock.module("@/lib/reranker", () => ({ rerankDocuments: async () => [] }));
 mock.module("@/lib/knowledge-context", () => ({ getAlwaysIncludeKnowledge: async () => [], mergeKnowledgeChunks: () => [] }));
-mock.module("@/lib/review-routing", () => ({ resolveReviewModel: async () => adaptiveStage ? "claude-fable-5-1" : "gpt-fixture" }));
+mock.module("@/lib/review-routing", () => ({ resolveReviewRoute: async () => ({ model: adaptiveStage ? "claude-fable-5-1" : "gpt-fixture", downshiftedFrom: null }) }));
 mock.module("@/lib/ai-usage", () => ({ logAiUsage: async () => { usageCount++; if (adaptiveStage === "before-validator") adaptiveAbort.abort(); } }));
 mock.module("@/lib/ai-router", () => ({ getProviderForModel: async () => {
   assert.ok(adaptiveStage, "Legacy fixture must not resolve adaptive capacity"); return "anthropic";

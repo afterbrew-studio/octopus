@@ -527,7 +527,7 @@ mock.module("@/lib/embeddings", () => ({ createEmbeddings: async (texts: string[
 mock.module("@/lib/reranker", () => ({ rerankDocuments: async () => [] }));
 mock.module("@/lib/knowledge-context", () => ({ getAlwaysIncludeKnowledge: async () => [], mergeKnowledgeChunks: () => [] }));
 mock.module("@/lib/feedback-suppression", () => ({ suppressFindingsFromFeedback: async (findings: unknown[]) => findings }));
-mock.module("@/lib/review-routing", () => ({ resolveReviewModel: async () => "fixture-model" }));
+mock.module("@/lib/review-routing", () => ({ resolveReviewRoute: async () => ({ model: "fixture-model", downshiftedFrom: null }) }));
 mock.module("@/lib/ai-usage", () => ({ logAiUsage: async () => {} }));
 const finding = {
   severity: "🟠", title: "Missing null check", filePath: "src/check.ts", startLine: 1, endLine: 1,

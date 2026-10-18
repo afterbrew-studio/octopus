@@ -118,6 +118,12 @@ export function classifyDiff(diff: string, coverage?: ReviewCoverage): DiffClass
   return { loc, files, tier, mechanicalOnly, mechanicalEverywhere, highRisk };
 }
 
+export interface ReviewRoute {
+  model: string;
+  /** The model the review would have used without the mechanical downshift; null when not downshifted. */
+  downshiftedFrom: string | null;
+}
+
 /**
  * Resolve the review model for a diff. Precedence: explicit modelOverride → repo
  * pin → org pin → routed default. Only mechanical diffs are downshifted, and only
@@ -125,24 +131,24 @@ export function classifyDiff(diff: string, coverage?: ReviewCoverage): DiffClass
  * unless OCTOPUS_MECHANICAL_MODEL is set and every touched path is mechanical (both
  * sides of a rename, policy-excluded files included); a repo pin always blocks it.
  */
-export async function resolveReviewModel(args: {
+export async function resolveReviewRoute(args: {
   orgId: string;
   repoId?: string;
   modelOverride?: string;
   diff: string;
   coverage?: ReviewCoverage;
-}): Promise<string> {
+}): Promise<ReviewRoute> {
   const { orgId, repoId, modelOverride, diff } = args;
 
   // Explicit caller override always wins — never override a deliberate choice.
-  if (modelOverride) return modelOverride;
+  if (modelOverride) return { model: modelOverride, downshiftedFrom: null };
 
   // Single lookup that also tells us where the model came from (single source
   // of truth for precedence lives in ai-client).
   const { model: base, source } = await resolveReviewModelPin(orgId, repoId);
-  if (source === "repo") return base;
+  if (source === "repo") return { model: base, downshiftedFrom: null };
   const configured = configuredMechanicalModel();
-  if (source === "org" && !configured) return base;
+  if (source === "org" && !configured) return { model: base, downshiftedFrom: null };
 
   const target = configured ?? MECHANICAL_MODEL;
   const cls = classifyDiff(diff, args.coverage);
@@ -150,8 +156,12 @@ export async function resolveReviewModel(args: {
   if (qualifies && target !== base) {
     // Self-protect: never emit a model without pricing (would bill $0).
     const pricing = await getModelPricing().catch(() => null);
-    if (pricing?.has(target)) return target;
+    if (pricing?.has(target)) return { model: target, downshiftedFrom: base };
     if (configured) console.warn(`[review-routing] OCTOPUS_MECHANICAL_MODEL ${configured} has no catalog row; not downshifting`);
   }
-  return base;
+  return { model: base, downshiftedFrom: null };
+}
+
+export async function resolveReviewModel(args: Parameters<typeof resolveReviewRoute>[0]): Promise<string> {
+  return (await resolveReviewRoute(args)).model;
 }

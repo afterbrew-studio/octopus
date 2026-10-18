@@ -61,14 +61,15 @@ import { getGithubAppConfig } from "@/lib/github-app-config";
 import { parseOctopusIgnore, detectBadCommits } from "@/lib/octopus-ignore";
 import { buildGeneratedMatcher } from "@/lib/generated-files";
 import { MAX_DIFF_CHARS } from "@/lib/diff-truncate";
-import { completeReviewCandidate, reviewCandidateSha256, assertReviewProcessingActive, ReviewProcessingExpiredError, type CompleteReviewAdmission, type ReviewExecutionWindow } from "@/lib/review-capacity";
+import { COMPLETE_REVIEW_POLICY, completeReviewCandidate, reviewCandidateSha256, assertReviewProcessingActive, ReviewProcessingExpiredError, type CompleteReviewAdmission, type ReviewExecutionWindow } from "@/lib/review-capacity";
 import { confirmCompleteReviewCurrent } from "@/lib/review-capacity-current";
 import { prepareReviewInput, applyReviewCoverage, coverageSummary, reviewCheckResult, reviewAssessmentComplete, type ReviewInput, type ReviewCoverage } from "@/lib/review-coverage";
 import { prepareReviewComment } from "@/lib/review-comment-context";
-import { createCoveredReviewRequest } from "@/lib/review-request";
+import { createCoveredReviewRequest, createFormatRetryRequest } from "@/lib/review-request";
 import { canRestrictReviewToFollowUp } from "@/lib/review-follow-up";
 import { prepareRecoveredReviewPresentation, prepareReviewPresentation, mapReviewPresentation, enforceReviewFindingsIntegrity, finalizeReviewPresentation } from "@/lib/review-presentation";
-import { executeCoveredReview, executeFindingsRecovery, recordNoModelAssessment, markReviewAssessmentIncomplete } from "@/lib/review-assessment";
+import { executeCoveredReview, executeFindingsRecovery, recordNoModelAssessment, markReviewAssessmentIncomplete, reviewFormatRejection } from "@/lib/review-assessment";
+import type { AiCreateParams, AiResponse } from "@/lib/providers";
 import { saveReviewAttempt, createReviewAttemptComment, withForgejoReviewPublication, recordFirstReviewCompletion } from "@/lib/review-attempt";
 import { publishReviewSummary } from "@/lib/review-summary-comment";
 import type { ReviewComment } from "@/lib/github";
@@ -130,7 +131,7 @@ import type { LogLevel } from "@/lib/indexer";
 import { ensureRepositoryAnalysis, deferReviewForRepository } from "@/lib/review-repository-preparation";
 import { writeSyncLog, deleteSyncLogs } from "@/lib/elasticsearch";
 import { logAiUsage } from "@/lib/ai-usage";
-import { resolveReviewModel } from "@/lib/review-routing";
+import { resolveReviewRoute } from "@/lib/review-routing";
 import { createAiMessage, getProviderForModel } from "@/lib/ai-router";
 import { getUtilityModel } from "@/lib/ai-client";
 import { getOrgSpendLimitStatus, shouldGuardConcurrency } from "@/lib/cost";
@@ -1614,7 +1615,7 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
     // Freeze ordinary routing against the baseline. A larger candidate never selects another model.
     // `modelOverride` comes from the run's own config snapshot, so a review asked
     // for with a label is billed to the model that label named. rayf P-0007 C3.
-    const reviewModel = await resolveReviewModel({
+    const { model: reviewModel, downshiftedFrom } = await resolveReviewRoute({
       orgId: org.id,
       repoId: repo.id,
       modelOverride: reviewConfig.modelOverride,
@@ -2131,8 +2132,31 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
       repoConfig: repoConfigUserBlock,
     });
     adaptiveProcessingWindow = completeReviewAdmission?.window;
-    const response = await executeCoveredReview({ ...primaryRequest, ...(completeReviewAdmission ? { completeReviewAdmission } : {}) },
-      coverage, getSystemPrompt(), request => createAiMessage(request, org.id));
+    const runCoveredReview = (request: AiCreateParams) =>
+      executeCoveredReview(request, coverage, getSystemPrompt(), call => createAiMessage(call, org.id));
+    const logReviewUsage = (usage: AiResponse, model: string) => logAiUsage({
+      provider: usage.provider,
+      usedOwnKey: usage.usedOwnKey,
+      model,
+      operation: "review",
+      inputTokens: usage.usage.inputTokens,
+      outputTokens: usage.usage.outputTokens,
+      cacheReadTokens: usage.usage.cacheReadTokens,
+      cacheWriteTokens: usage.usage.cacheWriteTokens,
+      organizationId: org.id,
+    });
+    let response = await runCoveredReview({ ...primaryRequest, ...(completeReviewAdmission ? { completeReviewAdmission } : {}) });
+    let responseModel = reviewModel;
+    // One corrective regeneration, before anything is published. A measured complete-input
+    // admission is a single dispatch and is never repeated or bypassed.
+    const formatRejection = reviewFormatRejection(coverage);
+    const retryModel = downshiftedFrom ?? reviewModel;
+    if (formatRejection !== null && !completeReviewAdmission && !(executionWindow && retryModel === COMPLETE_REVIEW_POLICY.model)) {
+      await logReviewUsage(response, responseModel);
+      console.log(`[reviewer] Review format retry: reason="${formatRejection}" from=${responseModel} to=${retryModel} (pr: #${pr.number})`);
+      response = await runCoveredReview(createFormatRetryRequest(primaryRequest, retryModel, formatRejection));
+      responseModel = retryModel;
+    }
     const assertProcessingActive = () => { if (completeReviewAdmission) assertReviewProcessingActive(completeReviewAdmission.window); };
 
     let reviewBody = prepareReviewPresentation(response.text, coverage);
@@ -2154,17 +2178,7 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
     // Deterministic output scope is independent of what the model claims.
     reviewBody = applyReviewCoverage(reviewBody, coverage, attemptId);
 
-    await logAiUsage({
-      provider: response.provider,
-      usedOwnKey: response.usedOwnKey,
-      model: reviewModel,
-      operation: "review",
-      inputTokens: response.usage.inputTokens,
-      outputTokens: response.usage.outputTokens,
-      cacheReadTokens: response.usage.cacheReadTokens,
-      cacheWriteTokens: response.usage.cacheWriteTokens,
-      organizationId: org.id,
-    });
+    await logReviewUsage(response, responseModel);
     // A completed response is still metered before expiry stops further review processing.
     assertProcessingActive();
 
