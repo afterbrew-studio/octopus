@@ -396,7 +396,7 @@ host.
 
 | Slot | Provider | Origin | Models |
 |---|---|---|---|
-| `acp` | MiniMax | `https://api.minimax.io` | `MiniMax-M3`, `M2.7`, `M2.5`, `M2` |
+| `acp` | MiniMax, and DeepSeek through `llm-proxy` | `http://llm-proxy:8080` | `MiniMax-M3`, `M2.7`, `M2.5`, `M2`, `deepseek-v4-pro` |
 | `opencode` | DeepSeek | `https://api.deepseek.com` | `deepseek-v4-flash`, `deepseek-v4-pro` |
 
 Both verified with a **real completion through the exact URL the slot builds**, not just a
@@ -408,6 +408,45 @@ granted - so the cap is arithmetic rather than a setting that can be misread.
 that unreachable whatever origin is configured, and `https://api.z.ai/v1` is a 404. Even if
 the path worked, `acp` and `opencode` are the only two generic slots and both are taken.
 Tracked in rayf#142.
+
+### The `llm-proxy` service
+
+The `acp` slot is one origin with one bearer token, so a second vendor behind it needs a
+router. The `llm-proxy` service (`llm-proxy.mjs`, `node:22-alpine` pinned by digest, no
+published port) forwards to MiniMax and sends any `deepseek*` model to DeepSeek under its own
+key. It also repairs split assistant turns for every vendor and adds `thinking: disabled` for
+MiniMax models other than M3.1. `web` waits for it to start.
+
+Set these in `.env`:
+
+```
+ACP_BASE_URL=http://llm-proxy:8080
+ACP_API_KEY=<the MiniMax key>
+DEEPSEEK_API_KEY=<the DeepSeek key>
+OCTOPUS_FALLBACK_MODEL=acp:deepseek-v4-pro
+```
+
+`ACP_BASE_URL` has no `/v1`: the slot appends it to an origin with no path, so the proxy sees
+`/v1/chat/completions`, which both MiniMax and DeepSeek serve. `ACP_API_KEY` stays the
+MiniMax key; the proxy replaces the `Authorization` header only for DeepSeek requests.
+`DEEPSEEK_API_KEY` is required: compose refuses to start without it. The existing
+`ACP_EXTRA_BODY` (`{"thinking":{"type":"disabled"}}`) applies to DeepSeek requests too.
+
+`deepseek-v4-pro` also needs its catalog row, or `OCTOPUS_FALLBACK_MODEL` is logged and
+skipped:
+
+```sql
+INSERT INTO available_models
+  (id, "modelId", "displayName", provider, category, "inputPrice", "outputPrice",
+   "isActive", "isPlatformDefault", "sortOrder", "createdAt", "updatedAt")
+VALUES
+  (gen_random_uuid()::text, 'acp:deepseek-v4-pro', 'DeepSeek V4 Pro', 'acp', 'llm', 0, 0,
+   false, false, 100, now(), now())
+ON CONFLICT ("modelId") DO NOTHING;
+```
+
+Apply the change with `docker compose up -d llm-proxy` and then
+`docker compose up -d --force-recreate web`.
 
 Selecting which model a repository reviews with is per-organization, in the dashboard.
 

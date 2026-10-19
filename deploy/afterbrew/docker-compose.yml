@@ -75,6 +75,8 @@ services:
         condition: service_healthy
       ollama:
         condition: service_healthy
+      llm-proxy:
+        condition: service_started
     # Reboot survival without root: the docker daemon is enabled at boot on the
     # target host, so a restart policy brings these back with no systemd unit and
     # no privileged install. See rayf P-0007 C6.
@@ -134,6 +136,26 @@ services:
       timeout: 10s
       retries: 6
       start_period: 30s
+    restart: unless-stopped
+
+  # The `acp` provider slot points here (ACP_BASE_URL=http://llm-proxy:8080). The slot
+  # is one origin with one credential, so this routes `deepseek*` models to DeepSeek
+  # under their own key and everything else to MiniMax. No `ports:`: reached by
+  # service name from `web`, like the datastores.
+  llm-proxy:
+    container_name: octopus-llm-proxy
+    # node 22-alpine, pinned by digest like every other image here.
+    image: node@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32
+    command: ["node", "/app/llm-proxy.mjs"]
+    volumes:
+      - ./llm-proxy.mjs:/app/llm-proxy.mjs:ro
+    environment:
+      - PROXY_PORT=8080
+      - UPSTREAM_BASE_URL=https://api.minimax.io
+      - DEEPSEEK_BASE_URL=https://api.deepseek.com
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:?set DEEPSEEK_API_KEY}
+    expose:
+      - "8080"
     restart: unless-stopped
 
   postgres:
