@@ -133,7 +133,7 @@ import { writeSyncLog, deleteSyncLogs } from "@/lib/elasticsearch";
 import { logAiUsage } from "@/lib/ai-usage";
 import { resolveReviewRoute } from "@/lib/review-routing";
 import { createAiMessage, getProviderForModel } from "@/lib/ai-router";
-import { withModelFallback, type ModelFallback } from "@/lib/model-fallback";
+import { createAiMessageWithFallback, withModelFallback, type ModelFallback } from "@/lib/model-fallback";
 import { getUtilityModel } from "@/lib/ai-client";
 import { getOrgSpendLimitStatus, shouldGuardConcurrency } from "@/lib/cost";
 import fs from "node:fs";
@@ -252,16 +252,16 @@ Reply ONLY with a JSON array of strings, one per entry, in order. Example: ["dis
   const userMessage = lines.join("\n");
 
   try {
-    const model = await getUtilityModel(orgId, repoId);
-    const response = await createAiMessage(
+    const { response, model } = await createAiMessageWithFallback(
       {
-        model,
+        model: await getUtilityModel(orgId, repoId),
         maxTokens: 256,
         thinking: "disabled",
         system: systemPrompt,
         messages: [{ role: "user", content: userMessage }],
       },
       orgId,
+      "[reviewer]",
     );
 
     await logAiUsage({

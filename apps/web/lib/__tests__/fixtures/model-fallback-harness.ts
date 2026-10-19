@@ -4,13 +4,18 @@ import { calls, usage, reply, failing, reset, ORG_MODEL, prisma } from "./gatewa
 
 /**
  * OCTOPUS_FALLBACK_MODEL through the real router: the provider error reaches the classifier as the
- * router wraps it, and the validation pass and repo-config extractor move to the fallback once.
+ * router wraps it, and the validation pass, repo-config extractor and repository analysis move to the fallback once.
  */
 
 const FALLBACK = "acp:deepseek-v4-pro";
 const priced = new Set<string>();
-mock.module("@/lib/cost", () => ({ getModelPricing: async () => new Map([...priced].map(model => [model, { input: 0, output: 0 }])) }));
-mock.module("@/lib/qdrant", () => ({ searchSimilarChunks: async () => [] }));
+mock.module("@/lib/cost", () => ({
+  getModelPricing: async () => new Map([...priced].map(model => [model, { input: 0, output: 0 }])),
+  isOrgOverSpendLimit: async () => false,
+}));
+mock.module("@/lib/qdrant", () => ({
+  searchSimilarChunks: async () => [], getRepoChunks: async () => ["export const x = 1;"], getKnowledgeChunksByOrg: async () => [],
+}));
 mock.module("@/lib/embeddings", () => ({ createEmbeddings: async () => [] }));
 Object.assign(prisma, {
   repoConfigExtraction: { findUnique: async () => null, create: async () => ({}) },
@@ -18,6 +23,7 @@ Object.assign(prisma, {
 
 const { validateFindings } = await import("@/lib/review-validation");
 const { extractRepoConfigRules } = await import("@/lib/repo-config");
+const { analyzeRepository } = await import("@/lib/analyzer");
 
 const finding = {
   severity: "🟠", title: "Missing null check", filePath: "src/check.ts", startLine: 1, endLine: 1,
@@ -25,6 +31,7 @@ const finding = {
 };
 const REFUTED = '[{"index": 0, "confidence": 12, "refutation": "guarded above"}]';
 const http = (status: number) => Object.assign(new Error(`${status} fixture provider failure`), { status });
+const quotaExhausted = Object.assign(new Error("429 Weekly/Monthly Limit Exhausted"), { status: 429 });
 const connectionReset = Object.assign(new Error("Connection error."), {
   cause: Object.assign(new TypeError("fetch failed"), { cause: Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }) }),
 });
@@ -100,6 +107,13 @@ const extracted = await extract();
 assert.equal(extracted?.rules, "- Use tabs.", "the extractor falls back");
 assert.deepEqual(providers(), [`opencode:${ORG_MODEL}`, `acp:${FALLBACK}`]);
 assert.deepEqual(usage.map(u => [u.model, u.operation]), [[FALLBACK, "repo-config-extract"]]);
+
+begin();
+reply.text = "analysis";
+failing.set(ORG_MODEL, quotaExhausted);
+assert.equal(await analyzeRepository("repo", "owner/repo", "org"), "analysis", "the analysis falls back when the pinned model's quota is exhausted");
+assert.deepEqual(providers(), [`opencode:${ORG_MODEL}`, `acp:${FALLBACK}`]);
+assert.deepEqual(usage.map(u => [u.model, u.operation]), [[FALLBACK, "analyze"]]);
 
 console.log = log;
 console.error = error;

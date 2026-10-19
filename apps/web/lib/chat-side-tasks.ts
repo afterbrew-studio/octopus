@@ -1,6 +1,6 @@
 import "server-only";
 import { getUtilityModel } from "./ai-client";
-import { createAiMessage } from "./ai-router";
+import { createAiMessageWithFallback } from "./model-fallback";
 import { logAiUsage } from "./ai-usage";
 
 /** Short model calls around a chat turn, all on the utility model. */
@@ -8,14 +8,15 @@ import { logAiUsage } from "./ai-usage";
 /** Generates a conversation title from a caller-built prompt; the caller handles failure. */
 export async function generateChatTitle(prompt: string, orgId: string, fallback: string): Promise<string> {
   const model = await getUtilityModel(orgId);
-  const res = await createAiMessage(
+  const { response: res, model: usedModel } = await createAiMessageWithFallback(
     { model, maxTokens: 50, thinking: "disabled", messages: [{ role: "user", content: prompt }] },
     orgId,
+    "[chat-side-tasks]",
   );
   await logAiUsage({
     provider: res.provider,
     usedOwnKey: res.usedOwnKey,
-    model,
+    model: usedModel,
     operation: "chat-title",
     inputTokens: res.usage.inputTokens,
     outputTokens: res.usage.outputTokens,
@@ -35,7 +36,7 @@ export async function translateToEnglish(text: string, orgId: string): Promise<s
 
   try {
     const model = await getUtilityModel(orgId);
-    const res = await createAiMessage(
+    const { response: res, model: usedModel } = await createAiMessageWithFallback(
       {
         model,
         maxTokens: 1024,
@@ -45,11 +46,12 @@ export async function translateToEnglish(text: string, orgId: string): Promise<s
         messages: [{ role: "user", content: text }],
       },
       orgId,
+      "[chat-side-tasks]",
     );
     await logAiUsage({
       provider: res.provider,
       usedOwnKey: res.usedOwnKey,
-      model,
+      model: usedModel,
       operation: "chat-translate",
       inputTokens: res.usage.inputTokens,
       outputTokens: res.usage.outputTokens,

@@ -1,7 +1,7 @@
 import { getRepoChunks, getKnowledgeChunksByOrg } from "@/lib/qdrant";
 import { logAiUsage } from "@/lib/ai-usage";
 import { getReviewModel } from "@/lib/ai-client";
-import { createAiMessage } from "@/lib/ai-router";
+import { createAiMessageWithFallback } from "@/lib/model-fallback";
 import { isOrgOverSpendLimit } from "@/lib/cost";
 import fs from "node:fs";
 import path from "node:path";
@@ -65,7 +65,7 @@ export async function analyzeRepository(
   const analyzeModel = orgId ? await getReviewModel(orgId, repoId) : "claude-sonnet-4-20250514";
   log(`Running AI analysis with ${analyzeModel}...`);
 
-  const response = await createAiMessage(
+  const { response, model: usedModel } = await createAiMessageWithFallback(
     {
       model: analyzeModel,
       maxTokens: 4096,
@@ -100,6 +100,7 @@ ${codeContext}`,
       ],
     },
     orgId || "",
+    "[analyzer]",
   );
 
   if (signal?.aborted) throw new Error("Analysis cancelled");
@@ -109,7 +110,7 @@ ${codeContext}`,
     log("Logging AI usage...");
     await logAiUsage({
       provider: response.provider,
-      model: analyzeModel,
+      model: usedModel,
       operation: "analyze",
       inputTokens: response.usage.inputTokens,
       outputTokens: response.usage.outputTokens,

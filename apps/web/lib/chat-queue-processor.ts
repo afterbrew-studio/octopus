@@ -289,7 +289,7 @@ ${chatHistoryContext || "No relevant previous conversations found."}
     // Log usage against the provider that actually served the response.
     await logAiUsage({
       provider: result.provider,
-      model: chatModel,
+      model: result.model,
       operation: "chat",
       ...result.usage,
       organizationId: orgId,

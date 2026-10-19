@@ -1,6 +1,7 @@
 import "server-only";
 import Anthropic from "@anthropic-ai/sdk";
-import { createAiMessage, resolveProvider } from "@/lib/ai-router";
+import { resolveProvider } from "@/lib/ai-router";
+import { createAiMessageWithFallback } from "@/lib/model-fallback";
 import type { AiMessage, AiProvider } from "@/lib/providers";
 import { CACHE_BREAKPOINT, type CacheTtl } from "@/lib/providers/system-cache";
 
@@ -35,6 +36,8 @@ export interface StreamChatParams {
 
 export interface StreamChatResult {
   text: string;
+  /** The model that produced the text; differs from the requested one after a provider fallback. */
+  model: string;
   provider: AiProvider;
   /** The provider's stop reason ("max_tokens" and "length" mean the answer was cut off). */
   stopReason: string | null;
@@ -90,6 +93,7 @@ export async function streamChat(params: StreamChatParams): Promise<StreamChatRe
     const final = await stream.finalMessage();
     return {
       text,
+      model,
       provider,
       stopReason: final.stop_reason,
       usage: {
@@ -106,7 +110,7 @@ export async function streamChat(params: StreamChatParams): Promise<StreamChatRe
   const systemParts = [systemCacheable, system].map(part =>
     provider === "openai" ? part?.split(CACHE_BREAKPOINT).join("") : part);
   const combinedSystem = systemParts.filter(Boolean).join(provider === "openai" ? `${CACHE_BREAKPOINT}\n\n` : "\n\n");
-  const res = await createAiMessage(
+  const { response: res, model: usedModel } = await createAiMessageWithFallback(
     {
       model,
       maxTokens,
@@ -114,7 +118,8 @@ export async function streamChat(params: StreamChatParams): Promise<StreamChatRe
       ...(combinedSystem ? { system: combinedSystem, cacheSystem: Boolean(systemParts[0]) } : {}),
     },
     orgId,
+    "[chat-stream]",
   );
   if (res.text) await onDelta(res.text);
-  return { text: res.text, provider: res.provider, stopReason: res.completion?.reason ?? null, usage: res.usage };
+  return { text: res.text, model: usedModel, provider: res.provider, stopReason: res.completion?.reason ?? null, usage: res.usage };
 }
