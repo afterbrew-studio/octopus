@@ -420,6 +420,7 @@ are optional; unset, Octopus behaves as upstream does.
 |---|---|---|
 | `OCTOPUS_UTILITY_MODEL` | chat titles, chat translation, the chat scope guard, reply classification | the repo or org review model |
 | `OCTOPUS_MECHANICAL_MODEL` | reviews of lockfile, docs, test-only and tiny diffs | the built-in Haiku model, and only when no model is pinned |
+| `OCTOPUS_FALLBACK_MODEL` | any review-pipeline call whose model's provider is unavailable | no fallback; the call fails |
 
 This deployment sets `OCTOPUS_UTILITY_MODEL=acp:MiniMax-M3` and
 `OCTOPUS_MECHANICAL_MODEL=acp:MiniMax-M3`, with `ACP_EXTRA_BODY={"thinking":{"type":"disabled"}}`
@@ -451,6 +452,16 @@ VALUES
    false, false, 100, now(), now())
 ON CONFLICT ("modelId") DO NOTHING;
 ```
+
+`OCTOPUS_FALLBACK_MODEL` takes over once per call when the model's provider answers 429, 402,
+408 or 5xx, or when the connection fails or times out after the gateway's own retries. It
+covers review generation, the format retry, findings recovery, finding validation and
+repo-config extraction. A 400, 401 or 403 never falls back: a bad request fails on any model,
+and a bad credential should surface instead of hiding behind a working model. Each fallback logs
+`Model fallback: reason=... from=... to=...`. It needs an `available_models` row like the
+mechanical model; without one it logs `OCTOPUS_FALLBACK_MODEL ... has no catalog row` and the
+call fails as it would have. Insert the row with the statement above, using the fallback's own
+`modelId`.
 
 The chat scope guard refuses a message it could not classify (provider error or an answer that
 is not ALLOW or BLOCK) rather than letting it through. `CHAT_SCOPE_GUARD=off` disables the guard.

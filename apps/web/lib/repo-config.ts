@@ -4,7 +4,7 @@ import { prisma } from "@octopus/db";
 import { getFileContent as ghGetFileContent } from "@/lib/github";
 import { getFileContent as bbGetFileContent } from "@/lib/bitbucket";
 import { getFileContent as forgejoGetFileContent } from "@/lib/forgejo";
-import { createAiMessage } from "@/lib/ai-router";
+import { createAiMessageWithFallback } from "@/lib/model-fallback";
 import { getReviewModel } from "@/lib/ai-client";
 import { logAiUsage } from "@/lib/ai-usage";
 import {
@@ -147,15 +147,15 @@ export async function extractRepoConfigRules(
 
   let extractedRules: string;
   try {
-    const model = await getReviewModel(organizationId, repositoryId);
-    const response = await createAiMessage(
+    const { response, model } = await createAiMessageWithFallback(
       {
-        model,
+        model: await getReviewModel(organizationId, repositoryId),
         maxTokens: EXTRACTOR_MAX_TOKENS,
         system: EXTRACTOR_SYSTEM_PROMPT,
         messages: [{ role: "user", content: userMessage }],
       },
       organizationId,
+      "[repo-config]",
     );
     extractedRules = response.text.trim();
     await logAiUsage({

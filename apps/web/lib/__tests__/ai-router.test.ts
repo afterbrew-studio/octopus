@@ -91,6 +91,12 @@ describe("createAiMessage", () => {
     ).rejects.toThrow(/AI provider mock-fail failed: .*deliberate failure/);
   });
 
+  it("keeps the provider's own error as the cause, for status-based classification", async () => {
+    const error = await createAiMessage({ ...baseParams, model: "mock-fail-1" }, "org_1").catch((e: unknown) => e);
+    expect((error as Error).cause).toBeInstanceOf(Error);
+    expect(((error as Error).cause as Error).message).toMatch(/^mock-fail provider: deliberate failure/);
+  });
+
   it("surfaces the model id from the failing provider in the error", async () => {
     await expect(
       createAiMessage({ ...baseParams, model: "mock-fail-xyz" }, "org_1"),

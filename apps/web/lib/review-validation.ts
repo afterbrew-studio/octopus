@@ -6,7 +6,7 @@
 import { searchSimilarChunks } from "@/lib/qdrant";
 import { createEmbeddings } from "@/lib/embeddings";
 import { logAiUsage } from "@/lib/ai-usage";
-import { createAiMessage } from "@/lib/ai-router";
+import { createAiMessageWithFallback } from "@/lib/model-fallback";
 import type { InlineFinding } from "@/lib/review-dedup";
 import type { CrossFileQuery, VerificationQuery } from "@/lib/review-helpers";
 import { cappedConfidence } from "@/lib/review-helpers";
@@ -280,7 +280,7 @@ export async function validateFindings(
     ? `\n\nREPOSITORY FILE TREE (ground truth for file existence — if a path appears here, the file exists even when it is absent from the diff window):\n${fileTree}`
     : "";
 
-  const response = await createAiMessage(
+  const { response, model: validationModel } = await createAiMessageWithFallback(
     {
       model,
       // Raised from 2048 to fit per-finding citations/refutations without the
@@ -369,11 +369,12 @@ Output ONLY the JSON array, nothing else.`,
       ],
     },
     orgId,
+    logPrefix,
   );
 
   await logAiUsage({
     provider: response.provider,
-    model,
+    model: validationModel,
     operation: "review-validation",
     inputTokens: response.usage.inputTokens,
     outputTokens: response.usage.outputTokens,

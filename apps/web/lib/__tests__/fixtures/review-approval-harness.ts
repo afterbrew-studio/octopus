@@ -20,18 +20,22 @@ let adapter: "openai" | "gateway" | "no-completion" = "openai";
 let prior: ReviewCoverage | null = null;
 let priorComments: { id: number; user: string; path: string; line: number; body: string; inReplyToId: null }[] = [];
 const events: string[] = [];
+const bodies: string[] = [];
 const validationModels: string[] = [];
 const archived: { coverage: ReviewCoverage }[] = [];
 // Scripted replies consumed one per model call before `reply` applies; `error` fails the call.
-let queue: { text: string; finish?: string; error?: boolean }[] = [];
+let queue: { text: string; finish?: string; error?: boolean; fail?: unknown }[] = [];
 const calls: { model: string; content: string }[] = [];
 const usage: { model: string; operation: string }[] = [];
+// Models with a catalog row; the fallback model is only usable with one.
+const pricedModels = new Set<string>();
 
 class FakeOpenAI {
   chat = { completions: { create: async (body: { model: string; messages: { role: string; content: string }[] }) => {
     calls.push({ model: body.model, content: body.messages.at(-1)?.content ?? "" });
     const next = queue.shift();
     if (next?.error) throw new Error("fixture provider failure");
+    if (next?.fail) throw next.fail;
     return { model: "gpt-fixture", choices: [{ finish_reason: next?.finish ?? "stop", message: { content: next?.text ?? reply } }], usage: { prompt_tokens: 1, completion_tokens: 1 } };
   } } };
 }
@@ -98,7 +102,7 @@ mock.module("@/lib/review-validation", () => ({
   gatherVerificationContext: async () => new Map(),
   validateFindings: async (findings: unknown[], _diff: string, _org: string, model: string) => { validationModels.push(model); return findings; },
 }));
-mock.module("@/lib/review-summary-comment", () => ({ publishReviewSummary: async () => 123 }));
+mock.module("@/lib/review-summary-comment", () => ({ publishReviewSummary: async (target: { body: string }) => { bodies.push(target.body); return 123; } }));
 const realAttempt = await import("@/lib/review-attempt");
 mock.module("@/lib/review-attempt", () => ({
   ...realAttempt,
@@ -117,7 +121,7 @@ mock.module("@/lib/github", () => ({
   getPullRequestDetails: async () => ({ body: "Handle a missing value in the check so that callers no longer throw on it." }),
   createPullRequestComment: async () => 123,
   updatePullRequestComment: async () => {},
-  createPullRequestReview: async (_i: number, _o: string, _r: string, _n: number, _body: string, event: string) => { events.push(event); return 456; },
+  createPullRequestReview: async (_i: number, _o: string, _r: string, _n: number, body: string, event: string) => { events.push(event); bodies.push(body); return 456; },
   createCheckRun: async () => 789,
   updateCheckRun: async () => {},
   getRepositoryTree: async () => ["src/check.ts"],
@@ -140,7 +144,10 @@ mock.module("@/lib/queue", () => ({
   loadQueueConfig: async () => ({ reviewTimeoutSeconds: 60, largeReviewTimeoutSeconds: 60 }),
   computeStaleReclaimMs: () => 120000, enqueue: async () => {}, enqueueAfter: async () => "job",
 }));
-mock.module("@/lib/cost", () => ({ getOrgSpendLimitStatus: async () => ({ blocked: false }), shouldGuardConcurrency: async () => false }));
+mock.module("@/lib/cost", () => ({
+  getOrgSpendLimitStatus: async () => ({ blocked: false }), shouldGuardConcurrency: async () => false,
+  getModelPricing: async () => new Map([...pricedModels].map(model => [model, { input: 0, output: 0 }])),
+}));
 mock.module("@/lib/pubby", () => ({ pubby: { trigger: async () => {} } }));
 mock.module("@/lib/events", () => ({ eventBus: { emit: () => {} } }));
 mock.module("@/lib/indexer", () => ({ indexRepository: async () => { throw new Error("unexpected indexing"); } }));
@@ -222,9 +229,9 @@ const rejectionReason = "Review headings missing or duplicated";
 const logged: string[] = [];
 const log = console.log;
 console.log = (...parts: unknown[]) => { logged.push(parts.join(" ")); };
-async function run(script: typeof queue) {
-  queue = script; calls.length = 0; usage.length = 0; logged.length = 0;
-  const event = await submittedEvent(report([]));
+async function run(script: typeof queue, text = report([])) {
+  queue = script; calls.length = 0; usage.length = 0; logged.length = 0; bodies.length = 0;
+  const event = await submittedEvent(text);
   queue = [];
   return { event, retryLines: logged.filter(line => line.includes("Review format retry")) };
 }
@@ -271,6 +278,127 @@ assert.equal(calls.length, 1, "a provider failure is not retried by the format p
 const truncated = await run([{ text: malformed, finish: "length" }]);
 assert.equal(truncated.event, "COMMENT");
 assert.equal(calls.length, 1, "a truncated response is not retried");
+// A provider that is unavailable is replaced by OCTOPUS_FALLBACK_MODEL, once, before anything is
+// published; a request the provider rejects is not.
+const FALLBACK = "gpt-fallback";
+const http = (status: number) => Object.assign(new Error(`${status} fixture provider failure`), { status });
+class APIConnectionError extends Error {
+  constructor() {
+    super("Connection error.");
+    this.cause = Object.assign(new TypeError("fetch failed"), { cause: Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }) });
+  }
+}
+const fallbackLines = () => logged.filter(line => line.includes("model fallback"));
+const acceptedAssessment = () => archived.at(-1)!.coverage.assessment;
+
+const unconfigured = await run([{ text: "", fail: http(429) }]);
+assert.equal(unconfigured.event, undefined, "without OCTOPUS_FALLBACK_MODEL an unavailable provider fails the review as before");
+assert.equal(calls.length, 1);
+assert.equal(fallbackLines().length, 0);
+
+process.env.OCTOPUS_FALLBACK_MODEL = `  ${FALLBACK}  `;
+pricedModels.add(FALLBACK);
+
+const quota = await run([{ text: "", fail: http(429) }, { text: report([]) }]);
+assert.equal(quota.event, "APPROVE", "a quota-exhausted primary is replaced by the fallback and the review is verified");
+assert.deepEqual(calls.map(c => c.model), ["gpt-fixture", FALLBACK], "exactly one call on each model");
+assert.deepEqual(usage.map(u => [u.model, u.operation]), [[FALLBACK, "review"]], "usage is recorded against the model that ran");
+assert.equal(acceptedAssessment()?.state, "completed");
+assert.equal(acceptedAssessment()?.model, FALLBACK, "the stored assessment is the accepted attempt's");
+assert.equal(acceptedAssessment()?.requests.length, 1);
+assert.equal(events.length, 1, "one review is submitted");
+assert.deepEqual(fallbackLines(), ["[reviewer] Review model fallback: reason=429 from=gpt-fixture to=gpt-fallback (pr: #1)"]);
+assert.ok(bodies.some(body => body.includes(`using \`${FALLBACK}\``)), "the posted review names the model that wrote it");
+
+const overloaded = await run([{ text: "", fail: http(503) }, { text: report([]) }]);
+assert.equal(overloaded.event, "APPROVE", "a 5xx falls back");
+assert.deepEqual(calls.map(c => c.model), ["gpt-fixture", FALLBACK]);
+assert.ok(fallbackLines()[0].includes("reason=503"));
+
+const unreachable = await run([{ text: "", fail: new APIConnectionError() }, { text: report([]) }]);
+assert.equal(unreachable.event, "APPROVE", "a connection error falls back");
+assert.ok(fallbackLines()[0].includes("reason=connection"));
+
+adapter = "gateway";
+const reset = await run([
+  { text: "", fail: new APIConnectionError() }, { text: "", fail: new APIConnectionError() }, { text: "", fail: new APIConnectionError() },
+  { text: report([]) },
+]);
+assert.equal(reset.event, "APPROVE", "a connection error that survives the gateway's own retries falls back");
+assert.deepEqual(calls.map(c => c.model), ["gpt-fixture", "gpt-fixture", "gpt-fixture", FALLBACK], "the gateway retries twice before the fallback");
+adapter = "openai";
+
+for (const status of [400, 401, 403, 422]) {
+  const refused = await run([{ text: "", fail: http(status) }, { text: report([]) }]);
+  assert.equal(refused.event, undefined, `a ${status} is not an outage and never falls back`);
+  assert.equal(calls.length, 1);
+  assert.equal(fallbackLines().length, 0);
+}
+
+const formatOnly = await run([{ text: malformed }, { text: report([]) }]);
+assert.equal(formatOnly.event, "APPROVE");
+assert.deepEqual(calls.map(c => c.model), ["gpt-fixture", "gpt-fixture"], "a format rejection is the format retry's, never the fallback's");
+assert.equal(fallbackLines().length, 0);
+
+const retryOnFallback = await run([{ text: "", fail: http(429) }, { text: malformed }, { text: report([]) }]);
+assert.equal(retryOnFallback.event, "APPROVE");
+assert.deepEqual(calls.map(c => c.model), ["gpt-fixture", FALLBACK, FALLBACK], "a format retry stays on the model that answered");
+assert.deepEqual(usage.map(u => u.model), [FALLBACK, FALLBACK]);
+assert.ok(retryOnFallback.retryLines[0].includes(`from=${FALLBACK} to=${FALLBACK}`));
+assert.equal(fallbackLines().length, 1);
+
+const bothUnavailable = await run([{ text: "", fail: http(429) }, { text: "", fail: http(429) }, { text: report([]) }]);
+assert.equal(bothUnavailable.event, undefined, "a fallback that is also unavailable fails the review");
+assert.equal(calls.length, 2, "exactly one fallback hop");
+assert.equal(usage.length, 0);
+
+const retryUnavailable = await run([{ text: malformed }, { text: "", fail: http(429) }, { text: report([]) }]);
+assert.equal(retryUnavailable.event, "APPROVE", "an unavailable model on the format retry also falls back");
+assert.deepEqual(calls.map(c => c.model), ["gpt-fixture", "gpt-fixture", FALLBACK]);
+assert.deepEqual(usage.map(u => u.model), ["gpt-fixture", FALLBACK]);
+
+resolvedModel = "acp:mechanical"; downshiftedFrom = "opencode:pinned";
+const downshiftedOutage = await run([{ text: "", fail: http(429) }, { text: report([]) }]);
+assert.equal(downshiftedOutage.event, "APPROVE", "an unavailable downshifted model falls back");
+assert.deepEqual(calls.map(c => c.model), ["acp:mechanical", FALLBACK]);
+assert.deepEqual(usage.map(u => u.model), [FALLBACK]);
+const downshiftedRetry = await run([{ text: "", fail: http(429) }, { text: malformed }, { text: report([]) }]);
+assert.deepEqual(calls.map(c => c.model), ["acp:mechanical", FALLBACK, FALLBACK], "after a fallback the retry does not return to the pinned model");
+assert.equal(downshiftedRetry.event, "APPROVE");
+resolvedModel = "gpt-fixture"; downshiftedFrom = null;
+
+resolvedModel = FALLBACK;
+const sameModel = await run([{ text: "", fail: http(429) }, { text: report([]) }]);
+assert.equal(sameModel.event, undefined, "the fallback model is never retried as its own fallback");
+assert.equal(calls.length, 1);
+resolvedModel = "gpt-fixture";
+
+pricedModels.delete(FALLBACK);
+const errors: string[] = [];
+const logError = console.error;
+console.error = (...parts: unknown[]) => { errors.push(parts.join(" ")); };
+const unpriced = await run([{ text: "", fail: http(429) }, { text: report([]) }]);
+console.error = logError;
+assert.equal(unpriced.event, undefined, "a fallback with no catalog row is not used");
+assert.equal(calls.length, 1);
+assert.ok(errors.some(line => line.includes("OCTOPUS_FALLBACK_MODEL gpt-fallback has no catalog row")), "and the missing row is logged, not silent");
+pricedModels.add(FALLBACK);
+
+// The validation pass and the footer follow the model that wrote the review.
+validationModels.length = 0;
+await run([{ text: "", fail: http(429) }, { text: report([finding]) }], report([finding]));
+assert.deepEqual(validationModels, [FALLBACK], "validation runs on the fallback model, not the unavailable one");
+
+// Findings recovery falls back on its own: a truncated review whose table names a finding the JSON block omits.
+const recoverable = report([]).replace("### Findings Summary\n| Severity | Count |\n| --- | --- |\n", "### Findings Summary\n| Severity | Count |\n| --- | --- |\n| 🟠 High | 1 |\n");
+const recovery = await run([{ text: recoverable, finish: "length" }, { text: "", fail: http(429) }, { text: JSON.stringify([finding]) }], recoverable);
+assert.deepEqual(calls.map(c => c.model), ["gpt-fixture", "gpt-fixture", FALLBACK], "recovery falls back once, on its own");
+assert.deepEqual(usage.map(u => [u.model, u.operation]), [["gpt-fixture", "review"], [FALLBACK, "review-findings-followup"]]);
+assert.ok(fallbackLines().includes("[reviewer] Findings recovery model fallback: reason=429 from=gpt-fixture to=gpt-fallback (pr: #1)"));
+void recovery;
+
+delete process.env.OCTOPUS_FALLBACK_MODEL;
+pricedModels.clear();
 console.log = log;
 
 console.log("PASS ordinary review approval requires a verified, finding-free review");

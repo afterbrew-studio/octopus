@@ -12,6 +12,8 @@ export const ORG_MODEL = "opencode:glm-5.3";
 export const calls: { provider: string; model: string }[] = [];
 export const usage: { model: string; operation: string; provider: string }[] = [];
 export const reply = { text: "ok", finish: "stop", error: null as Error | null };
+/** Errors thrown for a specific model only; checked before `reply.error`. */
+export const failing = new Map<string, Error>();
 
 export const prisma: Record<string, unknown> = {
   availableModel: { findMany: async () => [], findFirst: async () => null },
@@ -30,6 +32,8 @@ mock.module("@/lib/providers", () => ({
     create: async (params: { model: string }) => {
       calls.push({ provider, model: params.model });
       if (provider === "anthropic" || provider === "openai") throw new Error("Could not resolve authentication method");
+      const failure = failing.get(params.model);
+      if (failure) throw failure;
       if (reply.error) throw reply.error;
       return {
         text: reply.text, provider, model: params.model,
@@ -51,6 +55,7 @@ export function reset(): void {
   reply.text = "ok";
   reply.finish = "stop";
   reply.error = null;
+  failing.clear();
 }
 
 export function quiet<T>(run: () => Promise<T>): Promise<T> {
