@@ -133,6 +133,7 @@ import { writeSyncLog, deleteSyncLogs } from "@/lib/elasticsearch";
 import { logAiUsage } from "@/lib/ai-usage";
 import { resolveReviewRoute } from "@/lib/review-routing";
 import { createAiMessage, getProviderForModel } from "@/lib/ai-router";
+import { withModelFallback, type ModelFallback } from "@/lib/model-fallback";
 import { getUtilityModel } from "@/lib/ai-client";
 import { getOrgSpendLimitStatus, shouldGuardConcurrency } from "@/lib/cost";
 import fs from "node:fs";
@@ -2132,8 +2133,18 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
       repoConfig: repoConfigUserBlock,
     });
     adaptiveProcessingWindow = completeReviewAdmission?.window;
+    // A measured review is a single dispatch bound to its model; nothing else may substitute for it.
+    const fallbackAllowed = (model: string) => !completeReviewAdmission && !(executionWindow && model === COMPLETE_REVIEW_POLICY.model);
+    const logFallback = (call: string) => ({ reason, from, to }: ModelFallback) =>
+      console.log(`[reviewer] ${call} model fallback: reason=${reason} from=${from} to=${to} (pr: #${pr.number})`);
+    // Order: the review model (downshifted or not), then at most one hop to the fallback model when
+    // its provider is unavailable. A format retry follows on the model that produced the response.
     const runCoveredReview = (request: AiCreateParams) =>
-      executeCoveredReview(request, coverage, getSystemPrompt(), call => createAiMessage(call, org.id));
+      withModelFallback(
+        request.model,
+        model => executeCoveredReview({ ...request, model }, coverage, getSystemPrompt(), call => createAiMessage(call, org.id)),
+        { enabled: fallbackAllowed(request.model), onFallback: logFallback("Review") },
+      );
     const logReviewUsage = (usage: AiResponse, model: string) => logAiUsage({
       provider: usage.provider,
       usedOwnKey: usage.usedOwnKey,
@@ -2145,18 +2156,24 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
       cacheWriteTokens: usage.usage.cacheWriteTokens,
       organizationId: org.id,
     });
-    let response = await runCoveredReview({ ...primaryRequest, ...(completeReviewAdmission ? { completeReviewAdmission } : {}) });
-    let responseModel = reviewModel;
+    const first = await runCoveredReview({ ...primaryRequest, ...(completeReviewAdmission ? { completeReviewAdmission } : {}) });
+    let response = first.value;
+    let responseModel = first.model;
+    // Set once the fallback model has replaced an unavailable one; later calls and the footer use it.
+    let fallbackModel: string | null = first.model !== reviewModel ? first.model : null;
     // One corrective regeneration, before anything is published. A measured complete-input
     // admission is a single dispatch and is never repeated or bypassed.
     const formatRejection = reviewFormatRejection(coverage);
-    const retryModel = downshiftedFrom ?? reviewModel;
+    const retryModel = fallbackModel ?? downshiftedFrom ?? reviewModel;
     if (formatRejection !== null && !completeReviewAdmission && !(executionWindow && retryModel === COMPLETE_REVIEW_POLICY.model)) {
       await logReviewUsage(response, responseModel);
       console.log(`[reviewer] Review format retry: reason="${formatRejection}" from=${responseModel} to=${retryModel} (pr: #${pr.number})`);
-      response = await runCoveredReview(createFormatRetryRequest(primaryRequest, retryModel, formatRejection));
-      responseModel = retryModel;
+      const retry = await runCoveredReview(createFormatRetryRequest(primaryRequest, retryModel, formatRejection));
+      response = retry.value;
+      responseModel = retry.model;
+      if (retry.model !== retryModel) fallbackModel = retry.model;
     }
+    const reviewedWith = fallbackModel ?? reviewModel;
     const assertProcessingActive = () => { if (completeReviewAdmission) assertReviewProcessingActive(completeReviewAdmission.window); };
 
     let reviewBody = prepareReviewPresentation(response.text, coverage);
@@ -2246,10 +2263,14 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
       const missingCount = tableFindingsTotal - findings.length;
       console.warn(`[reviewer] ⚠️ Findings table reports ${tableFindingsTotal} but only ${findings.length} parsed (${missingCount} missing) — requesting findings via follow-up call`);
       try {
-          const followUp = await executeFindingsRecovery(
-            { model: reviewModel, reviewBody, parsedFindingsCount: findings.length, tableFindingsTotal },
-            coverage,
-            request => createAiMessage({ ...request, ...(completeReviewAdmission ? { executionWindow } : {}) }, org.id),
+          const { value: followUp, model: followUpModel } = await withModelFallback(
+            reviewedWith,
+            model => executeFindingsRecovery(
+              { model, reviewBody, parsedFindingsCount: findings.length, tableFindingsTotal },
+              coverage,
+              request => createAiMessage({ ...request, ...(completeReviewAdmission ? { executionWindow } : {}) }, org.id),
+            ),
+            { enabled: fallbackAllowed(reviewedWith), onFallback: logFallback("Findings recovery") },
           );
 
           const findingsBlock = followUp.text;
@@ -2257,7 +2278,7 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
           await logAiUsage({
             provider: followUp.provider,
             usedOwnKey: followUp.usedOwnKey,
-            model: reviewModel,
+            model: followUpModel,
             operation: "review-findings-followup",
             inputTokens: followUp.usage.inputTokens,
             outputTokens: followUp.usage.outputTokens,
@@ -2373,7 +2394,7 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
         }
 
         assertProcessingActive();
-        allParsedFindings = await validateFindings(allParsedFindings, diff, org.id, reviewModel, confidenceThreshold, crossFileContext || undefined, "[reviewer]", verificationContext, fileTree);
+        allParsedFindings = await validateFindings(allParsedFindings, diff, org.id, reviewedWith, confidenceThreshold, crossFileContext || undefined, "[reviewer]", verificationContext, fileTree);
         assertProcessingActive();
       } catch (err) {
         if (err instanceof ReviewProcessingExpiredError) throw err;
@@ -2616,7 +2637,7 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
       // "approved" from a flash tier is a different claim from the same word
       // from a frontier tier.
       parts.push(
-        `<sub>Reviewed by [Octopus Review](https://octopus-review.ai) using \`${reviewModel}\`.</sub>`,
+        `<sub>Reviewed by [Octopus Review](https://octopus-review.ai) using \`${reviewedWith}\`.</sub>`,
       );
       return parts.join("\n\n");
     };
