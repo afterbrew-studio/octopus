@@ -1,7 +1,7 @@
 import "server-only";
 import { prisma } from "@octopus/db";
 import { getUtilityModel } from "./ai-client";
-import { createAiMessage } from "./ai-router";
+import { createAiMessageWithFallback } from "./model-fallback";
 import { logAiUsage } from "./ai-usage";
 
 /**
@@ -52,7 +52,7 @@ export async function checkChatScope(
 ): Promise<ChatScopeVerdict> {
   try {
     const model = await getUtilityModel(organizationId);
-    const res = await createAiMessage(
+    const { response: res, model: usedModel } = await createAiMessageWithFallback(
       {
         model,
         maxTokens: 16,
@@ -66,12 +66,13 @@ export async function checkChatScope(
         ],
       },
       organizationId,
+      "[chat-guard]",
     );
 
     await logAiUsage({
       provider: res.provider,
       usedOwnKey: res.usedOwnKey,
-      model,
+      model: usedModel,
       operation: "chat-guard",
       inputTokens: res.usage.inputTokens,
       outputTokens: res.usage.outputTokens,

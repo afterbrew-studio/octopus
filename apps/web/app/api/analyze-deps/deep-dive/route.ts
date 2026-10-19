@@ -3,7 +3,7 @@ import { auth } from "@/lib/auth";
 import { headers, cookies } from "next/headers";
 import { prisma } from "@octopus/db";
 import { fetchPackageSource } from "@octopus/package-analyzer";
-import { createAiMessage } from "@/lib/ai-router";
+import { createAiMessageWithFallback } from "@/lib/model-fallback";
 import { getReviewModel } from "@/lib/ai-client";
 import { logAiUsage } from "@/lib/ai-usage";
 
@@ -144,7 +144,7 @@ export async function POST(req: NextRequest) {
     console.log(`[deep-dive] Sending ${source.totalSize} bytes to LLM for analysis`);
     const model = await getReviewModel(orgId);
 
-    const aiResponse = await createAiMessage(
+    const { response: aiResponse } = await createAiMessageWithFallback(
       {
         model,
         maxTokens: 4096,
@@ -152,6 +152,7 @@ export async function POST(req: NextRequest) {
         messages: [{ role: "user", content: userMessage }],
       },
       orgId,
+      "[deep-dive]",
     );
 
     // Log AI usage — fire-and-forget

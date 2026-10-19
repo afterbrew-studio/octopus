@@ -33,7 +33,7 @@ import { selectRulePacks } from "@/lib/rulepacks";
 import { gatherCrossFileContext, gatherVerificationContext, validateFindings } from "@/lib/review-validation";
 import { logAiUsage } from "@/lib/ai-usage";
 import { resolveReviewModel } from "@/lib/review-routing";
-import { createAiMessage } from "@/lib/ai-router";
+import { createAiMessageWithFallback } from "@/lib/model-fallback";
 import { substitutePromptVars } from "@/lib/prompt-substitute";
 import fs from "node:fs";
 import path from "node:path";
@@ -377,8 +377,9 @@ export async function generateLocalReview(params: LocalReviewParams): Promise<Lo
   });
 
   let response;
+  let reviewedWith = reviewModel;
   try {
-    response = await createAiMessage(
+    ({ response, model: reviewedWith } = await createAiMessageWithFallback(
       {
         model: reviewModel,
         maxTokens: REVIEW_MAX_TOKENS,
@@ -392,14 +393,15 @@ export async function generateLocalReview(params: LocalReviewParams): Promise<Lo
         ],
       },
       org.id,
-    );
+      "[review-core]",
+    ));
   } catch (err) {
     throw classifyReviewError(err);
   }
 
   await logAiUsage({
     provider: response.provider,
-    model: reviewModel,
+    model: reviewedWith,
     operation: params.operation ?? "local-review",
     inputTokens: response.usage.inputTokens,
     outputTokens: response.usage.outputTokens,
@@ -436,9 +438,9 @@ export async function generateLocalReview(params: LocalReviewParams): Promise<Lo
     const missingCount = tableFindingsTotal - findings.length;
     console.warn(`[review-core] Findings table reports ${tableFindingsTotal} but only ${findings.length} parsed (${missingCount} missing) — requesting follow-up`);
     try {
-      const followUp = await createAiMessage(
+      const { response: followUp, model: followUpModel } = await createAiMessageWithFallback(
         {
-          model: reviewModel,
+          model: reviewedWith,
           maxTokens: 4096,
           messages: [
             {
@@ -474,11 +476,12 @@ Rules:
           ],
         },
         org.id,
+        "[review-core]",
       );
 
       await logAiUsage({
         provider: followUp.provider,
-        model: reviewModel,
+        model: followUpModel,
         operation: "local-review-findings-followup",
         inputTokens: followUp.usage.inputTokens,
         outputTokens: followUp.usage.outputTokens,
@@ -556,7 +559,7 @@ Rules:
         }
       }
 
-      findings = await validateFindings(findings, diff, org.id, reviewModel, confidenceThreshold, crossFileContext || undefined, "[review-core]", verificationContext, fileTreeStr || undefined);
+      findings = await validateFindings(findings, diff, org.id, reviewedWith, confidenceThreshold, crossFileContext || undefined, "[review-core]", verificationContext, fileTreeStr || undefined);
     } catch (err) {
       console.warn("[review-core] Two-pass validation failed, keeping all findings:", err);
     }
@@ -573,7 +576,7 @@ Rules:
   return {
     findings,
     summary: summaryBody,
-    model: reviewModel,
+    model: reviewedWith,
     usage: {
       inputTokens: response.usage.inputTokens,
       outputTokens: response.usage.outputTokens,
@@ -765,8 +768,9 @@ export async function generateBareLocalReview(
   const reviewConfig = mergeReviewConfigs(systemConfig, orgConfig);
 
   let response;
+  let reviewedWith = reviewModel;
   try {
-    response = await createAiMessage(
+    ({ response, model: reviewedWith } = await createAiMessageWithFallback(
       {
         model: reviewModel,
         maxTokens: REVIEW_MAX_TOKENS,
@@ -780,14 +784,15 @@ export async function generateBareLocalReview(
         ],
       },
       org.id,
-    );
+      "[review-core]",
+    ));
   } catch (err) {
     throw classifyReviewError(err);
   }
 
   await logAiUsage({
     provider: response.provider,
-    model: reviewModel,
+    model: reviewedWith,
     operation: "local-review",
     inputTokens: response.usage.inputTokens,
     outputTokens: response.usage.outputTokens,
@@ -826,7 +831,7 @@ export async function generateBareLocalReview(
   return {
     findings,
     summary,
-    model: reviewModel,
+    model: reviewedWith,
     usage: {
       inputTokens: response.usage.inputTokens,
       outputTokens: response.usage.outputTokens,

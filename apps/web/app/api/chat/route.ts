@@ -712,7 +712,7 @@ ${agentResult ? `<local_agent_context>\nREAL-TIME results from a local agent run
 
         await logAiUsage({
           provider: result.provider,
-          model: chatModel,
+          model: result.model,
           operation: "chat",
           ...result.usage,
           organizationId: orgId,

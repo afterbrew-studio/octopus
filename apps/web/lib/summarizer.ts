@@ -1,7 +1,7 @@
 import { getRepoChunks } from "@/lib/qdrant";
 import { logAiUsage } from "@/lib/ai-usage";
 import { getReviewModel } from "@/lib/ai-client";
-import { createAiMessage } from "@/lib/ai-router";
+import { createAiMessageWithFallback } from "@/lib/model-fallback";
 import { isOrgOverSpendLimit } from "@/lib/cost";
 import { extractJsonObject } from "@/lib/extract-json";
 
@@ -28,7 +28,7 @@ export async function summarizeRepository(
 
   const model = organizationId ? await getReviewModel(organizationId, repoId) : "claude-sonnet-4-20250514";
 
-  const response = await createAiMessage(
+  const { response, model: usedModel } = await createAiMessageWithFallback(
     {
       model,
       maxTokens: 1024,
@@ -50,12 +50,13 @@ ${codeContext}`,
       ],
     },
     organizationId || "",
+    "[summarizer]",
   );
 
   if (organizationId) {
     await logAiUsage({
       provider: response.provider,
-      model,
+      model: usedModel,
       operation: "summarize-repo",
       inputTokens: response.usage.inputTokens,
       outputTokens: response.usage.outputTokens,
@@ -109,7 +110,7 @@ export async function summarizeDailyReviews(
 
   const dailyModel = organizationId ? await getReviewModel(organizationId) : "claude-sonnet-4-20250514";
 
-  const response = await createAiMessage(
+  const { response, model: usedModel } = await createAiMessageWithFallback(
     {
       model: dailyModel,
       maxTokens: 1024,
@@ -132,12 +133,13 @@ ${reviewContext}`,
       ],
     },
     organizationId || "",
+    "[summarizer]",
   );
 
   if (organizationId) {
     await logAiUsage({
       provider: response.provider,
-      model: dailyModel,
+      model: usedModel,
       operation: "summarize-daily",
       inputTokens: response.usage.inputTokens,
       outputTokens: response.usage.outputTokens,

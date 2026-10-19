@@ -15,7 +15,7 @@ import { eventBus } from "@/lib/events";
 import { deleteKnowledgeDocumentChunks } from "@/lib/qdrant";
 import { logAiUsage } from "@/lib/ai-usage";
 import { getReviewModel } from "@/lib/ai-client";
-import { createAiMessage } from "@/lib/ai-router";
+import { createAiMessageWithFallback } from "@/lib/model-fallback";
 import { knowledgeTemplates } from "@/lib/knowledge-templates";
 
 export async function createKnowledgeDocument(
@@ -538,7 +538,7 @@ export async function enhanceKnowledgeContent(
 
   try {
     const model = await getReviewModel(orgId);
-    const response = await createAiMessage(
+    const { response, model: usedModel } = await createAiMessageWithFallback(
       {
         model,
         maxTokens: 4096,
@@ -562,6 +562,7 @@ Your task:
 Output ONLY the enhanced document content. Do not add meta-commentary or explanations about what you did.`,
       },
       orgId,
+      "[knowledge]",
     );
 
     const text = response.text;
@@ -569,7 +570,7 @@ Output ONLY the enhanced document content. Do not add meta-commentary or explana
     await logAiUsage({
       provider: response.provider,
       usedOwnKey: response.usedOwnKey,
-      model,
+      model: usedModel,
       operation: "knowledge-enhance",
       inputTokens: response.usage.inputTokens,
       outputTokens: response.usage.outputTokens,

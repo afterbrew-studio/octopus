@@ -11,7 +11,7 @@ import {
 } from "@/lib/qdrant";
 import { logAiUsage } from "@/lib/ai-usage";
 import { getReviewModel } from "@/lib/ai-client";
-import { createAiMessage } from "@/lib/ai-router";
+import { createAiMessageWithFallback } from "@/lib/model-fallback";
 import { generateSparseVector } from "@/lib/sparse-vector";
 
 type SlackQuestionParams = {
@@ -221,7 +221,7 @@ ${chatHistoryContext || "No relevant previous conversations found."}
 
     // 6. Call the org's review model (non-streaming)
     const model = await getReviewModel(orgId);
-    const response = await createAiMessage(
+    const { response, model: usedModel } = await createAiMessageWithFallback(
       {
         model,
         maxTokens: 2048,
@@ -229,6 +229,7 @@ ${chatHistoryContext || "No relevant previous conversations found."}
         messages: [{ role: "user", content: question }],
       },
       orgId,
+      "[slack-responder]",
     );
 
     const aiAnswer = response.text;
@@ -237,7 +238,7 @@ ${chatHistoryContext || "No relevant previous conversations found."}
     await logAiUsage({
       provider: response.provider,
       usedOwnKey: response.usedOwnKey,
-      model,
+      model: usedModel,
       operation: "slack-command",
       inputTokens: response.usage.inputTokens,
       outputTokens: response.usage.outputTokens,

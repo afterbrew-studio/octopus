@@ -230,7 +230,7 @@ export async function POST(request: Request) {
 
         await logAiUsage({
           provider: result.provider,
-          model: chatModel,
+          model: result.model,
           operation: "chat",
           ...result.usage,
           organizationId: orgId,

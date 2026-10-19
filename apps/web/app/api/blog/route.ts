@@ -5,7 +5,7 @@ import { readingTimeMinutes } from "@/lib/blog-reading";
 import { hashToken } from "@/lib/api-auth";
 import { hasScopes } from "@/lib/scopes";
 import { getPlatformReviewModel } from "@/lib/ai-client";
-import { createAiMessage } from "@/lib/ai-router";
+import { createAiMessageWithFallback } from "@/lib/model-fallback";
 
 type AuthedToken = { id: string; tokenPrefix: string; scopes: string[] };
 
@@ -250,7 +250,7 @@ export async function POST(request: NextRequest) {
     let finalExcerpt = excerpt;
     if (generateSeo && (!finalExcerpt || finalTags.length === 0 || finalCategory === null)) {
       try {
-        const response = await createAiMessage({
+        const { response } = await createAiMessageWithFallback({
           model: await getPlatformReviewModel(),
           maxTokens: 300,
           thinking: "disabled",
@@ -260,7 +260,7 @@ export async function POST(request: NextRequest) {
               content: `Generate SEO metadata for this blog post. Return ONLY minified JSON, no prose or code fences, of the exact shape: {"excerpt": string (<=150 chars), "category": one of ["Engineering","Product","Company","Security","Guides"], "tags": 3-6 short lowercase topic strings}.\n\n${content.slice(0, 4000)}`,
             },
           ],
-        }, null);
+        }, null, "[blog]");
         const text = response.text.trim();
         const cleaned = text.replace(/```(?:json)?/gi, "").trim();
         try {

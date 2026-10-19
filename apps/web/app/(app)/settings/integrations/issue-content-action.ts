@@ -7,7 +7,7 @@ import { prisma } from "@octopus/db";
 import { logAiUsage } from "@/lib/ai-usage";
 import { isOrgOverSpendLimit } from "@/lib/cost";
 import { getReviewModel } from "@/lib/ai-client";
-import { createAiMessage } from "@/lib/ai-router";
+import { createAiMessageWithFallback } from "@/lib/model-fallback";
 
 // ── Helpers ──
 
@@ -63,7 +63,7 @@ export async function generateIssueContent(
   const model = await getReviewModel(orgId);
 
   try {
-    const response = await createAiMessage({
+    const { response, model: usedModel } = await createAiMessageWithFallback({
       model,
       maxTokens: 1024,
       messages: [
@@ -100,11 +100,11 @@ Write everything in English. Be professional and concise. Do NOT use markdown co
 Respond ONLY with valid JSON: {"title": "...", "description": "..."}`,
         },
       ],
-    }, orgId);
+    }, orgId, "[issue-content]");
 
     logAiUsage({
       provider: response.provider,
-      model,
+      model: usedModel,
       operation: "generate-issue-content",
       inputTokens: response.usage.inputTokens,
       outputTokens: response.usage.outputTokens,
