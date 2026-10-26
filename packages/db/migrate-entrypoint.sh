@@ -1,5 +1,6 @@
 #!/bin/sh
-# Applies Prisma migrations to $DATABASE_URL. BASELINE=1 builds a never-built database.
+# Applies pending Prisma migrations to $DATABASE_URL. An empty database fails here:
+# the migrations are increments, and a new deployment starts from a restored backup.
 set -eu
 
 : "${DATABASE_URL:?DATABASE_URL is required}"
@@ -15,43 +16,4 @@ export default defineConfig({
 });
 CONFIG
 
-PRISMA="./node_modules/.bin/prisma"
-
-if [ "${BASELINE:-0}" = "1" ]; then
-  # `db push` drops whatever the schema does not describe, so it is only safe on an empty database.
-  tables="$(node - <<'JS'
-const { Client } = require("pg");
-const client = new Client({ connectionString: process.env.DATABASE_URL });
-client
-  .connect()
-  .then(() =>
-    client.query("select count(*)::int as n from information_schema.tables where table_schema = 'public'"),
-  )
-  .then((result) => {
-    console.log(result.rows[0].n);
-    return client.end();
-  })
-  .catch((error) => {
-    console.error(error.message);
-    process.exit(1);
-  });
-JS
-)"
-  if [ "$tables" != "0" ]; then
-    echo "refusing to baseline: the database already has $tables table(s) in public." >&2
-    echo "BASELINE=1 runs \`prisma db push\`, which drops whatever the schema does not" >&2
-    echo "describe. Run without BASELINE to apply new migrations to an existing database." >&2
-    exit 1
-  fi
-
-  # No baseline migration exists: the migrations are increments on a schema that
-  # `db push` produces, so each one is recorded as applied instead of replayed.
-  echo "baselining: pushing schema, then recording migrations as applied"
-  "$PRISMA" db push --config prisma.config.mjs
-  for dir in prisma/migrations/*/; do
-    "$PRISMA" migrate resolve --applied "$(basename "$dir")" --config prisma.config.mjs >/dev/null
-  done
-  echo "baseline complete"
-else
-  "$PRISMA" migrate deploy --config prisma.config.mjs
-fi
+exec ./node_modules/.bin/prisma migrate deploy --config prisma.config.mjs

@@ -8,7 +8,7 @@ WORKDIR /work
 
 # Installed into /work so the generated config resolves `prisma/config`. Versions match bun.lock.
 RUN npm init -y >/dev/null \
- && npm install --no-audit --no-fund prisma@7.5.0 pg@8.20.0
+ && npm install --no-audit --no-fund prisma@7.5.0
 
 COPY --chown=node:node packages/db/prisma/schema.prisma prisma/schema.prisma
 COPY --chown=node:node packages/db/prisma/migrations prisma/migrations
