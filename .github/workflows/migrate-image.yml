@@ -1,0 +1,79 @@
+name: migrate-image
+
+# Proves the one-shot migration image against a real PostgreSQL: baseline on an
+# empty database, deploy with nothing pending, and the two refusals.
+
+on:
+  pull_request:
+    paths:
+      - "packages/db/prisma/**"
+      - "packages/db/migrate.Dockerfile"
+      - "packages/db/migrate-entrypoint.sh"
+      - ".github/workflows/migrate-image.yml"
+  push:
+    branches: [master]
+    paths:
+      - "packages/db/prisma/**"
+      - "packages/db/migrate.Dockerfile"
+      - "packages/db/migrate-entrypoint.sh"
+      - ".github/workflows/migrate-image.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  migrate-image:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: octopus
+          POSTGRES_PASSWORD: octopus
+          POSTGRES_DB: octopus_migrate_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U octopus -d octopus_migrate_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: "postgresql://octopus:octopus@localhost:5432/octopus_migrate_test"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+
+      - name: Build migration image
+        run: docker build -f packages/db/migrate.Dockerfile -t octopus-migrate:ci .
+
+      - name: Baseline an empty database
+        run: |
+          docker run --rm --network host -e DATABASE_URL -e BASELINE=1 octopus-migrate:ci
+          expected=$(find packages/db/prisma/migrations -mindepth 1 -maxdepth 1 -type d | wc -l)
+          actual=$(docker run --rm --network host postgres:17-alpine \
+            psql "$DATABASE_URL" -tAc 'select count(*) from _prisma_migrations' | tr -d '[:space:]')
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::_prisma_migrations has $actual rows, expected $expected"
+            exit 1
+          fi
+
+      - name: Deploy with nothing pending
+        run: docker run --rm --network host -e DATABASE_URL octopus-migrate:ci
+
+      - name: Refuse to baseline a non-empty database
+        run: |
+          if out=$(docker run --rm --network host -e DATABASE_URL -e BASELINE=1 octopus-migrate:ci 2>&1); then
+            echo "::error::BASELINE=1 succeeded against a non-empty database"
+            exit 1
+          fi
+          echo "$out"
+          grep -q "refusing to baseline" <<<"$out"
+
+      - name: Refuse to run without DATABASE_URL
+        run: |
+          if out=$(docker run --rm --network host octopus-migrate:ci 2>&1); then
+            echo "::error::the image succeeded with DATABASE_URL unset"
+            exit 1
+          fi
+          echo "$out"
+          grep -q "DATABASE_URL is required" <<<"$out"
