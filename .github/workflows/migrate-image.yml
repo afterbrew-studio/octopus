@@ -1,7 +1,9 @@
 name: migrate-image
 
-# Proves the one-shot migration image against a real PostgreSQL: it refuses an empty
-# database, executes a pending migration's SQL, and is a no-op once current.
+# Proves the one-shot migration image's mechanics against a real PostgreSQL: it refuses
+# an empty database, executes a pending migration's raw SQL, and is a no-op once current.
+# It does not model production's history: some tables reached the schema without a
+# migration, so no database can be rebuilt by replaying migrations/.
 
 on:
   pull_request:
@@ -42,8 +44,6 @@ jobs:
       DATABASE_URL: "postgresql://octopus:octopus@localhost:5432/octopus_migrate_test"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
-        with:
-          fetch-depth: 0 # the fixture reads the schema from before the newest migration
 
       - name: Build migration image
         run: docker build -f packages/db/migrate.Dockerfile -t octopus-migrate:ci .
@@ -59,40 +59,39 @@ jobs:
           docker run --rm --network host postgres:17-alpine psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
             -c 'drop schema public cascade' -c 'create schema public'
 
-      - name: Bring the database to the state before the newest migration
+      - name: Build the current schema with every migration recorded
         run: |
-          newest=$(ls packages/db/prisma/migrations | grep -v '\.toml$' | sort | tail -1)
-          added=$(git log --diff-filter=A --format=%H -- "packages/db/prisma/migrations/$newest" | tail -1)
-          mkdir -p fixture
-          git show "$added^:packages/db/prisma/schema.prisma" > fixture/schema.prisma
-          echo "NEWEST=$newest" >> "$GITHUB_ENV"
-          docker run --rm --network host -e DATABASE_URL -e NEWEST="$newest" \
-            -v "$PWD/fixture/schema.prisma:/work/prisma/schema.prisma:ro" \
-            --entrypoint sh octopus-migrate:ci -c '
-              set -eu
-              printf "%s\n" "import { defineConfig, env } from \"prisma/config\";" \
-                "export default defineConfig({ schema: \"prisma/schema.prisma\", migrations: { path: \"prisma/migrations\" }, datasource: { url: env(\"DATABASE_URL\") } });" \
-                > prisma.config.mjs
-              ./node_modules/.bin/prisma db push --config prisma.config.mjs
-              for dir in prisma/migrations/*/; do
-                name=$(basename "$dir")
-                [ "$name" = "$NEWEST" ] && continue
-                ./node_modules/.bin/prisma migrate resolve --applied "$name" --config prisma.config.mjs >/dev/null
-              done'
+          docker run --rm --network host -e DATABASE_URL --entrypoint sh octopus-migrate:ci -c '
+            set -eu
+            printf "%s\n" "import { defineConfig, env } from \"prisma/config\";" \
+              "export default defineConfig({ schema: \"prisma/schema.prisma\", migrations: { path: \"prisma/migrations\" }, datasource: { url: env(\"DATABASE_URL\") } });" \
+              > prisma.config.mjs
+            ./node_modules/.bin/prisma db push --config prisma.config.mjs
+            for dir in prisma/migrations/*/; do
+              ./node_modules/.bin/prisma migrate resolve --applied "$(basename "$dir")" --config prisma.config.mjs >/dev/null
+            done'
 
-      - name: Apply the pending migration
+      - name: Apply a pending migration with raw SQL
         run: |
-          docker run --rm --network host -e DATABASE_URL octopus-migrate:ci
+          mkdir -p probe/99999999999999_ci_probe
+          cat > probe/99999999999999_ci_probe/migration.sql <<'SQL'
+          CREATE TABLE "ci_probe" ("id" INTEGER PRIMARY KEY);
+          CREATE FUNCTION ci_probe_immutable() RETURNS TRIGGER AS $$ BEGIN RAISE EXCEPTION 'immutable'; END $$ LANGUAGE plpgsql;
+          CREATE TRIGGER ci_probe_immutable BEFORE DELETE ON "ci_probe" FOR EACH ROW EXECUTE FUNCTION ci_probe_immutable();
+          SQL
+          echo "PROBE_MOUNT=$PWD/probe/99999999999999_ci_probe:/work/prisma/migrations/99999999999999_ci_probe:ro" >> "$GITHUB_ENV"
+          docker run --rm --network host -e DATABASE_URL \
+            -v "$PWD/probe/99999999999999_ci_probe:/work/prisma/migrations/99999999999999_ci_probe:ro" octopus-migrate:ci
           row=$(docker run --rm --network host postgres:17-alpine psql "$DATABASE_URL" -tAc \
-            "select applied_steps_count || ':' || (finished_at is not null) from _prisma_migrations where migration_name = '$NEWEST'")
-          if [ "$row" != "1:true" ]; then
-            echo "::error::$NEWEST was not executed by migrate deploy (got '$row')"
+            "select applied_steps_count || ':' || (finished_at is not null) || ':' || (select count(*) from pg_trigger where tgname = 'ci_probe_immutable') from _prisma_migrations where migration_name = '99999999999999_ci_probe'")
+          if [ "$row" != "1:true:1" ]; then
+            echo "::error::the probe migration was not executed by migrate deploy (got '$row')"
             exit 1
           fi
 
       - name: Deploy with nothing pending
         run: |
-          out=$(docker run --rm --network host -e DATABASE_URL octopus-migrate:ci 2>&1)
+          out=$(docker run --rm --network host -e DATABASE_URL -v "$PROBE_MOUNT" octopus-migrate:ci 2>&1)
           echo "$out"
           grep -q "No pending migrations" <<<"$out"
 
