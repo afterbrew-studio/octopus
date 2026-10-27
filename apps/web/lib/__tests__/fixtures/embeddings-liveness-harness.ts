@@ -10,7 +10,7 @@ process.env.SELF_HOSTED = "true";
 mock.module("@/lib/cost", () => ({ isOrgOverSpendLimit: async () => false }));
 mock.module("@/lib/ai-usage", () => ({ logAiUsage: async () => {} }));
 mock.module("@/lib/ai-client", () => ({ getEmbedModel: async () => "unused" }));
-const { createEmbeddings } = await import("@/lib/embeddings");
+const { createEmbeddings, resolveEmbedConfig } = await import("@/lib/embeddings");
 const { INDEX_SILENCE_LIMIT_MS, throttledHeartbeat } = await import("@/lib/index-liveness");
 
 let clock = 1_000_000;
@@ -30,6 +30,9 @@ globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => 
 }) as typeof fetch;
 
 const texts = Array.from({ length: 320 }, (_, i) => `chunk ${i}`);
+
+// In Ollama mode the env model always wins, whatever the org or repository override says.
+assert.equal((await resolveEmbedConfig({ organizationId: "org-1", repositoryId: "repo-1" })).model, "nomic-embed-text");
 
 // Without progress options a request carries no signal: existing callers are unchanged.
 assert.equal((await createEmbeddings(texts.slice(0, 2))).length, 2);

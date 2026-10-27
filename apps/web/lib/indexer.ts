@@ -10,7 +10,7 @@ import * as gitlabLib from "@/lib/gitlab";
 import * as forgejoLib from "@/lib/forgejo";
 import { ForgejoResponseTooLargeError } from "@/lib/forgejo-http";
 import { ensureCollection, upsertChunks, listRepoFileChunkIds, deleteChunkPoints, scrollActiveChunkVectors } from "@/lib/qdrant";
-import { getEmbedConfig, getEmbeddingKey } from "@/lib/embed-config";
+import { getEmbeddingKey, type EmbedConfig } from "@/lib/embed-config";
 import { SupersededIndexError, requestSignal, throttledHeartbeat, waitWhileAlive } from "@/lib/index-liveness";
 import { generateSparseVectors } from "@/lib/sparse-vector";
 import { parseOctopusIgnore, type Ignore } from "@/lib/octopus-ignore";
@@ -62,10 +62,10 @@ function hashText(text: string): string {
 async function collectReusableVectors(
   repoId: string,
   wanted: ReadonlySet<string>,
+  config: EmbedConfig,
   signal: AbortSignal | undefined,
   beat: () => Promise<void>,
 ): Promise<Map<string, number[]>> {
-  const config = getEmbedConfig();
   const key = getEmbeddingKey(config);
   const found = new Map<string, number[]>();
   for await (const page of scrollActiveChunkVectors(repoId, signal)) {
@@ -578,8 +578,11 @@ export async function indexRepository(
   // 5. Embed chunks whose text has no stored vector in the active generation
   const texts = allChunks.map((c) => c.text);
   const textHashes = texts.map(hashText);
-  const embeddingKey = getEmbeddingKey();
-  const reused = await collectReusableVectors(repoId, new Set(textHashes), signal, beat);
+  // Resolved once for the repository, the way retrieval resolves it, so vectors are generated and reused in the space queries use.
+  const { createEmbeddings: embed, resolveEmbedConfig } = await import("@/lib/embeddings");
+  const embedConfig = await resolveEmbedConfig(organizationId ? { organizationId, repositoryId: repoId } : undefined);
+  const embeddingKey = getEmbeddingKey(embedConfig);
+  const reused = await collectReusableVectors(repoId, new Set(textHashes), embedConfig, signal, beat);
   const vectors: number[][] = textHashes.map((hash) => reused.get(hash) ?? []);
   const missing = vectors.flatMap((vector, i) => (vector.length ? [] : [i]));
   const totalBatches = Math.ceil(missing.length / EMBED_BATCH);
@@ -594,8 +597,7 @@ export async function indexRepository(
       onLog(`Processing embedding batch ${batchNum}/${totalBatches}...`);
     }
 
-    const { createEmbeddings: embed } = await import("@/lib/embeddings");
-    const batchVectors = await embed(batchIndexes.map((index) => texts[index]), undefined, { signal, onRequest: beat });
+    const batchVectors = await embed(batchIndexes.map((index) => texts[index]), undefined, { config: embedConfig, signal, onRequest: beat });
     if (batchVectors.length !== batchIndexes.length || batchVectors.some(vector => vector.length === 0)) {
       throw new Error("Indexing incomplete: embedding results do not cover every chunk");
     }
@@ -797,17 +799,18 @@ export async function incrementalIndex(
 
   // 2. Generate embeddings
   const texts = allChunks.map((c) => c.text);
-  const { createEmbeddings } = await import("@/lib/embeddings");
+  const { createEmbeddings, resolveEmbedConfig } = await import("@/lib/embeddings");
+  const embedConfig = await resolveEmbedConfig(organizationId ? { organizationId, repositoryId: repoId } : undefined);
   const vectors: number[][] = [];
   for (let i = 0; i < texts.length; i += 512) {
     const batch = texts.slice(i, i + 512);
-    const batchVectors = await createEmbeddings(batch);
+    const batchVectors = await createEmbeddings(batch, undefined, { config: embedConfig });
     vectors.push(...batchVectors);
   }
 
   const sparseVectors = generateSparseVectors(texts);
   const indexedAt = new Date().toISOString();
-  const embeddingKey = getEmbeddingKey();
+  const embeddingKey = getEmbeddingKey(embedConfig);
   const points = allChunks.map((chunk, i) => ({
     id: crypto.randomUUID(),
     vector: vectors[i],

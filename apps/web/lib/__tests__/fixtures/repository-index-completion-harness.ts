@@ -283,7 +283,7 @@ try {
       upsertChunks: async () => { writes++; },
       scrollActiveChunkVectors: async function* () {},
     }));
-    mock.module("@/lib/embeddings", () => ({ createEmbeddings: async (texts: string[]) => texts.map(() => [0.1]) }));
+    mock.module("@/lib/embeddings", () => ({ resolveEmbedConfig: async () => (await import("@/lib/embed-config")).getEmbedConfig(), createEmbeddings: async (texts: string[]) => texts.map(() => [0.1]) }));
     mock.module("@/lib/github", () => ({
       getInstallationToken: async () => "fixture-token", getRepositoryDetails: async () => ({ default_branch: "main" }),
       getFileContent: async (_id: number, _owner: string, _name: string, _ref: string, path: string) => path === ".octopusignore" ? null : "export const a = 1;",
@@ -330,7 +330,7 @@ try {
     assert.ok(completed.indexedAt);
   } else if (scenario.startsWith("local")) {
     mock.module("@/lib/qdrant", () => ({ upsertChunks: async () => {} }));
-    mock.module("@/lib/embeddings", () => ({ createEmbeddings: async (texts: string[]) => texts.map(() => [0.1]) }));
+    mock.module("@/lib/embeddings", () => ({ resolveEmbedConfig: async () => (await import("@/lib/embed-config")).getEmbedConfig(), createEmbeddings: async (texts: string[]) => texts.map(() => [0.1]) }));
     const { prepareRepoForLocalIndex, claimLocalIndexBatch, recordLocalIndexProgress, indexLocalBatch, markLocalIndexFailed } = await import("@/lib/index-local");
     const single = scenario === "local-single";
     const prepared = await prepareRepoForLocalIndex(org.id, "github", `local/${fixture}`, "main", { totalBatches: single ? 1 : 2, totalFiles: 2 });
@@ -367,7 +367,7 @@ try {
     if (scenario === "local-cancel") assert.equal(result.indexStatus, "pending");
   } else if (scenario === "staged-upload") {
     mock.module("@/lib/qdrant", () => ({ upsertChunks: async () => {} }));
-    mock.module("@/lib/embeddings", () => ({ createEmbeddings: async (texts: string[]) => texts.map(() => [0.1]) }));
+    mock.module("@/lib/embeddings", () => ({ resolveEmbedConfig: async () => (await import("@/lib/embed-config")).getEmbedConfig(), createEmbeddings: async (texts: string[]) => texts.map(() => [0.1]) }));
     const { prepareRepoForLocalIndex, claimLocalIndexBatch, recordLocalIndexProgress, indexLocalBatch, liveIndexCounts } = await import("@/lib/index-local");
     const { resolveIndexGate } = await import("@/lib/usable-index");
     const name = `local/${fixture}`;

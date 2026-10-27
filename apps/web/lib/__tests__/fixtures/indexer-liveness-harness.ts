@@ -31,7 +31,7 @@ mock.module("@/lib/qdrant", () => ({
   ensureCollection: async () => {}, listRepoFileChunkIds: async () => [], deleteChunkPoints: async () => {}, upsertChunks: async () => {},
   scrollActiveChunkVectors: async function* () {},
 }));
-mock.module("@/lib/embeddings", () => ({ createEmbeddings: async (texts: string[]) => texts.map(() => [0.1]) }));
+mock.module("@/lib/embeddings", () => ({ resolveEmbedConfig: async () => (await import("@/lib/embed-config")).getEmbedConfig(), createEmbeddings: async (texts: string[]) => texts.map(() => [0.1]) }));
 const { indexRepository } = await import("@/lib/indexer");
 
 // 130s slices into 60/60/10, avoiding the 30s blob timeout the spy lets through untouched.

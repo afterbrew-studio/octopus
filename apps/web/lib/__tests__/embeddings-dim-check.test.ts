@@ -51,7 +51,7 @@ mock.module("openai", () => {
 });
 
 // Import AFTER mocks are wired so module init picks them up.
-const { createEmbeddings } = await import("@/lib/embeddings");
+const { createEmbeddings, resolveEmbedConfig } = await import("@/lib/embeddings");
 
 describe("createEmbeddings — Qdrant dim validation", () => {
   beforeEach(() => {
@@ -103,6 +103,18 @@ describe("createEmbeddings — Qdrant dim validation", () => {
     await expect(
       createEmbeddings(["a", "b", "c", "d"], TRACKING),
     ).rejects.toThrow(/returned 1536-dim vectors, but OCTOPUS_EMBED_DIM is 3072/);
+  });
+
+  it("resolves the same configuration for indexing as retrieval embeds with", async () => {
+    // Retrieval embeds with tracking, which applies the org/repo model override; indexing resolves it once and passes it in.
+    const retrieval = await resolveEmbedConfig({ organizationId: "org-test", repositoryId: "repo-test" });
+    expect(retrieval.model).toBe("text-embedding-3-small");
+    expect((await resolveEmbedConfig()).model).not.toBe("text-embedding-3-small");
+
+    requestOptionsSeen.length = 0;
+    const seenModels: string[] = [];
+    await createEmbeddings(["indexed"], undefined, { config: retrieval, onRequest: async () => { seenModels.push(retrieval.model); } });
+    expect(seenModels).toEqual(["text-embedding-3-small"]);
   });
 
   it("gives each provider request a deadline and the signal, and reports progress, only when asked", async () => {

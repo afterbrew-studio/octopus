@@ -64,7 +64,7 @@ export async function exerciseStorageRace(scenario: string, repo: Repository) {
   process.env.QDRANT_URL = storageUrl.toString();
   mock.module("@/lib/embed-config", () => ({ getEmbedConfig: () => ({ dim: 1 }), getEmbeddingKey: () => "fixture:model:1" }));
   let embeddedTexts = 0;
-  mock.module("@/lib/embeddings", () => ({ createEmbeddings: async (texts: string[]) => { embeddedTexts += texts.length; return texts.map(() => [0.1]); } }));
+  mock.module("@/lib/embeddings", () => ({ resolveEmbedConfig: async () => ({ provider: "fixture", model: "model", dim: 1 }), createEmbeddings: async (texts: string[]) => { embeddedTexts += texts.length; return texts.map(() => [0.1]); } }));
   let content = "baseline";
   let empty = false;
   const files = () => Array.from({ length: 101 }, (_, i) => ({ path: `file${i}.ts`, content: `export const value = '${content}-${i}';` }));

@@ -7,13 +7,15 @@ import { getEmbedConfig, type EmbedConfig } from "@/lib/embed-config";
 import { validateProviderUrl } from "@/lib/providers/url-validation";
 import { requestSignal } from "@/lib/index-liveness";
 
-export type EmbeddingProgress = {
+export type EmbeddingOptions = {
+  /** A configuration already resolved with `resolveEmbedConfig`. */
+  config?: EmbedConfig;
   signal?: AbortSignal;
   /** Awaited after every provider request, so a long call can keep its owner's heartbeat alive. */
   onRequest?: () => Promise<void>;
 };
 
-// Per provider request when `progress` is given. OpenAI's client retries, so its attempt is shorter.
+// Per provider request when `options` is given. OpenAI's client retries, so its attempt is shorter.
 const OPENAI_REQUEST_TIMEOUT_MS = 2 * 60_000;
 const OLLAMA_REQUEST_TIMEOUT_MS = 5 * 60_000;
 
@@ -51,6 +53,32 @@ function estimateTokens(text: string): number {
 }
 
 /**
+ * The provider, model and dimension `createEmbeddings` uses for this org and repository.
+ *
+ * Per-org / per-repo embed-model override beats the env default — but ONLY
+ * for OpenAI. The `getEmbedModel` chain (Repository.embedModelId →
+ * Organization.defaultEmbedModelId → platform default → text-embedding-3-large)
+ * ALWAYS returns a non-empty string, so applying it in Ollama mode would send
+ * an OpenAI model name to Ollama's /api/embed and fail. In Ollama mode the
+ * env-configured model (OCTOPUS_EMBED_MODEL) always wins; system-level
+ * embeddings (no org context) also use the env model.
+ *
+ * Caveat: an OpenAI org-level override must produce vectors with the same dim
+ * as the global Qdrant collection. Mismatched dim is rejected explicitly
+ * below with an actionable message instead of a cryptic Qdrant 400. Hosters
+ * who want per-org dims would need per-org collections — out of scope here.
+ *
+ * Indexing resolves this once per repository and passes it back as `options.config`,
+ * so what it stores, and the identity it reuses vectors by, match what retrieval embeds with.
+ */
+export async function resolveEmbedConfig(tracking?: { organizationId: string; repositoryId?: string }): Promise<EmbedConfig> {
+  const baseConfig = getEmbedConfig();
+  if (!tracking?.organizationId || baseConfig.provider === "ollama") return baseConfig;
+  const resolved = await getEmbedModel(tracking.organizationId, tracking.repositoryId);
+  return resolved ? { ...baseConfig, model: resolved } : baseConfig;
+}
+
+/**
  * Embed an array of input texts using the configured provider (OpenAI or
  * Ollama). Provider selection is process-wide via `OCTOPUS_EMBED_PROVIDER`
  * + friends — see `embed-config.ts`. Returns one vector per input; empty
@@ -61,8 +89,9 @@ function estimateTokens(text: string): number {
  * reject blank strings (OpenAI returns 400, Ollama returns a malformed
  * response). The mapping back to original positions happens at the bottom.
  *
- * `progress` is for long, cancellable runs such as indexing: each provider request gets a
- * deadline and the signal, and `onRequest` runs between requests. Without it nothing changes.
+ * `options` is for long, cancellable runs such as indexing: `config` skips the per-call model
+ * resolution, each provider request gets a deadline and `signal`, and `onRequest` runs between
+ * requests. Without it nothing changes.
  *
  * `tracking` is for ai_usage rows + the spend-limit gate. When omitted
  * (system-level embeddings outside any org), the usage row is skipped and
@@ -71,33 +100,14 @@ function estimateTokens(text: string): number {
 export async function createEmbeddings(
   texts: string[],
   tracking?: { organizationId: string; operation: string; repositoryId?: string },
-  progress?: EmbeddingProgress,
+  options?: EmbeddingOptions,
 ): Promise<number[][]> {
   if (tracking?.organizationId && (await isOrgOverSpendLimit(tracking.organizationId))) {
     console.warn(`[embeddings] Org ${tracking.organizationId} over spend limit — skipping embeddings`);
     return texts.map(() => []);
   }
 
-  const baseConfig = getEmbedConfig();
-
-  // Per-org / per-repo embed-model override beats the env default — but ONLY
-  // for OpenAI. The `getEmbedModel` chain (Repository.embedModelId →
-  // Organization.defaultEmbedModelId → platform default → text-embedding-3-large)
-  // ALWAYS returns a non-empty string, so applying it in Ollama mode would send
-  // an OpenAI model name to Ollama's /api/embed and fail. In Ollama mode the
-  // env-configured model (OCTOPUS_EMBED_MODEL) always wins; system-level
-  // embeddings (no org context) also use the env model.
-  //
-  // Caveat: an OpenAI org-level override must produce vectors with the same dim
-  // as the global Qdrant collection. Mismatched dim is rejected explicitly
-  // below with an actionable message instead of a cryptic Qdrant 400. Hosters
-  // who want per-org dims would need per-org collections — out of scope here.
-  let model = baseConfig.model;
-  if (tracking?.organizationId && baseConfig.provider !== "ollama") {
-    const resolved = await getEmbedModel(tracking.organizationId, tracking.repositoryId);
-    if (resolved) model = resolved;
-  }
-  const config: EmbedConfig = { ...baseConfig, model };
+  const config = options?.config ?? await resolveEmbedConfig(tracking);
 
   const { validTexts, validIndexes } = filterAndTruncate(texts);
   if (validTexts.length === 0) {
@@ -106,8 +116,8 @@ export async function createEmbeddings(
 
   const { vectors: validVectors, promptTokens } =
     config.provider === "ollama"
-      ? await embedWithOllama(validTexts, config, progress)
-      : await embedWithOpenAI(validTexts, config, progress);
+      ? await embedWithOllama(validTexts, config, options)
+      : await embedWithOpenAI(validTexts, config, options);
 
   // Map valid vectors back to original positions; empty array for filtered-out.
   const out: number[][] = texts.map(() => []);
@@ -153,7 +163,7 @@ const OPENAI_MAX_BATCH_ITEMS = 512;
 async function embedWithOpenAI(
   texts: string[],
   config: EmbedConfig,
-  progress?: EmbeddingProgress,
+  options?: EmbeddingOptions,
 ): Promise<{ vectors: number[][]; promptTokens: number }> {
   const client = getOpenAIClient();
   const vectors: number[][] = [];
@@ -168,14 +178,14 @@ async function embedWithOpenAI(
     // Older embedding models reject the field, so only opt in for
     // the v3 family.
     const supportsDimensionsArg = config.model.startsWith("text-embedding-3-");
-    progress?.signal?.throwIfAborted();
+    options?.signal?.throwIfAborted();
     let res;
     try {
       res = await client.embeddings.create({
         model: config.model,
         input: batch,
         ...(supportsDimensionsArg ? { dimensions: config.dim } : {}),
-      }, progress ? { signal: progress.signal, timeout: OPENAI_REQUEST_TIMEOUT_MS } : undefined);
+      }, options ? { signal: options.signal, timeout: OPENAI_REQUEST_TIMEOUT_MS } : undefined);
     } catch (err) {
       // The split-on-token-limit recovery applies ONLY to OpenAI's
       // "request too large" 400, never to any other error. Anything
@@ -207,7 +217,7 @@ async function embedWithOpenAI(
     }
     for (const item of res.data) vectors.push(item.embedding);
     promptTokens += res.usage.prompt_tokens;
-    await progress?.onRequest?.();
+    await options?.onRequest?.();
   }
 
   let batchStart = 0;
@@ -242,7 +252,7 @@ const OLLAMA_BATCH_ITEMS = 64;
 async function embedWithOllama(
   texts: string[],
   config: EmbedConfig,
-  progress?: EmbeddingProgress,
+  options?: EmbeddingOptions,
 ): Promise<{ vectors: number[][]; promptTokens: number }> {
   if (!config.ollamaBaseUrl) {
     throw new Error("Ollama embeddings selected but OCTOPUS_OLLAMA_BASE_URL not configured");
@@ -259,12 +269,12 @@ async function embedWithOllama(
 
   for (let i = 0; i < texts.length; i += OLLAMA_BATCH_ITEMS) {
     const batch = texts.slice(i, i + OLLAMA_BATCH_ITEMS);
-    progress?.signal?.throwIfAborted();
+    options?.signal?.throwIfAborted();
     const res = await fetch(`${safeBaseUrl}/api/embed`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ model: config.model, input: batch }),
-      ...(progress ? { signal: requestSignal(progress.signal, OLLAMA_REQUEST_TIMEOUT_MS) } : {}),
+      ...(options ? { signal: requestSignal(options.signal, OLLAMA_REQUEST_TIMEOUT_MS) } : {}),
     });
     if (!res.ok) {
       const detail = await res.text().catch(() => "");
@@ -292,7 +302,7 @@ async function embedWithOllama(
     }
     vectors.push(...got);
     for (const t of batch) promptTokens += estimateTokens(t);
-    await progress?.onRequest?.();
+    await options?.onRequest?.();
   }
 
   return { vectors, promptTokens };

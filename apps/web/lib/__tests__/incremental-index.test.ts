@@ -31,6 +31,7 @@ mock.module("@/lib/qdrant", () => ({
 
 let mockCreateEmbeddings = (texts: string[]) => Promise.resolve(texts.map(() => new Array(3072).fill(0.1)));
 mock.module("@/lib/embeddings", () => ({
+  resolveEmbedConfig: () => Promise.resolve({ provider: "openai", model: "text-embedding-3-large", dim: 3072 }),
   createEmbeddings: (texts: string[]) => mockCreateEmbeddings(texts),
 }));
 

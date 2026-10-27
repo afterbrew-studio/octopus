@@ -66,9 +66,15 @@ mock.module("@/lib/repository-index-storage", () => ({
 // Beat on every progress point instead of once a minute.
 const actualLiveness = await import("@/lib/index-liveness");
 mock.module("@/lib/index-liveness", () => ({ ...actualLiveness, throttledHeartbeat: (touch: () => Promise<void>) => touch }));
+const actualEmbedConfig = await import("@/lib/embed-config");
+let resolvedConfig: ReturnType<typeof actualEmbedConfig.getEmbedConfig> | undefined;
+const resolveCalls: unknown[] = [];
+const embedConfigs: unknown[] = [];
 mock.module("@/lib/embeddings", () => ({
-  createEmbeddings: async (texts: string[]) => {
+  resolveEmbedConfig: async (tracking?: unknown) => { resolveCalls.push(tracking); return resolvedConfig ?? actualEmbedConfig.getEmbedConfig(); },
+  createEmbeddings: async (texts: string[], _tracking?: unknown, options?: { config?: unknown }) => {
     embedded.push(texts);
+    embedConfigs.push(options?.config);
     return invalidEmbeddings ? [] : texts.map(() => [0.1]);
   },
 }));
@@ -263,6 +269,30 @@ storedPages = [[{ textHash: hashA, embeddingKey: currentKey, vector: stored }], 
 await run();
 assert.equal(embedded.length, 0, "a fully reused snapshot embeds nothing");
 console.log("Vector reuse regressions passed");
+
+// Indexing resolves the embedding configuration once for the repository, the way retrieval does, and reuses vectors by it.
+const withOrg = () => indexRepository({ repoId: "repo-1", indexAttemptId: "attempt-1" }, "acme/new", "main", 123, undefined, undefined, "github", "org-1");
+const overrideConfig = { ...actualEmbedConfig.getEmbedConfig(), model: "org-override-model" };
+const overrideKey = actualEmbedConfig.getEmbeddingKey(overrideConfig);
+treeWith(files);
+resolvedConfig = overrideConfig; resolveCalls.length = 0; embedConfigs.length = 0;
+await withOrg();
+assert.deepEqual(resolveCalls, [{ organizationId: "org-1", repositoryId: "repo-1" }], "the same org and repository retrieval resolves with");
+assert.ok(embedConfigs.length > 0 && embedConfigs.every(config => config === overrideConfig), "every embedding request uses the resolved configuration");
+assert.ok(upserted.every(point => point.payload.embeddingKey === overrideKey), "points are keyed by the model that embedded them");
+const overrideHash = String(upserted[0].payload.textHash);
+for (const [name, key, reused] of [["the resolved model", overrideKey, true], ["the global model", currentKey, false]] as const) {
+  treeWith(files);
+  resolvedConfig = overrideConfig; embedded.length = 0;
+  storedPages = [[{ textHash: overrideHash, embeddingKey: key, vector: stored }]];
+  await withOrg();
+  assert.equal(embedded.flat().length, reused ? 1 : 2, `vectors stored under ${name} are ${reused ? "" : "not "}reused for an override`);
+}
+resolvedConfig = undefined;
+treeWith(files);
+resolveCalls.length = 0;
+await run();
+assert.deepEqual(resolveCalls, [undefined], "no organization, no override");
 
 // Progress heartbeats keep the claim alive, and a lost claim stops the run before it writes.
 treeWith(files);
