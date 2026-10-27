@@ -246,7 +246,11 @@ export async function getBranchHead(organizationId: string, fullName: string, br
   return result.commit?.id && shaPattern.test(result.commit.id) ? result.commit.id : null;
 }
 
-export async function getRepositoryTree(organizationId: string, fullName: string, branch: string): Promise<string[]> {
+/** `onPage` is awaited after every page, so a long listing can keep its owner's heartbeat alive; `signal` cancels it. */
+export async function getRepositoryTree(
+  organizationId: string, fullName: string, branch: string,
+  progress: { signal?: AbortSignal; onPage?: () => Promise<void> } = {},
+): Promise<string[]> {
   const auth = await credentials(organizationId);
   const sha = shaPattern.test(branch) ? branch : await getBranchHead(organizationId, fullName, branch);
   if (!sha) throw new Error("Forgejo branch has no valid revision");
@@ -254,8 +258,11 @@ export async function getRepositoryTree(organizationId: string, fullName: string
   const seen = new Set<string>();
   let expectedEntries: number | undefined;
   for (let page = 1; page <= 100; page++) {
+    progress.signal?.throwIfAborted();
     const data = await read<{ tree?: { path: string; type: string; mode?: string }[] | null; total_count?: number }>(auth,
-      `${repositoryPath(fullName)}/git/trees/${sha}?recursive=true&per_page=1000&page=${page}`);
+      `${repositoryPath(fullName)}/git/trees/${sha}?recursive=true&per_page=1000&page=${page}`,
+      progress.signal ? { signal: progress.signal } : undefined);
+    await progress.onPage?.();
     if (!Number.isSafeInteger(data.total_count) || data.total_count! < 0
       || (expectedEntries !== undefined && expectedEntries !== data.total_count)) throw new Error("Invalid Forgejo tree count");
     expectedEntries = data.total_count;

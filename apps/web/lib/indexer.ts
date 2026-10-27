@@ -125,7 +125,7 @@ export async function indexRepository(
       onLog(`Fetching Forgejo repository ${fullName}@${defaultBranch}...`);
       const head = await forgejoLib.getBranchHead(organizationId, fullName, defaultBranch);
       if (!head) throw new Error("Forgejo did not return a repository revision");
-      const paths = await forgejoLib.getRepositoryTree(organizationId, fullName, head);
+      const paths = await forgejoLib.getRepositoryTree(organizationId, fullName, head, { signal, onPage: beat });
       totalFileCount = paths.length;
       emptyRepository = paths.length === 0;
       const ig = paths.includes(".octopusignore")
