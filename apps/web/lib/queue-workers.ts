@@ -16,6 +16,7 @@ import { reconcileAutoReloadAttempts } from "./credits";
 import { syncMarketingConversions } from "./marketing-outbox";
 import { runOllamaPull } from "./ollama-admin";
 import { reapStuckReviews } from "./reap-stuck-reviews";
+import { releaseAbandonedIndexClaims } from "./repository-index-completion";
 import { requeueOverdueHolds } from "./review-hold";
 import { reconcileReviewPublication, requeueUnresolvedPublications } from "./review-publication-reconcile";
 import type { PublicationRecord } from "./review-verdict";
@@ -233,6 +234,11 @@ export async function registerWorkers(boss: PgBoss, config: QueueConfig): Promis
   await boss.work("reap-stuck-reviews", async (jobs) => {
     for (const job of jobs) {
       try {
+        // Index attempts are crash-recovered here because no other periodic job
+        // covers every provider and organization; a failure must not stop the reaping.
+        const releasedIndexes = await releaseAbandonedIndexClaims()
+          .catch((err) => { console.error("[queue] Releasing abandoned index claims failed:", err); return 0; });
+        if (releasedIndexes) console.log(`[queue] reap-stuck-reviews ${job.id}: released ${releasedIndexes} abandoned index claim(s)`);
         // A verdict whose reconcile job was lost (a crash between the record and the
         // job, or retries exhausted) is picked up here from the record on its run.
         await requeueUnresolvedPublications();

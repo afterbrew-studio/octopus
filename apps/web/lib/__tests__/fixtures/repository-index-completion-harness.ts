@@ -335,6 +335,28 @@ try {
     assert.equal(result.firstIndexedAt !== null, verified);
     if (scenario === "local-legacy") assert.ok(result.indexedAt);
     if (scenario === "local-cancel") assert.equal(result.indexStatus, "pending");
+  } else if (scenario === "abandoned-claims") {
+    const { releaseAbandonedIndexClaims } = await import("@/lib/repository-index-completion");
+    await prisma.organization.update({ where: { id: org.id }, data: { autoDiscoverRepos: false } });
+    const quiet = new Date(Date.now() - 20 * 60_000);
+    const make = async (provider: string, data: Record<string, unknown>) => {
+      const created = await prisma.repository.create({ data: {
+        organizationId: org.id, name: provider, fullName: `fixture/${provider}-${randomUUID()}`, externalId: randomUUID(), provider, indexStatus: "indexing", ...data,
+      } });
+      await prisma.repository.update({ where: { id: created.id }, data: { updatedAt: data.updatedAt ?? quiet } });
+      return created.id;
+    };
+    const gitlab = await make("gitlab", { indexAttemptId: randomUUID() });
+    const bitbucket = await make("bitbucket", { indexAttemptId: randomUUID() });
+    const alive = await make("github", { indexAttemptId: randomUUID(), updatedAt: new Date() });
+    const betweenUploadBatches = await make("github", { indexAttemptId: null });
+    const status = async (id: string) => (await prisma.repository.findUniqueOrThrow({ where: { id } })).indexStatus;
+    assert.equal(await releaseAbandonedIndexClaims(), 2);
+    assert.deepEqual(
+      [await status(gitlab), await status(bitbucket), await status(alive), await status(betweenUploadBatches)],
+      ["failed", "failed", "indexing", "indexing"],
+      "every provider is recovered regardless of discovery; live and unclaimed rows are left alone",
+    );
   } else if (scenario === "heartbeat") {
     const { touchRepositoryIndex } = await import("@/lib/repository-index-storage");
     const owner = { repoId: repo.id, indexAttemptId };

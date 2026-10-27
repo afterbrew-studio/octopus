@@ -1,6 +1,7 @@
 import "server-only";
 import { prisma, type Prisma } from "@octopus/db";
 import type { IndexStats } from "@/lib/indexer";
+import { INDEX_SILENCE_LIMIT_MS } from "@/lib/index-liveness";
 
 /** A replacement attempt or cancellation owns the row now. */
 export class SupersededIndexError extends Error {
@@ -9,6 +10,19 @@ export class SupersededIndexError extends Error {
 
 export function isIndexingCancelled(signal?: AbortSignal): boolean {
   return !!signal?.aborted && signal.reason?.name !== "TimeoutError";
+}
+
+/** Frees claims of attempts that stopped heartbeating; any provider, whatever the organization's discovery setting. */
+export async function releaseAbandonedIndexClaims(now: Date = new Date()): Promise<number> {
+  const released = await prisma.repository.updateMany({
+    where: {
+      indexStatus: "indexing",
+      indexAttemptId: { not: null },
+      updatedAt: { lt: new Date(now.getTime() - INDEX_SILENCE_LIMIT_MS) },
+    },
+    data: { indexStatus: "failed" },
+  });
+  return released.count;
 }
 
 /** Persist a complete snapshot and its milestones in one guarded transaction. */
