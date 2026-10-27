@@ -2,7 +2,7 @@ import "server-only";
 import { PgBoss } from "pg-boss";
 import type { SendOptions } from "pg-boss";
 import { prisma } from "@octopus/db";
-import { COMMUNITY_REVIEW_EXPIRE_SECONDS, INDEX_JOB_EXPIRE_SECONDS } from "@/lib/index-liveness";
+import { COMMUNITY_REVIEW_EXPIRE_SECONDS, INCREMENTAL_INDEX_QUEUE, INCREMENTAL_INDEX_QUEUE_OPTIONS, INDEX_JOB_EXPIRE_SECONDS } from "@/lib/index-liveness";
 
 export interface QueueConfig {
   reviewTimeoutSeconds: number;
@@ -125,6 +125,11 @@ export async function startQueue(): Promise<PgBoss> {
   await boss.createQueue("index-repository", indexQueueOptions).catch(() => {});
   await boss.updateQueue("index-repository", indexQueueOptions)
     .catch((err) => console.error("[queue] Failed to apply index-repository options:", err));
+
+  // The singleton policy allows one active job per singleton key (the repository id), enforced by a
+  // unique index in the database, so merged-PR updates of one repository never run concurrently, on
+  // any replica.
+  await boss.createQueue(INCREMENTAL_INDEX_QUEUE, INCREMENTAL_INDEX_QUEUE_OPTIONS).catch(() => {});
 
   // Community-tier (no API key) async review pipeline.
   // Indexing can take minutes for first-touch repos, so the action enqueues

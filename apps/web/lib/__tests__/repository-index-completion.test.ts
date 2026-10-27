@@ -12,7 +12,7 @@ const cases = [
   "storage-provider", "storage-local", "storage-reset", "storage-incremental",
   "storage-late-upsert", "storage-late-delete", "storage-local-timeout", "storage-reads", "storage-legacy-rollout",
   "storage-concurrent-incremental", "storage-reuse", "storage-incremental-cleanup", "storage-local-verified", "storage-local-legacy",
-  "heartbeat", "abandoned-claims", "staged-upload", "restore-cancelled", "refresh-invalidates-analysis",
+  "heartbeat", "abandoned-claims", "incremental-queue", "staged-upload", "restore-cancelled", "refresh-invalidates-analysis",
   "timezone-utc", "timezone-berlin",
 ] as const;
 

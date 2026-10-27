@@ -237,6 +237,9 @@ export async function exerciseStorageRace(scenario: string, repo: Repository) {
         resolveGithubWebhookTenant: async () => ({ status: "resolved", organizationId: repo.organizationId, repositoryId: repo.id }),
         observeGithubWebhookDeliveryBestEffort: async () => {},
       }));
+      // Stand-in queue: runs the job inline. The real queue's one-active-job-per-repository policy is covered separately.
+      const { processIncrementalIndex } = await import("@/lib/incremental-index-job");
+      mock.module("@/lib/queue", () => ({ enqueue: async (_name: string, data: Parameters<typeof processIncrementalIndex>[0]) => { await processIncrementalIndex(data); return "fixture"; } }));
       const { POST } = await import("@/app/api/github/webhook/route");
       const webhook = (number: number) => {
         const body = JSON.stringify({ action: "closed", installation: { id: 1 }, repository: { id: repo.externalId }, pull_request: { number, merged: true } });

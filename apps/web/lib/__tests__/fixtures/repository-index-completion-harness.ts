@@ -421,6 +421,40 @@ try {
     await prisma.repository.update({ where: { id: repo.id }, data: { analysisStatus: "analyzed" } });
     await assert.rejects(() => runRepositoryIndex(repo.id, indexAttemptId, async () => { throw new Error("Read failed"); }), /Read failed/);
     assert.equal((await snapshot()).analysisStatus, "analyzed", "a failed refresh keeps the analysis of the generation still active");
+  } else if (scenario === "incremental-queue") {
+    // Real pg-boss: while the older update of a repository is still embedding, the newer one must not start.
+    const { PgBoss } = await import("pg-boss");
+    const { INCREMENTAL_INDEX_QUEUE, INCREMENTAL_INDEX_QUEUE_OPTIONS } = await import("@/lib/index-liveness");
+    const schema = `pgb_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
+    const boss = new PgBoss({ connectionString: process.env.DATABASE_URL!, schema });
+    const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+    const until = async (condition: () => boolean) => { for (let i = 0; i < 100 && !condition(); i++) await sleep(100); assert.ok(condition(), "condition not reached in time"); };
+    try {
+      await boss.start();
+      await boss.createQueue(INCREMENTAL_INDEX_QUEUE, INCREMENTAL_INDEX_QUEUE_OPTIONS);
+      const events: string[] = [];
+      let releaseOlder!: () => void;
+      const olderEmbedding = new Promise<void>(resolve => { releaseOlder = resolve; });
+      await boss.work<{ label: string }>(INCREMENTAL_INDEX_QUEUE, { localConcurrency: 3, pollingIntervalSeconds: 0.5 }, async ([job]) => {
+        events.push(`start:${job.data.label}`);
+        if (job.data.label === "older") await olderEmbedding;
+        events.push(`end:${job.data.label}`);
+      });
+      await boss.send(INCREMENTAL_INDEX_QUEUE, { label: "older" }, { singletonKey: "repo-1" });
+      await until(() => events.includes("start:older"));
+      await boss.send(INCREMENTAL_INDEX_QUEUE, { label: "newer" }, { singletonKey: "repo-1" });
+      await boss.send(INCREMENTAL_INDEX_QUEUE, { label: "other-repo" }, { singletonKey: "repo-2" });
+      await until(() => events.includes("end:other-repo"));
+      await sleep(2500); // several polling rounds
+      assert.ok(!events.includes("start:newer"), "the newer update must wait while the older one is still embedding");
+      releaseOlder();
+      await until(() => events.includes("end:newer"));
+      assert.ok(events.indexOf("end:older") < events.indexOf("start:newer"), `ran in order: ${events}`);
+      assert.ok(events.indexOf("start:other-repo") < events.indexOf("end:older"), "another repository is not held up");
+    } finally {
+      await boss.stop({ graceful: false, wait: true }).catch(() => {});
+      await prisma.$executeRawUnsafe(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+    }
   } else if (scenario === "restore-cancelled") {
     // A refresh is running, the repository is removed (cancelled) and restored, then a review queues a refresh.
     await prisma.organization.update({ where: { id: org.id }, data: { githubInstallationId: 100_000 + Math.floor(Math.random() * 1e9) } });

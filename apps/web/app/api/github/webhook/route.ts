@@ -17,6 +17,9 @@ import { modelForLabels } from "@/lib/review-config-shared";
 import { fetchReviewConfig, labelAsksForReview } from "@/lib/review-config";
 import { getGithubAppConfig } from "@/lib/github-app-config";
 import { syncOrgRepos, applyRepositoryEvent } from "@/lib/repo-sync";
+import { enqueue } from "@/lib/queue";
+import { INCREMENTAL_INDEX_QUEUE } from "@/lib/index-liveness";
+import type { IncrementalIndexJob } from "@/lib/incremental-index-job";
 import {
   observeGithubWebhookDeliveryBestEffort,
   resolveGithubWebhookTenant,
@@ -454,51 +457,16 @@ export async function POST(request: NextRequest) {
         data: { mergedAt: new Date() },
       });
 
-      // Incremental index: only re-index files changed in this PR
+      // Incremental index: queued, with one active job per repository, so updates of the same files never overlap
       if (repo.indexStatus === "indexed" && installationId) {
         try {
-          const { getInstallationToken } = await import("@/lib/github");
-          const token = await getInstallationToken(installationId);
-          const headers = { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" };
-          let page = 1;
-          const files: { filename: string; status: string }[] = [];
-          while (true) {
-            const res = await fetch(
-              `https://api.github.com/repos/${repo.fullName}/pulls/${prNumber}/files?per_page=100&page=${page}`,
-              { headers },
-            );
-            if (!res.ok) break;
-            const batch = await res.json() as { filename: string; status: string }[];
-            if (batch.length === 0) break;
-            files.push(...batch);
-            if (batch.length < 100) break;
-            page++;
-          }
-          if (files.length > 0) {
-            const { incrementalIndex } = await import("@/lib/indexer");
-            const result = await incrementalIndex(
-              { repoId: repo.id, activeIndexGeneration: repo.activeIndexGeneration },
-              repo.fullName,
-              repo.defaultBranch,
-              installationId,
-              files,
-              "github",
-              repo.organizationId,
-            );
-            await prisma.repository.updateMany({
-              where: { id: repo.id, indexStatus: "indexed", activeIndexGeneration: repo.activeIndexGeneration, indexedAt: { not: null } },
-              data: { indexedAt: new Date() },
-            });
-            console.log(`[webhook] PR #${prNumber} merged — incremental index: ${result.updatedFiles} updated, ${result.removedFiles} removed, ${result.newVectors} vectors`);
-          } else {
-            // Fallback: mark as stale if we can't get file list
-            await prisma.repository.updateMany({ where: { id: repo.id, indexStatus: "indexed", activeIndexGeneration: repo.activeIndexGeneration }, data: { indexStatus: "stale" } });
-            console.log(`[webhook] PR #${prNumber} merged, no changed files found via API, marked as stale`);
-          }
+          await enqueue(INCREMENTAL_INDEX_QUEUE, {
+            repositoryId: repo.id, organizationId: repo.organizationId, prNumber, installationId,
+          } satisfies IncrementalIndexJob, { singletonKey: repo.id });
         } catch (err) {
-          // Fallback: mark as stale on any error
+          // Fallback: mark as stale when the update cannot even be queued
           await prisma.repository.updateMany({ where: { id: repo.id, indexStatus: "indexed", activeIndexGeneration: repo.activeIndexGeneration }, data: { indexStatus: "stale" } });
-          console.warn(`[webhook] PR #${prNumber} incremental index failed, marked as stale:`, err);
+          console.warn(`[webhook] PR #${prNumber} incremental index could not be queued, marked as stale:`, err);
         }
       } else {
         // Repo not yet indexed or no installation — mark as stale for full re-index on next review

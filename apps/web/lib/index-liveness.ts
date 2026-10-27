@@ -15,6 +15,14 @@ export const INDEX_JOB_EXPIRE_SECONDS = 4 * 60 * 60;
 /** pg-boss expiry of a community review job; a token-backed refresh after its review must end inside it. */
 export const COMMUNITY_REVIEW_EXPIRE_SECONDS = 30 * 60;
 
+/** Queue of merged-PR index updates: singleton policy, so one active job per repository (the job's singleton key). */
+export const INCREMENTAL_INDEX_QUEUE = "incremental-index";
+export const INCREMENTAL_INDEX_EXPIRE_SECONDS = 30 * 60;
+/** A failed update marks the index stale itself, so a failed job is not retried. */
+export const INCREMENTAL_INDEX_QUEUE_OPTIONS = {
+  policy: "singleton", retryLimit: 0, expireInSeconds: INCREMENTAL_INDEX_EXPIRE_SECONDS,
+} as const;
+
 /** The in-process abort fires this long before expiry so the failure path can release the claim first. */
 export const INDEX_JOB_ABORT_MARGIN_SECONDS = 120;
 

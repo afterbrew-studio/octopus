@@ -22,6 +22,8 @@ import { reconcileReviewPublication, requeueUnresolvedPublications } from "./rev
 import type { PublicationRecord } from "./review-verdict";
 import { discoverRepositories } from "./discover-repositories";
 import { processRepositoryIndex, type RepositoryIndexJob } from "./repository-index-job";
+import { processIncrementalIndex, type IncrementalIndexJob } from "./incremental-index-job";
+import { INCREMENTAL_INDEX_QUEUE } from "./index-liveness";
 import type { QueueConfig } from "./queue";
 
 export interface WelcomeEmailJob {
@@ -81,6 +83,12 @@ export async function registerWorkers(boss: PgBoss, config: QueueConfig): Promis
   await boss.work<RepositoryIndexJob>("index-repository", { localConcurrency: 1 }, async (jobs) => {
     for (const job of jobs) {
       await processRepositoryIndex(job.data, { signal: job.signal, expireInSeconds: job.expireInSeconds });
+    }
+  });
+
+  await boss.work<IncrementalIndexJob>(INCREMENTAL_INDEX_QUEUE, { localConcurrency: 2 }, async (jobs) => {
+    for (const job of jobs) {
+      await processIncrementalIndex(job.data, { signal: job.signal, expireInSeconds: job.expireInSeconds });
     }
   });
 

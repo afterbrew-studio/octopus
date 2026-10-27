@@ -683,7 +683,7 @@ async function loadIncrementalIgnore(
  * The repo stays "indexed" throughout — no downtime window.
  */
 export async function incrementalIndex(
-  owner: { repoId: string; activeIndexGeneration: string | null },
+  owner: { repoId: string; activeIndexGeneration: string | null; signal?: AbortSignal },
   fullName: string,
   defaultBranch: string,
   installationId: number,
@@ -804,7 +804,7 @@ export async function incrementalIndex(
   const vectors: number[][] = [];
   for (let i = 0; i < texts.length; i += 512) {
     const batch = texts.slice(i, i + 512);
-    const batchVectors = await createEmbeddings(batch, undefined, { config: embedConfig });
+    const batchVectors = await createEmbeddings(batch, undefined, { config: embedConfig, signal: owner.signal });
     vectors.push(...batchVectors);
   }
 
