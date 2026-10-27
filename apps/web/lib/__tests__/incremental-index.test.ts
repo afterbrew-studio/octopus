@@ -210,6 +210,25 @@ describe("incrementalIndex", () => {
     for (const ids of eachWrote) for (const id of ids) expect(remaining.map((chunk) => chunk.id)).toContain(id);
   });
 
+  it("keeps the old chunks when GitHub answers with an unsuccessful response, but replaces those of an empty file", async () => {
+    mockGhGetFileContent = mock((_installationId: number, _owner: string, _repo: string, _branch: string, filePath: string) => {
+      if (filePath === "src/unavailable.ts") return Promise.resolve(null);
+      if (filePath === "src/emptied.ts") return Promise.resolve("");
+      return Promise.resolve("export const x = 1;\n");
+    });
+    store = [{ id: "u", filePath: "src/unavailable.ts" }, { id: "e", filePath: "src/emptied.ts" }];
+
+    await incrementalIndex(
+      indexOwner, "owner/repo", "main", 12345,
+      [{ filename: "src/unavailable.ts", status: "modified" }, { filename: "src/emptied.ts", status: "modified" }, { filename: "src/utils.ts", status: "modified" }],
+      "github",
+    );
+
+    expect(mockListChunkIds.mock.calls[0][1]).toEqual(["src/emptied.ts", "src/utils.ts"]);
+    expect(store.map((chunk) => chunk.id)).toContain("u");
+    expect(store.map((chunk) => chunk.id)).not.toContain("e");
+  });
+
   it("keeps the old chunks of a file whose fetch failed", async () => {
     mockGhGetFileContent = mock((_installationId: number, _owner: string, _repo: string, _branch: string, filePath: string) => {
       if (filePath === "src/broken.ts") return Promise.reject(new Error("503"));
@@ -251,6 +270,7 @@ describe("incrementalIndex", () => {
   });
 
   it("handles mix of added, modified, removed, and renamed files", async () => {
+    mockGhGetFileContent = mock(() => Promise.resolve("export const x = 1;\n"));
     const result = await incrementalIndex(
       indexOwner,
       "owner/repo",

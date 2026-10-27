@@ -731,6 +731,12 @@ export async function incrementalIndex(
       try {
         const [owner, repoName] = fullName.split("/");
         const content = await ghGetFileContent(installationId, owner, repoName, defaultBranch, filePath);
+        // null is an unsuccessful response, not an empty file: the old chunks stay.
+        if (content === null) {
+          fetchFailed.add(filePath);
+          console.warn(`[indexer:incremental] Failed to fetch ${filePath}, skipping`);
+          continue;
+        }
         if (!content || content.includes("\0")) continue;
         if (exceedsMaxFileSize(content)) {
           console.warn(`[indexer:incremental] Skipping ${filePath}: exceeds ${MAX_FILE_SIZE} bytes`);
