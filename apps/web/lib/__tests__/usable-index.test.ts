@@ -9,7 +9,7 @@ describe("resolveIndexGate", () => {
     expect(resolveIndexGate({ indexStatus: "indexed", ...completed })).toEqual({ blockOnIndex: false, refresh: false });
   });
 
-  it.each(["stale", "failed", "pending"])("reviews a %s repository with a completed snapshot and refreshes it", (indexStatus) => {
+  it.each(["stale", "failed", "pending", "cancelled"])("reviews a %s repository with a completed snapshot and refreshes it", (indexStatus) => {
     expect(resolveIndexGate({ indexStatus, ...completed })).toEqual({ blockOnIndex: false, refresh: true });
   });
 

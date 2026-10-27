@@ -375,6 +375,27 @@ try {
     await prisma.repository.update({ where: { id: repo.id }, data: { analysisStatus: "analyzed" } });
     await assert.rejects(() => runRepositoryIndex(repo.id, indexAttemptId, async () => { throw new Error("Read failed"); }), /Read failed/);
     assert.equal((await snapshot()).analysisStatus, "analyzed", "a failed refresh keeps the analysis of the generation still active");
+  } else if (scenario === "restore-cancelled") {
+    // A refresh is running, the repository is removed (cancelled) and restored, then a review queues a refresh.
+    await prisma.organization.update({ where: { id: org.id }, data: { githubInstallationId: 100_000 + Math.floor(Math.random() * 1e9) } });
+    await prisma.repository.update({ where: { id: repo.id }, data: { indexedAt: new Date(), totalVectors: 5, totalChunks: 5, indexedFiles: 1, activeIndexGeneration: randomUUID() } });
+    await assert.rejects(() => runRepositoryIndex(repo.id, indexAttemptId, async () => {
+      await prisma.repository.update({ where: { id: repo.id }, data: { isActive: false, autoReview: false, dismissedAt: new Date(), indexStatus: "cancelled" } });
+      return stats;
+    }), /no longer current/);
+    assert.equal((await snapshot()).indexStatus, "cancelled");
+    await prisma.repository.update({ where: { id: repo.id }, data: { dismissedAt: null, isActive: true } });
+    const { resolveIndexGate } = await import("@/lib/usable-index");
+    assert.equal(resolveIndexGate(await snapshot()).refresh, true, "a restored repository with an index asks for a refresh");
+    let indexed = 0;
+    mock.module("@/lib/indexer", () => ({ indexRepository: async () => { indexed++; return stats; } }));
+    mock.module("@/lib/queue", () => ({ enqueue: async () => "fixture" }));
+    mock.module("@/lib/pubby", () => ({ pubby: { trigger: async () => {} } }));
+    mock.module("@/lib/elasticsearch", () => ({ writeSyncLog: () => {}, deleteSyncLogs: async () => {} }));
+    const { processRepositoryIndex } = await import("@/lib/repository-index-job");
+    await processRepositoryIndex({ repositoryId: repo.id, organizationId: org.id });
+    assert.equal(indexed, 1, "the queued refresh must be claimable, not a silent no-op");
+    assert.equal((await snapshot()).indexStatus, "indexed");
   } else if (scenario === "abandoned-claims") {
     const { releaseAbandonedIndexClaims } = await import("@/lib/repository-index-completion");
     await prisma.organization.update({ where: { id: org.id }, data: { autoDiscoverRepos: false } });

@@ -46,7 +46,7 @@ const update = async (args: { where: { id?: string; indexStatus?: string; indexA
   if (!claimCount || !currentRow || (args.where.id && args.where.id !== currentRow.id)
     || (typeof args.where.indexStatus === "string" && args.where.indexStatus !== currentRow.indexStatus)
     || (args.where.indexAttemptId !== undefined && args.where.indexAttemptId !== currentRow.indexAttemptId)) return { count: 0 };
-  if (args.where.OR && !(["pending", "failed", "stale"].includes(currentRow.indexStatus) || (currentRow.indexStatus === "indexed" && currentRow.totalFiles === 0))) return { count: 0 };
+  if (args.where.OR && !(["pending", "failed", "stale", "cancelled"].includes(currentRow.indexStatus) || (currentRow.indexStatus === "indexed" && currentRow.totalFiles === 0))) return { count: 0 };
   Object.assign(currentRow, args.data);
   return { count: 1 };
 };
@@ -203,7 +203,7 @@ const callsBefore = indexCalls.length;
 const claimsBefore = claims.length;
 await processRepositoryIndex(job);
 assert.equal(indexCalls.length, callsBefore + 1, "a stale index must be claimable for a background refresh");
-assert.deepEqual((claims[claimsBefore].where.OR as unknown[]).at(-1), { indexStatus: "stale" }, "the claim itself must accept a stale index");
+assert.deepEqual((claims[claimsBefore].where.OR as unknown[]).at(-1), { indexStatus: { in: ["stale", "cancelled"] } }, "the claim itself must accept a stale or restored-after-cancel index");
 assert.equal(currentRow?.indexStatus, "indexed");
 assert.equal((currentRow as { analysisStatus?: string }).analysisStatus, "none", "a published refresh must invalidate the analysis of the previous generation");
 // A job queued before the expiry change still expires after 30 minutes; the abort follows that.

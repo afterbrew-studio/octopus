@@ -24,7 +24,9 @@ const needsIndex = {
   ],
 };
 // Discovery leaves a stale index to the review that finds it; the refresh job it queues may claim it.
-const claimable = { OR: [...needsIndex.OR, { indexStatus: "stale" }] };
+// "cancelled" is what removing a repository mid-index leaves behind; a restored repository keeps it,
+// and every other claimant (reviewer, community, Action) already takes any status but indexed and indexing.
+const claimable = { OR: [...needsIndex.OR, { indexStatus: { in: ["stale", "cancelled"] } }] };
 
 // Narrower than the job's own providers: discovery only auto-indexes these.
 const DISCOVERY_PROVIDERS = ["github", "forgejo"];
