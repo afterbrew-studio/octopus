@@ -7,6 +7,7 @@ import { createEmbeddings } from "@/lib/embeddings";
 import { generateSparseVectors } from "@/lib/sparse-vector";
 import { upsertChunks } from "@/lib/qdrant";
 import { type Ignore } from "@/lib/octopus-ignore";
+import { INDEX_SILENCE_LIMIT_MS, throttledHeartbeat } from "@/lib/index-liveness";
 
 /**
  * CLI-driven local indexing.
@@ -23,14 +24,6 @@ import { type Ignore } from "@/lib/octopus-ignore";
  * meaningfully — "batch 12/40 done" maps to real work. The repo row tracks
  * the running indexedFiles count so a poll-based UI also works.
  */
-
-/**
- * Time after which an "indexing"-status repo is considered abandoned and
- * may be re-claimed. Exported so the route's error message can quote the
- * exact same value the guard uses — without this the message would drift
- * out of sync with the guard.
- */
-export const IN_FLIGHT_WINDOW_MS = 5 * 60 * 1000;
 
 export type LocalFile = { path: string; content: string };
 
@@ -93,11 +86,17 @@ export async function indexLocalBatch(
   // Tracking ensures: (a) the same getEmbedModel chain as the query path,
   // (b) an ai_usage row so spend accounting is honest.
   const texts = allChunks.map((c) => c.text);
+  const owner = { repoId, indexAttemptId: claim.attemptId, uploadId: claim.upload.id };
+  // A long batch heartbeats like any other attempt, so the periodic recovery never frees a live upload.
+  const beat = throttledHeartbeat(async () => {
+    const { touchRepositoryIndex } = await import("@/lib/repository-index-storage");
+    await touchRepositoryIndex(owner);
+  });
   const vectors = await createEmbeddings(texts, {
     organizationId,
     operation: "index-local",
     repositoryId: repoId,
-  });
+  }, { onRequest: beat });
 
   // Defense-in-depth: createEmbeddings returns empty vectors when the org
   // is over its spend limit. The route gate ahead of us already 402s in
@@ -142,7 +141,10 @@ export async function indexLocalBatch(
     },
   }));
 
-  await upsertChunks(points, { repoId, indexAttemptId: claim.attemptId, uploadId: claim.upload.id });
+  for (let i = 0; i < points.length; i += 100) {
+    await upsertChunks(points.slice(i, i + 100), owner);
+    await beat();
+  }
 
   return { indexedInBatch: indexed, skippedInBatch: skipped, chunksInBatch: points.length };
 }
@@ -167,9 +169,10 @@ export async function prepareRepoForLocalIndex(
   | { ok: false; reason: "managed-by-platform"; repoId: string }
   | { ok: false; reason: "in-flight"; repoId: string }
 > {
-  const uploadState = {
+  const uploadState: UploadState = {
     id: crypto.randomUUID(), nextBatch: 0, totalBatches: upload.totalBatches,
-    totalFiles: upload.totalFiles, paths: [] as string[], verified: true,
+    totalFiles: upload.totalFiles, paths: [], verified: true,
+    staged: { indexedFiles: 0, totalChunks: 0, totalVectors: 0 },
   };
   const existing = await prisma.repository.findFirst({
     where: { organizationId, provider, fullName, isActive: true },
@@ -184,7 +187,7 @@ export async function prepareRepoForLocalIndex(
     if (existing.installationId != null || !existing.externalId?.startsWith("cli:")) {
       return { ok: false, reason: "managed-by-platform", repoId: existing.id };
     }
-    const inFlightCutoff = new Date(Date.now() - IN_FLIGHT_WINDOW_MS);
+    const inFlightCutoff = new Date(Date.now() - INDEX_SILENCE_LIMIT_MS);
     const claim = await prisma.repository.updateMany({
       where: {
         id: existing.id,
@@ -197,11 +200,6 @@ export async function prepareRepoForLocalIndex(
         indexStatus: "indexing",
         localIndexUpload: uploadState,
         indexAttemptId: null,
-        indexedFiles: 0,
-        totalFiles: 0,
-        totalChunks: 0,
-        totalVectors: 0,
-        indexDurationMs: null,
       },
     });
     if (claim.count === 0) {
@@ -235,6 +233,12 @@ export async function prepareRepoForLocalIndex(
   return { ok: true, repoId: repo.id, reIndex: false, uploadId: uploadState.id };
 }
 
+/**
+ * Counters of an upload in progress. The Repository row's counters describe the active generation and
+ * change only on publish. Absent on an upload that started before staging; that one counts on the row.
+ */
+type StagedCounts = { indexedFiles: number; totalChunks: number; totalVectors: number };
+
 type UploadState = {
   id: string;
   nextBatch: number;
@@ -242,9 +246,17 @@ type UploadState = {
   totalFiles: number;
   paths: string[];
   verified: boolean;
+  staged?: StagedCounts;
 };
 
 export class LocalIndexConflict extends Error {}
+
+export function liveIndexCounts(repo: { indexStatus: string; indexedFiles: number; totalFiles: number; localIndexUpload: unknown }) {
+  const upload = repo.localIndexUpload as UploadState | null;
+  return repo.indexStatus === "indexing" && upload?.staged
+    ? { indexedFiles: upload.staged.indexedFiles, totalFiles: upload.totalFiles }
+    : { indexedFiles: repo.indexedFiles, totalFiles: repo.totalFiles };
+}
 
 /** Claim one ordered batch before performing embeddings or vector writes. */
 export async function claimLocalIndexBatch(
@@ -287,18 +299,29 @@ export async function recordLocalIndexProgress(
   commit: boolean,
   claim: { attemptId: string; upload: UploadState },
 ): Promise<void> {
+  const previous = claim.upload.staged;
+  const staged = previous && {
+    indexedFiles: previous.indexedFiles + delta.indexedFiles,
+    totalChunks: previous.totalChunks + delta.totalChunks,
+    totalVectors: previous.totalVectors + delta.totalVectors,
+  };
   await prisma.$transaction(async tx => {
     const saved = await tx.repository.updateMany({
       where: { id: repoId, indexStatus: "indexing", indexAttemptId: claim.attemptId },
       data: {
         indexAttemptId: null,
-        localIndexUpload: claim.upload,
-        indexedFiles: { increment: delta.indexedFiles },
-        totalChunks: { increment: delta.totalChunks },
-        totalVectors: { increment: delta.totalVectors },
-        totalFiles: claim.upload.totalFiles,
+        localIndexUpload: { ...claim.upload, ...(staged ? { staged } : {}) },
+        // Published counters change only together with the active generation.
+        ...(!staged ? {
+          indexedFiles: { increment: delta.indexedFiles },
+          totalChunks: { increment: delta.totalChunks },
+          totalVectors: { increment: delta.totalVectors },
+          totalFiles: claim.upload.totalFiles,
+        } : {}),
         ...(commit ? {
+          ...(staged ? { ...staged, totalFiles: claim.upload.totalFiles } : {}),
           indexStatus: "indexed",
+          analysisStatus: "none",
           activeIndexGeneration: claim.upload.id,
           indexDurationMs: startedAt != null ? Date.now() - startedAt : null,
         } : {}),

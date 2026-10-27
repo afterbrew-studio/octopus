@@ -1,6 +1,9 @@
 import "server-only";
 import { randomUUID } from "node:crypto";
 import { runRepositoryIndex } from "@/lib/repository-index-completion";
+import { resolveIndexGate } from "@/lib/usable-index";
+import { queueIndexRefresh, refreshIndexWithToken } from "@/lib/index-refresh";
+import { COMMUNITY_REVIEW_EXPIRE_SECONDS } from "@/lib/index-liveness";
 import { prisma } from "@octopus/db";
 import { generateLocalReview } from "@/lib/review-core";
 import { indexRepository } from "@/lib/indexer";
@@ -24,7 +27,12 @@ export interface CommunityReviewJobData {
   jobId: string;
 }
 
+const REFRESH_MARGIN_MS = 2 * 60_000;
+const MIN_REFRESH_BUDGET_MS = 60_000;
+const MAX_REFRESH_BUDGET_MS = 10 * 60_000;
+
 export async function processCommunityReview(jobId: string): Promise<void> {
+  const startedAt = Date.now();
   LOG(jobId, "starting");
 
   const job = await prisma.communityReviewJob.findUnique({ where: { id: jobId } });
@@ -82,7 +90,10 @@ export async function processCommunityReview(jobId: string): Promise<void> {
 
     // ── Phase 1: Indexing (with atomic claim) ─────────────────────────────
 
-    let needsIndex = repo.indexStatus !== "indexed";
+    const indexGate = resolveIndexGate(repo);
+    let needsIndex = indexGate.blockOnIndex;
+    // A stale index the background job cannot index is refreshed with the token once the review is stored.
+    const refreshWithToken = indexGate.refresh && !(await queueIndexRefresh(repo, job.organizationId));
 
     if (needsIndex) {
       const indexAttemptId = randomUUID();
@@ -282,6 +293,12 @@ export async function processCommunityReview(jobId: string): Promise<void> {
     });
 
     LOG(jobId, `completed: ${reviewResult.findings.length} findings`);
+
+    const remainingMs = COMMUNITY_REVIEW_EXPIRE_SECONDS * 1000 - (Date.now() - startedAt) - REFRESH_MARGIN_MS;
+    if (refreshWithToken && remainingMs >= MIN_REFRESH_BUDGET_MS) {
+      await refreshIndexWithToken(repo, job.organizationId, githubToken, Math.min(remainingMs, MAX_REFRESH_BUDGET_MS))
+        .catch((err) => ERR(jobId, "token-backed index refresh failed (non-fatal):", err));
+    }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     ERR(jobId, "fatal:", err);

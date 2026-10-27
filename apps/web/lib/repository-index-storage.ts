@@ -1,5 +1,5 @@
 import "server-only";
-import { prisma } from "@octopus/db";
+import { prisma, type Prisma } from "@octopus/db";
 import type { Schemas } from "@qdrant/js-client-rest";
 import { SupersededIndexError } from "@/lib/repository-index-completion";
 
@@ -7,16 +7,28 @@ export type RepositoryIndexOwner = { repoId: string; signal?: AbortSignal } & (
   { indexAttemptId: string; uploadId?: string } | { activeIndexGeneration: string | null }
 );
 
+type AttemptOwner = Extract<RepositoryIndexOwner, { indexAttemptId: string }>;
+
+function attemptWhere(owner: AttemptOwner): Prisma.RepositoryWhereInput {
+  return {
+    id: owner.repoId, indexStatus: "indexing", indexAttemptId: owner.indexAttemptId,
+    ...(owner.uploadId === undefined ? {} : { localIndexUpload: { path: ["id"], equals: owner.uploadId } }),
+  };
+}
+
+/** Marks the attempt alive for crash recovery; throws once another attempt or a cancellation owns the row. */
+export async function touchRepositoryIndex(owner: AttemptOwner): Promise<void> {
+  owner.signal?.throwIfAborted();
+  const touched = await prisma.repository.updateMany({ where: attemptWhere(owner), data: { updatedAt: new Date() } });
+  if (!touched.count) throw new SupersededIndexError();
+}
+
 export async function getRepositoryIndexGeneration(owner: RepositoryIndexOwner): Promise<string | null> {
   owner.signal?.throwIfAborted();
   const current = await prisma.repository.findFirst({
-    where: {
-      id: owner.repoId,
-      ...("indexAttemptId" in owner ? {
-        indexStatus: "indexing", indexAttemptId: owner.indexAttemptId,
-        ...(owner.uploadId === undefined ? {} : { localIndexUpload: { path: ["id"], equals: owner.uploadId } }),
-      } : { indexStatus: "indexed", activeIndexGeneration: owner.activeIndexGeneration }),
-    },
+    where: "indexAttemptId" in owner
+      ? attemptWhere(owner)
+      : { id: owner.repoId, indexStatus: "indexed", activeIndexGeneration: owner.activeIndexGeneration },
     select: { id: true },
   });
   if (!current) throw new SupersededIndexError();

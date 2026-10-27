@@ -197,11 +197,22 @@ try {
     assert.deepEqual(after.firstIndexedAt, completed.firstIndexedAt);
     assert.equal(after.indexStatus, "indexed");
     assert.equal(after.indexedFiles, 2);
-  } else if (scenario === "actions" || scenario === "community") {
-    await prisma.repository.update({ where: { id: repo.id }, data: { indexStatus: "pending" } });
+  } else if (scenario.startsWith("actions") || scenario.startsWith("community")) {
+    // "-stale": a completed snapshot whose refresh is due; "-queued": the organization has an installation, so the job can run it.
+    const staleSnapshot = scenario.includes("-stale");
+    const queuedRefresh = scenario.endsWith("-queued");
+    await prisma.repository.update({ where: { id: repo.id }, data: staleSnapshot
+      ? { indexStatus: "stale", indexedAt: new Date(), firstIndexedAt: new Date(), totalVectors: 5, totalChunks: 5, indexedFiles: 1 }
+      : { indexStatus: "pending" } });
+    if (queuedRefresh) await prisma.organization.update({ where: { id: org.id }, data: { githubInstallationId: 100_000 + Math.floor(Math.random() * 1e9) } });
+    const order: string[] = [];
+    let reviewJobStatusAtIndex: string | undefined;
+    const enqueued: unknown[][] = [];
     let calls = 0;
     mock.module("@/lib/indexer", () => ({ indexRepository: async (...args: unknown[]) => {
       calls++;
+      order.push("index");
+      reviewJobStatusAtIndex = (await prisma.communityReviewJob.findFirst({ where: { repositoryId: repo.id } }))?.status;
       assert.deepEqual(args[0], { repoId: repo.id, indexAttemptId: (await snapshot()).indexAttemptId });
       assert.equal(args[3], 0);
       assert.equal(args[8], "fixture-token");
@@ -210,18 +221,18 @@ try {
     } }));
     mock.module("@/lib/api-auth", () => ({ authenticateApiToken: async () => ({ org }) }));
     mock.module("@/lib/cost", () => ({ isOrgOverSpendLimit: async () => false }));
-    mock.module("@/lib/review-core", () => ({ generateLocalReview: async () => ({ findings: [], summary: "Fixture", model: "fixture" }) }));
+    mock.module("@/lib/review-core", () => ({ generateLocalReview: async () => { order.push("review"); return { findings: [], summary: "Fixture", model: "fixture" }; } }));
     mock.module("@/lib/summarizer", () => ({ summarizeRepository: async () => ({ summary: "Fixture", purpose: "Fixture" }) }));
     mock.module("@/lib/analyzer", () => ({ analyzeRepository: async () => "Fixture" }));
     mock.module("@/lib/github", () => ({ getRepositoryTree: async () => [], getPullRequestDiff: async () => "" }));
     mock.module("@/lib/events/bus", () => ({ eventBus: { emit: () => {} } }));
-    mock.module("@/lib/queue", () => ({ enqueue: async () => "fixture" }));
+    mock.module("@/lib/queue", () => ({ enqueue: async (...args: unknown[]) => { enqueued.push(args); return "fixture"; } }));
     mock.module("@/lib/community-pr-persist", () => ({ persistCommunityReviewToPR: async () => {} }));
     mock.module("@/lib/crypto", () => ({ encryptString: (text: string) => text, decryptString: (text: string) => text }));
     mock.module("@/lib/oss-bot", () => ({ getBotToken: () => "fixture-token" }));
     mock.module("@/lib/oss-review-post", () => ({ postOssReview: async () => ({ posted: 0, skipped: 0 }) }));
     const diff = "diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-old\n+new\n";
-    if (scenario === "actions") {
+    if (scenario.startsWith("actions")) {
       globalThis.fetch = (async () => Response.json({ id: fixture, default_branch: "main", private: false, full_name: repo.fullName })) as typeof fetch;
       const { POST } = await import("@/app/api/github-action/review/route");
       const response = await POST(new Request("https://fixture.invalid/api/github-action/review", {
@@ -229,7 +240,7 @@ try {
         body: JSON.stringify({ owner: "fixture", repo: "index", githubToken: "fixture-token", diff }),
       }) as never);
       assert.equal(response.status, 200);
-      assert.equal((await response.json()).indexed, true);
+      assert.equal((await response.json()).indexed, !staleSnapshot);
     } else {
       const job = await prisma.communityReviewJob.create({ data: {
         status: "pending", repoFullName: repo.fullName, repositoryId: repo.id, organizationId: org.id,
@@ -239,25 +250,48 @@ try {
       await processCommunityReview(job.id);
       assert.equal((await prisma.communityReviewJob.findUniqueOrThrow({ where: { id: job.id } })).status, "completed");
     }
-    assert.equal(calls, 1);
-    const completed = await snapshot();
-    assert.equal(completed.indexStatus, "indexed");
-    assert.equal(completed.totalVectors, 1);
-    assert.ok(completed.firstIndexedAt);
-    assert.deepEqual(completed.indexedAt, completed.firstIndexedAt);
+    if (staleSnapshot) {
+      const after = await snapshot();
+      if (queuedRefresh) {
+        assert.equal(calls, 0, "a repository the job can index must not be indexed in the request");
+        assert.equal(after.indexStatus, "stale");
+        assert.deepEqual(enqueued, [["index-repository", { repositoryId: repo.id, organizationId: org.id }, { singletonKey: repo.id, singletonSeconds: 60 }]]);
+      } else if (scenario.startsWith("actions")) {
+        assert.equal(calls, 0, "the Action response must not wait for an inline refresh");
+        assert.equal(after.indexStatus, "stale");
+        assert.deepEqual(enqueued, [], "the job would silently skip a repository without an installation");
+      } else {
+        assert.equal(calls, 1, "a token-only repository is refreshed with the request token");
+        assert.deepEqual(order, ["review", "index"]);
+        assert.equal(reviewJobStatusAtIndex, "completed", "the review must be stored before the refresh starts");
+        assert.equal(after.indexStatus, "indexed");
+        assert.deepEqual(enqueued, [], "the job would silently skip a repository without an installation");
+      }
+    } else {
+      assert.equal(calls, 1);
+      const completed = await snapshot();
+      assert.equal(completed.indexStatus, "indexed");
+      assert.equal(completed.totalVectors, 1);
+      assert.ok(completed.firstIndexedAt);
+      assert.deepEqual(completed.indexedAt, completed.firstIndexedAt);
+    }
   } else if (scenario === "empty-incremental-full" || scenario === "legacy-incremental") {
     let writes = 0;
     let full = false;
     mock.module("@/lib/qdrant", () => ({
-      ensureCollection: async () => {}, deleteRepoFileChunks: async () => {},
+      ensureCollection: async () => {}, listRepoFileChunkIds: async () => [], deleteChunkPoints: async () => {},
       upsertChunks: async () => { writes++; },
+      scrollActiveChunkVectors: async function* () {},
     }));
-    mock.module("@/lib/embeddings", () => ({ createEmbeddings: async (texts: string[]) => texts.map(() => [0.1]) }));
+    mock.module("@/lib/embeddings", () => ({ resolveEmbedConfig: async () => (await import("@/lib/embed-config")).getEmbedConfig(), createEmbeddings: async (texts: string[]) => texts.map(() => [0.1]) }));
     mock.module("@/lib/github", () => ({
       getInstallationToken: async () => "fixture-token", getRepositoryDetails: async () => ({ default_branch: "main" }),
       getFileContent: async (_id: number, _owner: string, _name: string, _ref: string, path: string) => path === ".octopusignore" ? null : "export const a = 1;",
       addCommentReaction: async () => {}, getPullRequestDetails: async () => null, createCheckRun: async () => 1, updateCheckRun: async () => {}, isOwnCheckRun: () => false,
     }));
+    // Runs the merged-PR job inline; "incremental-queue" covers the real queue.
+    const { processIncrementalIndex } = await import("@/lib/incremental-index-job");
+    mock.module("@/lib/queue", () => ({ enqueue: async (_name: string, data: Parameters<typeof processIncrementalIndex>[0]) => { await processIncrementalIndex(data); return "fixture"; } }));
     mock.module("next/server", () => ({ after: () => {}, NextRequest: Request, NextResponse: { json: Response.json } }));
     mock.module("next/cache", () => ({ revalidatePath: () => {} }));
     mock.module("@/lib/github-app-config", () => ({ getGithubAppConfig: async () => ({ webhookSecret: "fixture-secret" }) }));
@@ -299,7 +333,7 @@ try {
     assert.ok(completed.indexedAt);
   } else if (scenario.startsWith("local")) {
     mock.module("@/lib/qdrant", () => ({ upsertChunks: async () => {} }));
-    mock.module("@/lib/embeddings", () => ({ createEmbeddings: async (texts: string[]) => texts.map(() => [0.1]) }));
+    mock.module("@/lib/embeddings", () => ({ resolveEmbedConfig: async () => (await import("@/lib/embed-config")).getEmbedConfig(), createEmbeddings: async (texts: string[]) => texts.map(() => [0.1]) }));
     const { prepareRepoForLocalIndex, claimLocalIndexBatch, recordLocalIndexProgress, indexLocalBatch, markLocalIndexFailed } = await import("@/lib/index-local");
     const single = scenario === "local-single";
     const prepared = await prepareRepoForLocalIndex(org.id, "github", `local/${fixture}`, "main", { totalBatches: single ? 1 : 2, totalFiles: 2 });
@@ -334,6 +368,151 @@ try {
     assert.equal(result.firstIndexedAt !== null, verified);
     if (scenario === "local-legacy") assert.ok(result.indexedAt);
     if (scenario === "local-cancel") assert.equal(result.indexStatus, "pending");
+  } else if (scenario === "staged-upload") {
+    mock.module("@/lib/qdrant", () => ({ upsertChunks: async () => {} }));
+    mock.module("@/lib/embeddings", () => ({ resolveEmbedConfig: async () => (await import("@/lib/embed-config")).getEmbedConfig(), createEmbeddings: async (texts: string[]) => texts.map(() => [0.1]) }));
+    const { prepareRepoForLocalIndex, claimLocalIndexBatch, recordLocalIndexProgress, indexLocalBatch, liveIndexCounts } = await import("@/lib/index-local");
+    const { resolveIndexGate } = await import("@/lib/usable-index");
+    const name = `local/${fixture}`;
+    const files = [{ path: "a.ts", content: "export const a = 1;" }, { path: "b.ts", content: "export const b = 2;" }];
+    const upload = async (publishLast: boolean) => {
+      const prepared = await prepareRepoForLocalIndex(org.id, "github", name, "main", { totalBatches: 2, totalFiles: 2 });
+      assert.ok(prepared.ok);
+      const first = await claimLocalIndexBatch(prepared.repoId, 0, 2, files.slice(0, 1), prepared.uploadId);
+      const delta = await indexLocalBatch(prepared.repoId, name, org.id, files.slice(0, 1), first);
+      await recordLocalIndexProgress(prepared.repoId, null, { indexedFiles: delta.indexedInBatch, totalChunks: delta.chunksInBatch, totalVectors: delta.chunksInBatch }, false, first);
+      if (publishLast) {
+        const final = await claimLocalIndexBatch(prepared.repoId, 1, 2, files.slice(1), prepared.uploadId);
+        const last = await indexLocalBatch(prepared.repoId, name, org.id, files.slice(1), final);
+        await recordLocalIndexProgress(prepared.repoId, null, { indexedFiles: last.indexedInBatch, totalChunks: last.chunksInBatch, totalVectors: last.chunksInBatch }, true, final);
+      }
+      return prepared.repoId;
+    };
+    const read = (id: string) => prisma.repository.findUniqueOrThrow({ where: { id } });
+
+    const id = await upload(true);
+    const published = await read(id);
+    assert.equal(published.indexStatus, "indexed");
+    assert.equal(published.totalVectors, 2);
+    assert.equal(published.indexedFiles, 2);
+
+    await upload(false);
+    const staging = await read(id);
+    assert.equal(staging.indexStatus, "indexing");
+    assert.equal(staging.totalVectors, 2, "staged batches must not change the published counters");
+    assert.equal(staging.activeIndexGeneration, published.activeIndexGeneration);
+    assert.deepEqual(liveIndexCounts(staging), { indexedFiles: 1, totalFiles: 2 });
+    assert.equal(resolveIndexGate({ ...staging, indexStatus: "stale" }).blockOnIndex, false, "the published generation is still usable");
+
+    await prisma.repository.update({ where: { id }, data: { indexStatus: "pending", indexedAt: new Date(), totalVectors: 0, totalChunks: 0, indexedFiles: 0 } });
+    await upload(false);
+    const emptied = await read(id);
+    assert.ok(emptied.indexedAt);
+    assert.equal(emptied.totalVectors, 0);
+    assert.equal(resolveIndexGate({ ...emptied, indexStatus: "stale" }).blockOnIndex, true, "an empty active generation must not pass the usable-index rule");
+  } else if (scenario === "refresh-invalidates-analysis") {
+    await prisma.repository.update({ where: { id: repo.id }, data: { analysisStatus: "analyzed", analysis: "previous generation" } });
+    await runRepositoryIndex(repo.id, indexAttemptId, async () => stats);
+    const refreshed = await snapshot();
+    assert.equal(refreshed.indexStatus, "indexed");
+    assert.equal(refreshed.analysisStatus, "none");
+    await claim();
+    await prisma.repository.update({ where: { id: repo.id }, data: { analysisStatus: "analyzed" } });
+    await assert.rejects(() => runRepositoryIndex(repo.id, indexAttemptId, async () => { throw new Error("Read failed"); }), /Read failed/);
+    assert.equal((await snapshot()).analysisStatus, "analyzed", "a failed refresh keeps the analysis of the generation still active");
+  } else if (scenario === "incremental-queue") {
+    // Real pg-boss: while the older update of a repository is still embedding, the newer one must not start.
+    const { PgBoss } = await import("pg-boss");
+    const { INCREMENTAL_INDEX_QUEUE, INCREMENTAL_INDEX_QUEUE_OPTIONS } = await import("@/lib/index-liveness");
+    const schema = `pgb_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
+    const boss = new PgBoss({ connectionString: process.env.DATABASE_URL!, schema });
+    const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+    const until = async (condition: () => boolean) => { for (let i = 0; i < 100 && !condition(); i++) await sleep(100); assert.ok(condition(), "condition not reached in time"); };
+    try {
+      await boss.start();
+      await boss.createQueue(INCREMENTAL_INDEX_QUEUE, INCREMENTAL_INDEX_QUEUE_OPTIONS);
+      const events: string[] = [];
+      let releaseOlder!: () => void;
+      const olderEmbedding = new Promise<void>(resolve => { releaseOlder = resolve; });
+      await boss.work<{ label: string }>(INCREMENTAL_INDEX_QUEUE, { localConcurrency: 3, pollingIntervalSeconds: 0.5 }, async ([job]) => {
+        events.push(`start:${job.data.label}`);
+        if (job.data.label === "older") await olderEmbedding;
+        events.push(`end:${job.data.label}`);
+      });
+      await boss.send(INCREMENTAL_INDEX_QUEUE, { label: "older" }, { singletonKey: "repo-1" });
+      await until(() => events.includes("start:older"));
+      await boss.send(INCREMENTAL_INDEX_QUEUE, { label: "newer" }, { singletonKey: "repo-1" });
+      await boss.send(INCREMENTAL_INDEX_QUEUE, { label: "other-repo" }, { singletonKey: "repo-2" });
+      await until(() => events.includes("end:other-repo"));
+      await sleep(2500); // several polling rounds
+      assert.ok(!events.includes("start:newer"), "the newer update must wait while the older one is still embedding");
+      releaseOlder();
+      await until(() => events.includes("end:newer"));
+      assert.ok(events.indexOf("end:older") < events.indexOf("start:newer"), `ran in order: ${events}`);
+      assert.ok(events.indexOf("start:other-repo") < events.indexOf("end:older"), "another repository is not held up");
+    } finally {
+      await boss.stop({ graceful: false, wait: true }).catch(() => {});
+      await prisma.$executeRawUnsafe(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+    }
+  } else if (scenario === "restore-cancelled") {
+    await prisma.organization.update({ where: { id: org.id }, data: { githubInstallationId: 100_000 + Math.floor(Math.random() * 1e9) } });
+    await prisma.repository.update({ where: { id: repo.id }, data: { indexedAt: new Date(), totalVectors: 5, totalChunks: 5, indexedFiles: 1, activeIndexGeneration: randomUUID() } });
+    await assert.rejects(() => runRepositoryIndex(repo.id, indexAttemptId, async () => {
+      await prisma.repository.update({ where: { id: repo.id }, data: { isActive: false, autoReview: false, dismissedAt: new Date(), indexStatus: "cancelled" } });
+      return stats;
+    }), /no longer current/);
+    assert.equal((await snapshot()).indexStatus, "cancelled");
+    await prisma.repository.update({ where: { id: repo.id }, data: { dismissedAt: null, isActive: true } });
+    const { resolveIndexGate } = await import("@/lib/usable-index");
+    assert.equal(resolveIndexGate(await snapshot()).refresh, true, "a restored repository with an index asks for a refresh");
+    let indexed = 0;
+    mock.module("@/lib/indexer", () => ({ indexRepository: async () => { indexed++; return stats; } }));
+    mock.module("@/lib/queue", () => ({ enqueue: async () => "fixture" }));
+    mock.module("@/lib/pubby", () => ({ pubby: { trigger: async () => {} } }));
+    mock.module("@/lib/elasticsearch", () => ({ writeSyncLog: () => {}, deleteSyncLogs: async () => {} }));
+    const { processRepositoryIndex } = await import("@/lib/repository-index-job");
+    await processRepositoryIndex({ repositoryId: repo.id, organizationId: org.id });
+    assert.equal(indexed, 1, "the queued refresh must be claimable, not a silent no-op");
+    assert.equal((await snapshot()).indexStatus, "indexed");
+  } else if (scenario === "abandoned-claims") {
+    const { releaseAbandonedIndexClaims } = await import("@/lib/repository-index-completion");
+    await prisma.organization.update({ where: { id: org.id }, data: { autoDiscoverRepos: false } });
+    const quiet = new Date(Date.now() - 20 * 60_000);
+    const make = async (provider: string, data: Record<string, unknown>) => {
+      const created = await prisma.repository.create({ data: {
+        organizationId: org.id, name: provider, fullName: `fixture/${provider}-${randomUUID()}`, externalId: randomUUID(), provider, indexStatus: "indexing", ...data,
+      } });
+      await prisma.repository.update({ where: { id: created.id }, data: { updatedAt: data.updatedAt ?? quiet } });
+      return created.id;
+    };
+    const gitlab = await make("gitlab", { indexAttemptId: randomUUID() });
+    const bitbucket = await make("bitbucket", { indexAttemptId: randomUUID() });
+    const alive = await make("github", { indexAttemptId: randomUUID(), updatedAt: new Date() });
+    // Local uploads clear the attempt id between batches; legacy rows never had one.
+    const upload = { id: randomUUID(), nextBatch: 1, totalBatches: 3, totalFiles: 3, paths: ["a.ts"], verified: true };
+    const abandonedUpload = await make("github", { indexAttemptId: null, localIndexUpload: upload });
+    const legacy = await make("github", { indexAttemptId: null });
+    const activeUpload = await make("github", { indexAttemptId: null, localIndexUpload: upload, updatedAt: new Date(Date.now() - 2 * 60_000) });
+    const status = async (id: string) => (await prisma.repository.findUniqueOrThrow({ where: { id } })).indexStatus;
+    assert.equal(await releaseAbandonedIndexClaims(), 4);
+    assert.deepEqual(
+      [await status(gitlab), await status(bitbucket), await status(abandonedUpload), await status(legacy), await status(alive), await status(activeUpload)],
+      ["failed", "failed", "failed", "failed", "indexing", "indexing"],
+      "every provider and every kind of silent row is recovered regardless of discovery; a live attempt and an upload still touching the row are left alone",
+    );
+  } else if (scenario === "heartbeat") {
+    const { touchRepositoryIndex } = await import("@/lib/repository-index-storage");
+    const owner = { repoId: repo.id, indexAttemptId };
+    const before = (await snapshot()).updatedAt;
+    await new Promise(resolve => setTimeout(resolve, 20));
+    await touchRepositoryIndex(owner);
+    assert.ok((await snapshot()).updatedAt > before, "a heartbeat must advance the liveness timestamp");
+    await assert.rejects(() => touchRepositoryIndex({ ...owner, indexAttemptId: randomUUID() }), /no longer current/);
+    await prisma.repository.update({ where: { id: repo.id }, data: { indexStatus: "failed" } });
+    await assert.rejects(() => touchRepositoryIndex(owner), /no longer current/);
+    const settled = (await snapshot()).updatedAt;
+    await assert.rejects(() => touchRepositoryIndex(owner), /no longer current/);
+    assert.deepEqual((await snapshot()).updatedAt, settled, "a superseded attempt must not touch the row");
   } else throw new Error(`Unknown scenario ${scenario}`);
 } finally {
   await prisma.communityReviewJob.deleteMany({ where: { organizationId: org.id } });

@@ -16,11 +16,14 @@ import { reconcileAutoReloadAttempts } from "./credits";
 import { syncMarketingConversions } from "./marketing-outbox";
 import { runOllamaPull } from "./ollama-admin";
 import { reapStuckReviews } from "./reap-stuck-reviews";
+import { releaseAbandonedIndexClaims } from "./repository-index-completion";
 import { requeueOverdueHolds } from "./review-hold";
 import { reconcileReviewPublication, requeueUnresolvedPublications } from "./review-publication-reconcile";
 import type { PublicationRecord } from "./review-verdict";
 import { discoverRepositories } from "./discover-repositories";
 import { processRepositoryIndex, type RepositoryIndexJob } from "./repository-index-job";
+import { processIncrementalIndex, type IncrementalIndexJob } from "./incremental-index-job";
+import { INCREMENTAL_INDEX_QUEUE } from "./index-liveness";
 import type { QueueConfig } from "./queue";
 
 export interface WelcomeEmailJob {
@@ -78,7 +81,15 @@ export async function registerWorkers(boss: PgBoss, config: QueueConfig): Promis
   });
 
   await boss.work<RepositoryIndexJob>("index-repository", { localConcurrency: 1 }, async (jobs) => {
-    for (const job of jobs) await processRepositoryIndex(job.data);
+    for (const job of jobs) {
+      await processRepositoryIndex(job.data, { signal: job.signal, expireInSeconds: job.expireInSeconds });
+    }
+  });
+
+  await boss.work<IncrementalIndexJob>(INCREMENTAL_INDEX_QUEUE, { localConcurrency: 2 }, async (jobs) => {
+    for (const job of jobs) {
+      await processIncrementalIndex(job.data, { signal: job.signal, expireInSeconds: job.expireInSeconds });
+    }
   });
 
   await boss.work<WelcomeEmailJob>("welcome-email", async (jobs) => {
@@ -231,6 +242,11 @@ export async function registerWorkers(boss: PgBoss, config: QueueConfig): Promis
   await boss.work("reap-stuck-reviews", async (jobs) => {
     for (const job of jobs) {
       try {
+        // Index attempts are crash-recovered here because no other periodic job
+        // covers every provider and organization; a failure must not stop the reaping.
+        const releasedIndexes = await releaseAbandonedIndexClaims()
+          .catch((err) => { console.error("[queue] Releasing abandoned index claims failed:", err); return 0; });
+        if (releasedIndexes) console.log(`[queue] reap-stuck-reviews ${job.id}: released ${releasedIndexes} abandoned index claim(s)`);
         // A verdict whose reconcile job was lost (a crash between the record and the
         // job, or retries exhausted) is picked up here from the record on its run.
         await requeueUnresolvedPublications();

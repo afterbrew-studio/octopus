@@ -13,10 +13,8 @@ const findMany = mock(async (args: Loose) => {
   return orgs;
 });
 const update = mock(async () => ({ count: 1 }));
-const recoverIndexes = mock(async (_args: Loose) => ({ count: 0 }));
 mock.module("@octopus/db", () => ({ Prisma: { DbNull: null }, prisma: {
   organization: { findMany, updateMany: update },
-  repository: { updateMany: recoverIndexes },
 } }));
 
 class GithubRateLimitError extends Error {
@@ -48,7 +46,6 @@ describe("discoverRepositories", () => {
     findManyArgs = null;
     findMany.mockClear();
     update.mockClear();
-    recoverIndexes.mockClear();
     syncOrgRepos.mockClear();
   });
 
@@ -66,14 +63,6 @@ describe("discoverRepositories", () => {
       { where: { id: "a" }, data: { reposSyncedAt: NOW } },
       { where: { id: "b" }, data: { reposSyncedAt: NOW } },
     ]);
-    expect(recoverIndexes.mock.calls[0][0]).toEqual({
-      where: {
-        organizationId: "a", provider: { in: ["github", "forgejo"] }, isActive: true, dismissedAt: null,
-        indexStatus: "indexing", updatedAt: { lt: new Date("2026-09-03T09:42:00.000Z") },
-      },
-      data: { indexStatus: "failed" },
-    });
-    expect(recoverIndexes.mock.invocationCallOrder[0]).toBeLessThan(syncOrgRepos.mock.invocationCallOrder[0]);
   });
 
   it("counts a failing organization, still stamps it, and keeps sweeping", async () => {

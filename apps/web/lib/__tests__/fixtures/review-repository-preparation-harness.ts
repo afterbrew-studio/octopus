@@ -4,10 +4,10 @@ import assert from "node:assert/strict";
 mock.module("server-only", () => ({}));
 const repo = {
   id: "repo-1", organizationId: "org-1", fullName: "acme/new",
-  indexStatus: "indexed", totalChunks: 8, analysisStatus: "none", updatedAt: new Date(),
+  indexStatus: "indexed", indexedAt: new Date() as Date | null, activeIndexGeneration: "gen-1" as string | null, totalVectors: 8, totalChunks: 8, analysisStatus: "none", updatedAt: new Date(),
 };
 type Where = {
-  id: string; organizationId: string; analysisStatus?: string;
+  id: string; organizationId: string; analysisStatus?: string; activeIndexGeneration?: string | null;
   OR?: Array<{ analysisStatus: unknown; updatedAt?: { lt: Date } }>;
 };
 type Write = { where: Where; data: Record<string, unknown> };
@@ -31,23 +31,18 @@ mock.module("@octopus/db", () => ({
       updateMany: async (write: Write) => {
         assert.equal(write.where.id, repo.id);
         assert.equal(write.where.organizationId, repo.organizationId);
+        if (write.where.activeIndexGeneration !== undefined && write.where.activeIndexGeneration !== repo.activeIndexGeneration) return { count: 0 };
         const staleBefore = write.where.OR?.[1]?.updatedAt?.lt;
         if (write.data.analysisStatus === "analyzing" &&
-            (repo.indexStatus !== "indexed" || repo.totalChunks === 0 || repo.analysisStatus === "analyzed" ||
+            ((repo.indexStatus !== "indexed" && !(repo.indexedAt && repo.totalVectors > 0)) || repo.totalChunks === 0 || repo.analysisStatus === "analyzed" ||
               (repo.analysisStatus === "analyzing" && (!staleBefore || repo.updatedAt >= staleBefore)))) {
           return { count: 0 };
         }
         if (write.where.analysisStatus && repo.analysisStatus !== write.where.analysisStatus) return { count: 0 };
         Object.assign(repo, write.data, { updatedAt: new Date() });
         writes.push(write);
+        if (write.data.analysisStatus === "analyzed") calls.push("persist-analysis");
         return { count: 1 };
-      },
-      update: async (write: Write) => {
-        assert.equal(write.where.organizationId, repo.organizationId);
-        Object.assign(repo, write.data, { updatedAt: new Date() });
-        writes.push(write);
-        calls.push("persist-analysis");
-        return repo;
       },
     },
     reviewRun: {
@@ -90,7 +85,11 @@ mock.module("@/lib/analyzer", () => ({
     return "Repository analysis";
   },
 }));
-mock.module("@/lib/pubby", () => ({ pubby: { trigger: async (_channel: string, event: string) => { notifications.push(event); } } }));
+const statusNotifications: string[] = [];
+mock.module("@/lib/pubby", () => ({ pubby: { trigger: async (_channel: string, event: string, payload?: { status?: string }) => {
+  notifications.push(event);
+  if (event === "analysis-status" && payload?.status) statusNotifications.push(payload.status);
+} } }));
 mock.module("@/lib/events", () => ({ eventBus: { emit: () => {} } }));
 mock.module("@/lib/queue", () => ({
   enqueueAfter: async (...args: unknown[]) => {
@@ -120,8 +119,18 @@ assert.deepEqual(calls, [], "completed analysis should be reused on later review
 
 repo.analysisStatus = "none";
 repo.indexStatus = "indexing";
+const completedSnapshot = { indexedAt: repo.indexedAt, totalVectors: repo.totalVectors };
+Object.assign(repo, { indexedAt: null, totalVectors: 0 });
 assert.equal(await prepare(), "waiting");
-assert.deepEqual(calls, [], "analysis must wait for the indexing worker");
+assert.deepEqual(calls, [], "analysis must wait for the first index");
+Object.assign(repo, completedSnapshot);
+for (const status of ["stale", "failed", "indexing"]) {
+  repo.indexStatus = status;
+  assert.equal(await prepare(), "ready", `a ${status} index with a completed snapshot is analysed as is`);
+  assert.deepEqual(calls, ["summary", "analysis", "persist-analysis"]);
+  calls.length = 0;
+  repo.analysisStatus = "none";
+}
 repo.indexStatus = "indexed";
 repo.totalChunks = 0;
 assert.equal(await prepare(), "empty");
@@ -143,6 +152,52 @@ assert.equal(await first, "ready");
 assert.equal(await prepare(), "ready");
 assert.deepEqual(calls, ["summary", "analysis", "persist-analysis"]);
 holdSummary = undefined;
+
+calls.length = 0;
+assert.equal(repo.analysisStatus, "analyzed");
+assert.equal(await prepare(), "ready");
+assert.deepEqual(calls, [], "an analyzed generation is reused");
+Object.assign(repo, { activeIndexGeneration: "gen-2", analysisStatus: "none" });
+assert.equal(await prepare(), "ready");
+assert.deepEqual(calls, ["summary", "analysis", "persist-analysis"]);
+
+calls.length = 0;
+repo.analysisStatus = "none";
+let publish!: () => void;
+let analysisRunning!: () => void;
+const running = new Promise<void>((resolve) => { analysisRunning = resolve; });
+holdSummary = () => new Promise<void>((resolve) => { publish = resolve; analysisRunning(); });
+const racing = prepare();
+await running;
+Object.assign(repo, { activeIndexGeneration: "gen-3", analysisStatus: "none" });
+publish();
+assert.equal(await racing, "waiting");
+assert.equal(repo.analysisStatus, "none", "the replaced generation's analysis must not mark the new one analyzed");
+assert.ok(!calls.includes("persist-analysis"));
+holdSummary = undefined;
+calls.length = 0;
+assert.equal(await prepare(), "ready");
+assert.deepEqual(calls, ["summary", "analysis", "persist-analysis"]);
+
+calls.length = 0;
+repo.analysisStatus = "none";
+failAt = "analysis";
+let supersede!: () => void;
+let analysisHeld!: () => void;
+const held = new Promise<void>((resolve) => { analysisHeld = resolve; });
+holdSummary = () => new Promise<void>((resolve) => { supersede = resolve; analysisHeld(); });
+const late = prepare();
+await held;
+Object.assign(repo, { activeIndexGeneration: "gen-5", analysisStatus: "analyzing" });
+statusNotifications.length = 0;
+supersede();
+await assert.rejects(late, /unavailable/);
+assert.equal(repo.analysisStatus, "analyzing", "the new generation's in-flight analysis must survive");
+assert.ok(!statusNotifications.includes("failed"), "a failure of the replaced generation is not announced");
+holdSummary = undefined;
+failAt = undefined;
+repo.analysisStatus = "none";
+assert.equal(await prepare(), "ready");
 
 for (const failure of ["summary", "analysis"] as const) {
   repo.analysisStatus = "none";

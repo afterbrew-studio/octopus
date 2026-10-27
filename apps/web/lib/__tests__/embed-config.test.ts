@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { getEmbedConfig } from "@/lib/embed-config";
+import { getEmbedConfig, getEmbeddingKey, type EmbedConfig } from "@/lib/embed-config";
 
 const KEYS = [
   "OCTOPUS_EMBED_PROVIDER",
@@ -73,5 +73,24 @@ describe("getEmbedConfig", () => {
   it("ignores non-numeric OCTOPUS_EMBED_DIM", () => {
     process.env.OCTOPUS_EMBED_DIM = "garbage";
     expect(getEmbedConfig().dim).toBe(3072);
+  });
+});
+
+describe("getEmbeddingKey", () => {
+  const ollama = (ollamaBaseUrl: string): EmbedConfig => ({ provider: "ollama", model: "nomic-embed-text", dim: 768, ollamaBaseUrl });
+
+  it("keeps the OpenAI identity to provider, model and dimension", () => {
+    expect(getEmbeddingKey({ provider: "openai", model: "text-embedding-3-large", dim: 3072 })).toBe("openai:text-embedding-3-large:3072");
+  });
+
+  it("tells Ollama servers apart, but not spellings of the same one", () => {
+    const key = getEmbeddingKey(ollama("http://gpu-a:11434"));
+    expect(getEmbeddingKey(ollama("http://gpu-b:11434"))).not.toBe(key);
+    expect(getEmbeddingKey(ollama("http://gpu-a:11435"))).not.toBe(key);
+    expect(getEmbeddingKey(ollama("http://gpu-a:11434/"))).toBe(key);
+    expect(getEmbeddingKey(ollama("HTTP://GPU-A:11434"))).toBe(key);
+    expect(getEmbeddingKey(ollama("http://GPU-A:11434//"))).toBe(key);
+    expect(getEmbeddingKey(ollama("http://gpu-a:11434/proxy/"))).toBe(getEmbeddingKey(ollama("http://gpu-a:11434/proxy")));
+    expect(getEmbeddingKey(ollama("http://gpu-a:11434/proxy"))).not.toBe(key);
   });
 });

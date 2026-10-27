@@ -13,10 +13,13 @@ let claimCount = 1;
 let indexFailure: Error | null = null;
 let cancelled = false;
 let timedOut = false;
+let queueAbort: AbortController | null = null;
 let timeoutCallback: (() => void) | undefined;
+const { indexJobAbortMs } = await import("@/lib/index-liveness");
+const abortDelays: number[] = [];
 const realSetTimeout = globalThis.setTimeout;
 globalThis.setTimeout = ((callback: () => void, ms?: number, ...args: unknown[]) => {
-  if (ms === 25 * 60_000) timeoutCallback = callback;
+  if (ms === indexJobAbortMs() || ms === indexJobAbortMs(1800)) { timeoutCallback = callback; abortDelays.push(ms); }
   return realSetTimeout(callback, ms, ...args);
 }) as typeof setTimeout;
 let populated = false;
@@ -43,7 +46,7 @@ const update = async (args: { where: { id?: string; indexStatus?: string; indexA
   if (!claimCount || !currentRow || (args.where.id && args.where.id !== currentRow.id)
     || (typeof args.where.indexStatus === "string" && args.where.indexStatus !== currentRow.indexStatus)
     || (args.where.indexAttemptId !== undefined && args.where.indexAttemptId !== currentRow.indexAttemptId)) return { count: 0 };
-  if (args.where.OR && !(["pending", "failed"].includes(currentRow.indexStatus) || (currentRow.indexStatus === "indexed" && currentRow.totalFiles === 0))) return { count: 0 };
+  if (args.where.OR && !(["pending", "failed", "stale", "cancelled"].includes(currentRow.indexStatus) || (currentRow.indexStatus === "indexed" && currentRow.totalFiles === 0))) return { count: 0 };
   Object.assign(currentRow, args.data);
   return { count: 1 };
 };
@@ -81,6 +84,11 @@ mock.module("@/lib/indexer", () => ({
     indexCalls.push(args);
     if (cancelled) { controller.abort(); throw controller.signal.reason; }
     if (timedOut) { assert.ok(timeoutCallback); timeoutCallback(); throw controller.signal.reason; }
+    if (queueAbort) {
+      queueAbort.abort();
+      assert.ok(controller.signal.aborted, "the queue's abort must reach the running index");
+      throw controller.signal.reason;
+    }
     if (replaceAttempt) {
       Object.assign(currentRow!, { indexStatus: "indexing", indexAttemptId: "replacement" });
       throw new Error("Old worker failed after replacement");
@@ -92,7 +100,7 @@ mock.module("@/lib/indexer", () => ({
     };
   },
 }));
-const { enqueuePendingRepositoryIndexes, processRepositoryIndex } = await import("@/lib/repository-index-job");
+const { enqueuePendingRepositoryIndexes, enqueueRepositoryIndexRefresh, processRepositoryIndex } = await import("@/lib/repository-index-job");
 const job = { repositoryId: "repo-1", organizationId: "org-1" };
 
 await assert.rejects(() => processRepositoryIndex({ repositoryId: "repo-1", organizationId: "" }), /requires/);
@@ -115,7 +123,12 @@ assert.equal(writes[0].data.totalFiles, 0, "an empty base must be a completed sn
 assert.equal(queries[1].where.organizationId, "org-1");
 assert.equal(queries[1].where.dismissedAt, null);
 assert.equal(queries[1].where.isActive, true);
-assert.deepEqual(queries[1].where.organization, { deletedAt: null, bannedAt: null, autoDiscoverRepos: true });
+assert.deepEqual(queries[1].where.organization, { deletedAt: null, bannedAt: null });
+assert.deepEqual(queries[1].where.OR, [
+  { organization: { autoDiscoverRepos: true } },
+  { indexedAt: { not: null }, totalVectors: { gt: 0 } },
+], "a repository with a usable index is refreshed even when auto-discovery is off");
+assert.deepEqual(queries[1].where.provider, { in: ["github", "forgejo", "gitlab", "bitbucket"] });
 
 claimCount = 0;
 await processRepositoryIndex(job);
@@ -180,5 +193,27 @@ await processRepositoryIndex(job);
 assert.equal(currentRow?.indexStatus, "indexing");
 assert.equal(currentRow?.indexAttemptId, "replacement");
 assert.deepEqual(notifications, ["indexing"]);
+replaceAttempt = false;
+queued.length = 0;
+await enqueueRepositoryIndexRefresh("repo-1", "org-1");
+assert.deepEqual(queued, [["index-repository", job, { singletonKey: "repo-1", singletonSeconds: 60 }]],
+  "a review-triggered refresh dedupes per repository");
+currentRow = { ...row, indexStatus: "stale", indexedAt: new Date(), totalFiles: 3, analysisStatus: "analyzed" };
+const callsBefore = indexCalls.length;
+const claimsBefore = claims.length;
+await processRepositoryIndex(job);
+assert.equal(indexCalls.length, callsBefore + 1, "a stale index must be claimable for a background refresh");
+assert.deepEqual((claims[claimsBefore].where.OR as unknown[]).at(-1), { indexStatus: { in: ["stale", "cancelled"] } }, "the claim itself must accept a stale or restored-after-cancel index");
+assert.equal(currentRow?.indexStatus, "indexed");
+assert.equal((currentRow as { analysisStatus?: string }).analysisStatus, "none", "a published refresh must invalidate the analysis of the previous generation");
+currentRow = { ...row };
+abortDelays.length = 0;
+await processRepositoryIndex(job, { expireInSeconds: 1800 });
+assert.deepEqual(abortDelays, [(1800 - 120) * 1000]);
+currentRow = { ...row };
+queueAbort = new AbortController();
+await assert.rejects(() => processRepositoryIndex(job, { signal: queueAbort!.signal }), { name: "TimeoutError" });
+assert.equal(currentRow?.indexStatus, "failed");
+queueAbort = null;
 globalThis.setTimeout = realSetTimeout;
 console.log("Repository queue, tenant, claim, empty snapshot, failure, retry and cancellation checks passed");

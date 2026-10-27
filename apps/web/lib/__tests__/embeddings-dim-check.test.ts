@@ -16,6 +16,7 @@ mock.module("@/lib/ai-usage", () => ({
 
 // Returned embedding dim is the lever — tests reset it per case.
 let mockReturnedDim = QDRANT_DENSE_VECTOR_SIZE;
+const requestOptionsSeen: Array<{ signal?: AbortSignal; timeout?: number } | undefined> = [];
 
 mock.module("@/lib/ai-client", () => ({
   // No tracking → embeddings uses "text-embedding-3-large" default; with
@@ -37,18 +38,20 @@ mock.module("openai", () => {
   class StubOpenAI {
     static APIError = StubAPIError;
     embeddings = {
-      create: ({ input }: { input: string[] }) =>
-        Promise.resolve({
+      create: ({ input }: { input: string[] }, requestOptions?: { signal?: AbortSignal; timeout?: number }) => {
+        requestOptionsSeen.push(requestOptions);
+        return Promise.resolve({
           data: input.map(() => ({ embedding: new Array(mockReturnedDim).fill(0.1) })),
           usage: { prompt_tokens: 1 },
-        }),
+        });
+      },
     };
   }
   return { default: StubOpenAI, APIError: StubAPIError };
 });
 
 // Import AFTER mocks are wired so module init picks them up.
-const { createEmbeddings } = await import("@/lib/embeddings");
+const { createEmbeddings, resolveEmbedConfig } = await import("@/lib/embeddings");
 
 describe("createEmbeddings — Qdrant dim validation", () => {
   beforeEach(() => {
@@ -100,5 +103,34 @@ describe("createEmbeddings — Qdrant dim validation", () => {
     await expect(
       createEmbeddings(["a", "b", "c", "d"], TRACKING),
     ).rejects.toThrow(/returned 1536-dim vectors, but OCTOPUS_EMBED_DIM is 3072/);
+  });
+
+  it("resolves the same configuration for indexing as retrieval embeds with", async () => {
+    // Retrieval's tracking applies the org/repo model override; indexing resolves it once and passes it in.
+    const retrieval = await resolveEmbedConfig({ organizationId: "org-test", repositoryId: "repo-test" });
+    expect(retrieval.model).toBe("text-embedding-3-small");
+    expect((await resolveEmbedConfig()).model).not.toBe("text-embedding-3-small");
+
+    requestOptionsSeen.length = 0;
+    const seenModels: string[] = [];
+    await createEmbeddings(["indexed"], undefined, { config: retrieval, onRequest: async () => { seenModels.push(retrieval.model); } });
+    expect(seenModels).toEqual(["text-embedding-3-small"]);
+  });
+
+  it("gives each provider request a deadline and the signal, and reports progress, only when asked", async () => {
+    requestOptionsSeen.length = 0;
+    await createEmbeddings(["plain"]);
+    expect(requestOptionsSeen).toEqual([undefined]);
+
+    requestOptionsSeen.length = 0;
+    let requests = 0;
+    const controller = new AbortController();
+    await createEmbeddings(["bounded"], undefined, { signal: controller.signal, onRequest: async () => { requests++; } });
+    expect(requests).toBe(1);
+    expect(requestOptionsSeen[0]?.signal).toBe(controller.signal);
+    expect(requestOptionsSeen[0]?.timeout).toBeGreaterThan(0);
+
+    controller.abort(new Error("cancelled"));
+    await expect(createEmbeddings(["late"], undefined, { signal: controller.signal })).rejects.toThrow("cancelled");
   });
 });

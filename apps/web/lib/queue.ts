@@ -2,6 +2,7 @@ import "server-only";
 import { PgBoss } from "pg-boss";
 import type { SendOptions } from "pg-boss";
 import { prisma } from "@octopus/db";
+import { COMMUNITY_REVIEW_EXPIRE_SECONDS, INCREMENTAL_INDEX_QUEUE, INCREMENTAL_INDEX_QUEUE_OPTIONS, INDEX_JOB_EXPIRE_SECONDS } from "@/lib/index-liveness";
 
 export interface QueueConfig {
   reviewTimeoutSeconds: number;
@@ -117,11 +118,15 @@ export async function startQueue(): Promise<PgBoss> {
     expireInSeconds: 1800,
   }).catch(() => {});
 
-  await boss.createQueue("index-repository", {
-    retryLimit: 2,
-    retryDelay: 60,
-    expireInSeconds: 1800,
-  }).catch(() => {});
+  // A first full index on a CPU embedder takes hours; the heartbeat, not this expiry,
+  // detects a crashed worker. createQueue leaves an existing queue untouched, hence updateQueue.
+  const indexQueueOptions = { retryLimit: 2, retryDelay: 60, expireInSeconds: INDEX_JOB_EXPIRE_SECONDS };
+  await boss.createQueue("index-repository", indexQueueOptions).catch(() => {});
+  await boss.updateQueue("index-repository", indexQueueOptions)
+    .catch((err) => console.error("[queue] Failed to apply index-repository options:", err));
+
+  // Singleton policy: a database unique index allows one active job per key (the repository id), on any replica.
+  await boss.createQueue(INCREMENTAL_INDEX_QUEUE, INCREMENTAL_INDEX_QUEUE_OPTIONS).catch(() => {});
 
   // Community-tier (no API key) async review pipeline.
   // Indexing can take minutes for first-touch repos, so the action enqueues
@@ -130,7 +135,7 @@ export async function startQueue(): Promise<PgBoss> {
   await boss.createQueue("community-review", {
     retryLimit: 2,
     retryDelay: 30,
-    expireInSeconds: 1800, // 30 min hard cap per attempt
+    expireInSeconds: COMMUNITY_REVIEW_EXPIRE_SECONDS,
   }).catch(() => {});
 
   await boss.createQueue("cleanup-forgejo-connector", {

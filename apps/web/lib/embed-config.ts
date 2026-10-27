@@ -80,3 +80,22 @@ export function getEmbedConfig(): EmbedConfig {
   }
   return config;
 }
+
+/** Equivalent spellings of one endpoint normalize to the same string. */
+function normalizeEndpoint(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.origin}${parsed.pathname.replace(/\/+$/, "")}`;
+  } catch {
+    return url.trim().toLowerCase().replace(/\/+$/, "");
+  }
+}
+
+/**
+ * Identifies the vector space a stored embedding lives in; equal keys mean the same text embeds to the same vector.
+ * An Ollama model name can serve different weights on different servers, so its endpoint is part of the identity.
+ */
+export function getEmbeddingKey(config: EmbedConfig = getEmbedConfig()): string {
+  const key = `${config.provider}:${config.model}:${config.dim}`;
+  return config.provider === "ollama" && config.ollamaBaseUrl ? `${key}:${normalizeEndpoint(config.ollamaBaseUrl)}` : key;
+}

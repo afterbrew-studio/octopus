@@ -6,12 +6,13 @@ const cases = [
   "first", "reindex", "legacy", "concurrent-earlier-first", "concurrent-later-first",
   "migration", "failed", "cancelled", "background", "late-cancel", "empty", "superseded", "replacement", "empty-then-content", "failed-reindex",
   "local-single", "local-verified", "local-legacy", "local-nonfinal", "local-gap", "local-duplicate", "local-wrong-session", "local-cancel",
-  "actions", "community", "empty-incremental-full", "legacy-incremental",
+  "actions", "community", "actions-stale", "actions-stale-queued", "community-stale", "community-stale-queued", "empty-incremental-full", "legacy-incremental",
   "local-count-under", "local-count-over", "background-replacement", "background-setup-failure",
   "background-notification-failure", "background-unconfigured",
   "storage-provider", "storage-local", "storage-reset", "storage-incremental",
   "storage-late-upsert", "storage-late-delete", "storage-local-timeout", "storage-reads", "storage-legacy-rollout",
-  "storage-concurrent-incremental", "storage-incremental-cleanup", "storage-local-verified", "storage-local-legacy",
+  "storage-concurrent-incremental", "storage-reuse", "storage-incremental-cleanup", "storage-local-verified", "storage-local-legacy",
+  "heartbeat", "abandoned-claims", "incremental-queue", "staged-upload", "restore-cancelled", "refresh-invalidates-analysis",
   "timezone-utc", "timezone-berlin",
 ] as const;
 

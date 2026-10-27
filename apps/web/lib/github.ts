@@ -1460,6 +1460,7 @@ export async function getRepositoryDetails(
   owner: string,
   repo: string,
   providedToken?: string,
+  signal?: AbortSignal,
 ): Promise<GitHubRepo | null> {
   const token = providedToken ?? await getInstallationToken(installationId);
   const res = await fetchWithRetry(
@@ -1469,6 +1470,7 @@ export async function getRepositoryDetails(
         Authorization: `Bearer ${token}`,
         Accept: "application/vnd.github+json",
       },
+      signal,
     },
   );
 
@@ -1560,6 +1562,7 @@ export async function getFileContent(
   filePath: string,
   /** Pre-resolved token. Skips getInstallationToken when provided. */
   providedToken?: string,
+  signal?: AbortSignal,
 ): Promise<string | null> {
   const token = providedToken ?? await getInstallationToken(installationId);
   const res = await fetchWithRetry(
@@ -1569,6 +1572,7 @@ export async function getFileContent(
         Authorization: `Bearer ${token}`,
         Accept: "application/vnd.github.raw+json",
       },
+      signal,
     },
   );
 

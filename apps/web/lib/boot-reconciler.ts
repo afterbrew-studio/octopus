@@ -1,17 +1,19 @@
 import { prisma } from "@octopus/db";
+import { INDEX_SILENCE_LIMIT_MS } from "@/lib/index-liveness";
 
-const STALE_MS = 10 * 60 * 1000;
+const STALE_ANALYSIS_MS = 10 * 60 * 1000;
 
 export async function reconcileStaleRepoStates() {
-  const cutoff = new Date(Date.now() - STALE_MS);
+  const indexCutoff = new Date(Date.now() - INDEX_SILENCE_LIMIT_MS);
+  const analysisCutoff = new Date(Date.now() - STALE_ANALYSIS_MS);
 
   try {
     const indexing = await prisma.repository.updateMany({
-      where: { indexStatus: "indexing", updatedAt: { lt: cutoff } },
+      where: { indexStatus: "indexing", updatedAt: { lt: indexCutoff } },
       data: { indexStatus: "pending" },
     });
     const analyzing = await prisma.repository.updateMany({
-      where: { analysisStatus: "analyzing", updatedAt: { lt: cutoff } },
+      where: { analysisStatus: "analyzing", updatedAt: { lt: analysisCutoff } },
       data: { analysisStatus: "none" },
     });
 

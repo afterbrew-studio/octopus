@@ -1,6 +1,8 @@
 import "server-only";
 import { randomUUID } from "node:crypto";
 import { runRepositoryIndex } from "@/lib/repository-index-completion";
+import { resolveIndexGate } from "@/lib/usable-index";
+import { queueIndexRefresh } from "@/lib/index-refresh";
 import { authenticateApiToken } from "@/lib/api-auth";
 import { prisma } from "@octopus/db";
 import { generateLocalReview } from "@/lib/review-core";
@@ -219,7 +221,8 @@ export async function POST(request: NextRequest) {
   const stale =
     repo.indexedAt != null &&
     Date.now() - repo.indexedAt.getTime() > thresholdHours * 60 * 60 * 1000;
-  const needsIndex = repo.indexStatus !== "indexed" || forceReindex === true || stale;
+  const indexGate = resolveIndexGate(repo);
+  const needsIndex = indexGate.blockOnIndex || forceReindex === true || stale;
 
   // For community mode without an existing index → enqueue + poll.
   // Authenticated orgs keep the legacy sync flow (they can have higher CF
@@ -284,6 +287,9 @@ export async function POST(request: NextRequest) {
       ERR("inline indexing failed:", err);
     }
   }
+
+  // shortcut: no installation means no refresh here (the Action's token ends with the response), so a stale index waits for the forceReindex / reindexThresholdHours policy, upgrade when the Action can hand off to a background job
+  if (!needsIndex && indexGate.refresh) await queueIndexRefresh(repo, orgId);
 
   let fileTree: string[] | undefined;
   try {

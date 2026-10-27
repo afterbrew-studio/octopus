@@ -1,6 +1,7 @@
 import { authenticateApiToken } from "@/lib/api-auth";
 import { prisma } from "@octopus/db";
 import { NextRequest } from "next/server";
+import { liveIndexCounts } from "@/lib/index-local";
 
 export async function GET(
   request: NextRequest,
@@ -26,6 +27,7 @@ export async function GET(
       indexedAt: true,
       indexedFiles: true,
       totalFiles: true,
+      localIndexUpload: true,
       totalChunks: true,
       totalVectors: true,
       indexDurationMs: true,
@@ -44,5 +46,6 @@ export async function GET(
     return Response.json({ error: "Repository not found" }, { status: 404 });
   }
 
-  return Response.json({ repo });
+  const { localIndexUpload, ...published } = repo;
+  return Response.json({ repo: { ...published, ...liveIndexCounts({ ...repo, localIndexUpload }) } });
 }

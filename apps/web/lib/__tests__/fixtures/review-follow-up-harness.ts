@@ -8,6 +8,7 @@ mock.module("server-only", () => ({}));
 const directCommentFailure = process.argv.includes("--direct-forgejo-comment-failure");
 const preserveAutoReview = process.argv.includes("--preserve-auto-review");
 const firstCompletion = process.argv.includes("--first-review-completion");
+const enqueued: unknown[][] = [];
 let indexPreparation: "normal" | "fail" | "replace" | "replace-success" = "normal";
 let indexingCalls = 0;
 let indexTransactions = 0;
@@ -57,12 +58,12 @@ const finding = {
   category: "Bug", description: "A missing value causes this access to throw.", suggestion: "", confidence: 95,
 };
 const diff = "diff --git a/src/check.ts b/src/check.ts\n--- a/src/check.ts\n+++ b/src/check.ts\n@@ -1 +1 @@\n-return value;\n+return value.name;\n";
-const org = { id: "org", defaultReviewConfig: {}, reviewLanguage: "en" };
+const org = { id: "org", defaultReviewConfig: {}, reviewLanguage: "en", githubInstallationId: 1 as number | null };
 const repo = {
   id: "repo", fullName: "fixture/repo", organization: org, reviewConfig: {},
   provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main",
   organizationId: "org", autoReview: false, indexAttemptId: null as string | null,
-  indexedAt: null as Date | null, firstIndexedAt: null as Date | null,
+  indexedAt: null as Date | null, firstIndexedAt: null as Date | null, totalVectors: 0,
 };
 const pr = {
   id: "pr", repository: repo, number: 1, title: "Handle missing values", author: "fixture",
@@ -292,7 +293,7 @@ mock.module("@/lib/github-app-config", () => ({ getGithubAppConfig: async () => 
 mock.module("@/lib/queue", () => ({
   loadQueueConfig: async () => ({ reviewTimeoutSeconds: 60, largeReviewTimeoutSeconds: 60 }),
   computeStaleReclaimMs: () => 120000,
-  enqueue: async () => {}, enqueueAfter: async () => "job",
+  enqueue: async (...args: unknown[]) => { enqueued.push(args); }, enqueueAfter: async () => "job",
 }));
 mock.module("@/lib/cost", () => ({ getOrgSpendLimitStatus: async () => ({ blocked: false }), shouldGuardConcurrency: async () => false }));
 mock.module("@/lib/pubby", () => ({ pubby: { trigger: async (_channel: string, _name: string, data: { status?: string }) => { events.push({ ...data, status: _name === "index-status" ? repo.indexStatus : data.status, eventName: _name }); } } }));
@@ -381,6 +382,7 @@ if (preserveAutoReview) {
   for (const mode of ["fail", "replace", "replace-success"] as const) {
     indexPreparation = mode;
     repo.indexStatus = "pending";
+    repo.totalVectors = 0;
     events.length = 0;
     const errors = console.error;
     console.error = () => {};
@@ -392,6 +394,29 @@ if (preserveAutoReview) {
     assert.equal(events.some(event => event.eventName === "index-status" && event.status === "failed"), mode === "fail");
     if (mode !== "fail") assert.equal(repo.indexAttemptId, "replacement-attempt");
   }
+  indexPreparation = "normal";
+  for (const [status, refreshes] of [["stale", 1], ["failed", 1], ["pending", 1], ["indexing", 0]] as const) {
+    repo.indexStatus = status;
+    repo.totalVectors = 1;
+    enqueued.length = 0;
+    const callsBefore = indexingCalls;
+    const archivedBefore = archived.length;
+    await processReview("pr");
+    assert.equal(indexingCalls, callsBefore, `${status}: a usable index must not block the review on indexing`);
+    assert.equal(repo.indexStatus, status, `${status}: the review leaves the refresh to the background job`);
+    assert.equal(archived.length, archivedBefore + 1, `${status}: the review runs immediately`);
+    assert.deepEqual(enqueued, refreshes
+      ? [["index-repository", { repositoryId: "repo", organizationId: "org" }, { singletonKey: "repo", singletonSeconds: 60 }]]
+      : [], `${status}: refresh enqueue`);
+  }
+  repo.organization.githubInstallationId = null;
+  repo.indexStatus = "stale";
+  enqueued.length = 0;
+  const inlineBefore = indexingCalls;
+  await processReview("pr");
+  assert.equal(indexingCalls, inlineBefore + 1, "a refresh the job cannot run is done by the review");
+  assert.deepEqual(enqueued, [], "nothing is queued for a worker that would skip it");
+  repo.organization.githubInstallationId = 1;
   console.log("PASS one-off review preparation preserves disabled automatic reviews");
   process.exit(0);
 }

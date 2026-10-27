@@ -7,8 +7,7 @@ import { writeSyncLog, deleteSyncLogs } from "@/lib/elasticsearch";
 import { runIndexingInBackground } from "@/lib/indexing-runner";
 import { createAbortController, abortIndexing } from "@/lib/indexing-abort";
 import type { LogLevel } from "@/lib/indexer";
-
-const STALE_INDEX_MS = 10 * 60 * 1000;
+import { INDEX_SILENCE_LIMIT_MS } from "@/lib/index-liveness";
 
 function isAuthorized(request: NextRequest): boolean {
   const expected = process.env.ADMIN_API_SECRET;
@@ -72,7 +71,7 @@ export async function POST(
 
   if (repo.indexStatus === "indexing") {
     const elapsed = Date.now() - repo.updatedAt.getTime();
-    if (elapsed < STALE_INDEX_MS) {
+    if (elapsed < INDEX_SILENCE_LIMIT_MS) {
       return NextResponse.json(
         { error: "Indexing is already in progress" },
         { status: 409 },

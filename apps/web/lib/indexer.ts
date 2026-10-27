@@ -9,7 +9,9 @@ import * as bitbucketLib from "@/lib/bitbucket";
 import * as gitlabLib from "@/lib/gitlab";
 import * as forgejoLib from "@/lib/forgejo";
 import { ForgejoResponseTooLargeError } from "@/lib/forgejo-http";
-import { ensureCollection, upsertChunks, deleteRepoFileChunks } from "@/lib/qdrant";
+import { ensureCollection, upsertChunks, listRepoFileChunkIds, deleteChunkPoints, scrollActiveChunkVectors } from "@/lib/qdrant";
+import { getEmbeddingKey, type EmbedConfig } from "@/lib/embed-config";
+import { SupersededIndexError, requestSignal, throttledHeartbeat, waitWhileAlive } from "@/lib/index-liveness";
 import { generateSparseVectors } from "@/lib/sparse-vector";
 import { parseOctopusIgnore, type Ignore } from "@/lib/octopus-ignore";
 import { shouldIndex, chunkText, treeBlobs, MAX_FILE_SIZE, exceedsMaxFileSize } from "@/lib/index-chunking";
@@ -47,6 +49,38 @@ export interface IndexStats {
   resolvedDefaultBranch?: string;
 }
 
+// Small enough that a heartbeat lands well inside INDEX_SILENCE_LIMIT_MS on a CPU embedder.
+const EMBED_BATCH = 128;
+// One Qdrant request per slice, so a slow store still yields a heartbeat between requests.
+const UPSERT_SLICE = 100;
+
+function hashText(text: string): string {
+  return crypto.createHash("sha256").update(text).digest("hex");
+}
+
+/** Vectors of the active generation whose text, embedding model and dimension match what this run would otherwise embed. */
+async function collectReusableVectors(
+  repoId: string,
+  wanted: ReadonlySet<string>,
+  config: EmbedConfig,
+  signal: AbortSignal | undefined,
+  beat: () => Promise<void>,
+): Promise<Map<string, number[]>> {
+  const key = getEmbeddingKey(config);
+  const found = new Map<string, number[]>();
+  for await (const page of scrollActiveChunkVectors(repoId, signal)) {
+    for (const stored of page) {
+      const { textHash } = stored;
+      if (textHash && wanted.has(textHash) && !found.has(textHash)
+        && stored.embeddingKey === key && stored.vector.length === config.dim) {
+        found.set(textHash, stored.vector);
+      }
+    }
+    await beat();
+  }
+  return found;
+}
+
 export async function indexRepository(
   attempt: { repoId: string; indexAttemptId: string },
   fullName: string,
@@ -62,6 +96,10 @@ export async function indexRepository(
   const { repoId } = attempt;
   const owner = { ...attempt, signal };
   const startTime = Date.now();
+  const beat = throttledHeartbeat(async () => {
+    const { touchRepositoryIndex } = await import("@/lib/repository-index-storage");
+    await touchRepositoryIndex(owner);
+  });
 
   const allChunks: {
     text: string;
@@ -87,7 +125,7 @@ export async function indexRepository(
       onLog(`Fetching Forgejo repository ${fullName}@${defaultBranch}...`);
       const head = await forgejoLib.getBranchHead(organizationId, fullName, defaultBranch);
       if (!head) throw new Error("Forgejo did not return a repository revision");
-      const paths = await forgejoLib.getRepositoryTree(organizationId, fullName, head);
+      const paths = await forgejoLib.getRepositoryTree(organizationId, fullName, head, { signal, onPage: beat });
       totalFileCount = paths.length;
       emptyRepository = paths.length === 0;
       const ig = paths.includes(".octopusignore")
@@ -95,6 +133,7 @@ export async function indexRepository(
         : undefined;
       for (const filePath of paths.filter(p => shouldIndex(p, undefined, ig))) {
         signal?.throwIfAborted();
+        await beat();
         let content: string;
         try {
           content = await forgejoLib.getFileContent(organizationId, fullName, head, filePath, { strict: true });
@@ -228,6 +267,7 @@ export async function indexRepository(
 
       for (let i = 0; i < filePaths.length; i++) {
         if (signal?.aborted) throw new Error("Indexing cancelled");
+        await beat();
 
         const filePath = filePaths[i];
         try {
@@ -292,13 +332,16 @@ export async function indexRepository(
     onLog(`Fetching repository tree for ${fullName}@${activeBranch}...`);
     let treeRes = await fetch(
       `${GITHUB_API}/repos/${fullName}/git/trees/${encodeURIComponent(activeBranch)}?recursive=1`,
-      { headers, signal },
+      { headers, signal: requestSignal(signal) },
     );
+
+    await beat();
 
     let branchExists = false;
     if (!treeRes.ok && treeRes.status === 404) {
       const [owner, repoName] = fullName.split("/");
-      const details = await getRepositoryDetails(installationId, owner, repoName, token);
+      const details = await getRepositoryDetails(installationId, owner, repoName, token, requestSignal(signal));
+      await beat();
       if (!details) {
         onLog(`Repository not found or GitHub App lacks access to ${fullName}`, "error");
         onLog("Go to GitHub Settings → Applications → Configure to grant access", "warning");
@@ -310,8 +353,9 @@ export async function indexRepository(
         resolvedDefaultBranch = details.default_branch;
         treeRes = await fetch(
           `${GITHUB_API}/repos/${fullName}/git/trees/${encodeURIComponent(activeBranch)}?recursive=1`,
-          { headers, signal },
+          { headers, signal: requestSignal(signal) },
         );
+        await beat();
       }
     }
 
@@ -320,8 +364,9 @@ export async function indexRepository(
     if (!treeRes.ok && treeRes.status === 404) {
       const commitRes = await fetch(
         `${GITHUB_API}/repos/${fullName}/commits/${encodeURIComponent(activeBranch)}`,
-        { headers, signal },
+        { headers, signal: requestSignal(signal) },
       );
+      await beat();
       if (commitRes.ok) {
         branchExists = true;
         const commit = await commitRes.json();
@@ -345,6 +390,7 @@ export async function indexRepository(
     }
 
     const treeData = emptyRepository ? { tree: [] } : await treeRes.json();
+    await beat();
     if (!Array.isArray(treeData.tree)) throw new Error("Invalid repository tree response from GitHub");
     if (treeData.truncated) throw new Error("GitHub returned a partial repository tree; indexing was not completed");
     const allItems = treeData.tree as TreeItem[];
@@ -359,7 +405,7 @@ export async function indexRepository(
     if (ignoreBlob) {
       try {
         const [owner, repoName] = fullName.split("/");
-        const ignoreContent = await ghGetFileContent(installationId, owner, repoName, activeBranch, ".octopusignore", token);
+        const ignoreContent = await ghGetFileContent(installationId, owner, repoName, activeBranch, ".octopusignore", token, requestSignal(signal));
         if (ignoreContent === null) throw new Error("Missing .octopusignore content");
         if (ignoreContent) {
           ig = parseOctopusIgnore(ignoreContent);
@@ -368,6 +414,7 @@ export async function indexRepository(
       } catch {
         throw new Error("Indexing incomplete: could not read .octopusignore");
       }
+      await beat();
     }
 
     const blobs = treeBlobs(allItems);
@@ -380,7 +427,7 @@ export async function indexRepository(
     try {
       const contribRes = await fetch(
         `${GITHUB_API}/repos/${fullName}/contributors?per_page=30`,
-        { headers },
+        { headers, signal: requestSignal(signal) },
       );
       if (contribRes.ok) {
         const contribData = await contribRes.json();
@@ -403,6 +450,7 @@ export async function indexRepository(
     } catch {
       onLog("Could not fetch contributor count", "warning");
     }
+    await beat();
 
     // 2. Fetch file contents and chunk
     onLog("Fetching and chunking file contents...");
@@ -440,7 +488,7 @@ export async function indexRepository(
           if (blobRes.status === 403 || blobRes.status === 429) {
             const retryAfter = parseInt(blobRes.headers.get("retry-after") ?? "5", 10);
             onLog(`Rate limited, waiting ${retryAfter}s...`, "warning");
-            await new Promise((r) => setTimeout(r, retryAfter * 1000));
+            await waitWhileAlive(retryAfter * 1000, beat, signal);
 
             const retry = await fetchWithTimeout(url);
             if (!retry.ok) {
@@ -458,7 +506,7 @@ export async function indexRepository(
         const blobData = await blobRes.json();
         processBlob(blobData, file.path);
       } catch (err) {
-        if (signal?.aborted) throw err;
+        if (signal?.aborted || err instanceof SupersededIndexError) throw err;
         const msg = err instanceof Error ? err.message : String(err);
         skip(file.path, msg);
       }
@@ -495,6 +543,7 @@ export async function indexRepository(
 
     for (let i = 0; i < files.length; i += CONCURRENCY) {
       if (signal?.aborted) throw new Error("Indexing cancelled");
+      await beat();
       const batch = files.slice(i, i + CONCURRENCY);
       await Promise.all(batch.map(fetchBlob));
       if (processed > 0) {
@@ -534,30 +583,37 @@ export async function indexRepository(
   await ensureCollection();
   onLog("Vector database ready", "success");
 
-  // 5. Create embeddings in batches
+  // 5. Embed chunks whose text has no stored vector in the active generation
   const texts = allChunks.map((c) => c.text);
-  const totalBatches = Math.ceil(texts.length / 512);
-  onLog(`Generating embeddings for ${texts.length} chunks (${totalBatches} batch${totalBatches > 1 ? "es" : ""})...`);
+  const textHashes = texts.map(hashText);
+  // Resolved once, as retrieval does, so vectors are generated and reused in the space queries use.
+  const { createEmbeddings: embed, resolveEmbedConfig } = await import("@/lib/embeddings");
+  const embedConfig = await resolveEmbedConfig(organizationId ? { organizationId, repositoryId: repoId } : undefined);
+  const embeddingKey = getEmbeddingKey(embedConfig);
+  const reused = await collectReusableVectors(repoId, new Set(textHashes), embedConfig, signal, beat);
+  const vectors: number[][] = textHashes.map((hash) => reused.get(hash) ?? []);
+  const missing = vectors.flatMap((vector, i) => (vector.length ? [] : [i]));
+  const totalBatches = Math.ceil(missing.length / EMBED_BATCH);
+  onLog(`Reusing ${texts.length - missing.length} stored embeddings, generating ${missing.length} (${totalBatches} batch${totalBatches === 1 ? "" : "es"})...`);
 
-  const vectors: number[][] = [];
-  for (let i = 0; i < texts.length; i += 512) {
+  for (let i = 0; i < missing.length; i += EMBED_BATCH) {
     if (signal?.aborted) throw new Error("Indexing cancelled");
 
-    const batch = texts.slice(i, i + 512);
-    const batchNum = Math.floor(i / 512) + 1;
+    const batchIndexes = missing.slice(i, i + EMBED_BATCH);
+    const batchNum = Math.floor(i / EMBED_BATCH) + 1;
     if (totalBatches > 1) {
       onLog(`Processing embedding batch ${batchNum}/${totalBatches}...`);
     }
 
-    const { createEmbeddings: embed } = await import("@/lib/embeddings");
-    const batchVectors = await embed(batch);
-    if (batchVectors.length !== batch.length || batchVectors.some(vector => vector.length === 0)) {
+    const batchVectors = await embed(batchIndexes.map((index) => texts[index]), undefined, { config: embedConfig, signal, onRequest: beat });
+    if (batchVectors.length !== batchIndexes.length || batchVectors.some(vector => vector.length === 0)) {
       throw new Error("Indexing incomplete: embedding results do not cover every chunk");
     }
-    vectors.push(...batchVectors);
+    batchIndexes.forEach((index, j) => { vectors[index] = batchVectors[j]; });
+    await beat();
   }
 
-  onLog(`Generated ${vectors.length} embeddings`, "success");
+  onLog(`Generated ${missing.length} embeddings, reused ${texts.length - missing.length}`, "success");
 
   if (signal?.aborted) throw new Error("Indexing cancelled");
 
@@ -576,6 +632,8 @@ export async function indexRepository(
       startLine: chunk.startLine,
       endLine: chunk.endLine,
       text: chunk.text,
+      textHash: textHashes[i],
+      embeddingKey,
       language: chunk.filePath.split(".").pop() ?? "unknown",
       indexedAt,
     },
@@ -583,7 +641,10 @@ export async function indexRepository(
 
   const qdrantBatches = Math.ceil(points.length / 100);
   onLog(`Storing ${points.length} vectors in database (${qdrantBatches} batch${qdrantBatches > 1 ? "es" : ""})...`);
-  await upsertChunks(points, owner);
+  for (let i = 0; i < points.length; i += UPSERT_SLICE) {
+    await upsertChunks(points.slice(i, i + UPSERT_SLICE), owner);
+    await beat();
+  }
   signal?.throwIfAborted();
   onLog(`Successfully stored ${points.length} vectors`, "success");
 
@@ -626,18 +687,19 @@ async function loadIncrementalIgnore(
 
 /**
  * Incrementally re-index only the changed files from a merged PR.
+ * `incompleteFiles` lists files whose fetch failed: their old chunks were kept, so the index is not current.
  * Deletes old chunks for changed/removed files, fetches & indexes added/modified files.
  * The repo stays "indexed" throughout — no downtime window.
  */
 export async function incrementalIndex(
-  owner: { repoId: string; activeIndexGeneration: string | null },
+  owner: { repoId: string; activeIndexGeneration: string | null; signal?: AbortSignal },
   fullName: string,
   defaultBranch: string,
   installationId: number,
   changedFiles: { filename: string; status: string }[],
   provider: string = "github",
   organizationId?: string,
-): Promise<{ updatedFiles: number; removedFiles: number; newVectors: number }> {
+): Promise<{ updatedFiles: number; removedFiles: number; newVectors: number; incompleteFiles: string[] }> {
   const { repoId } = owner;
   const removed = changedFiles
     .filter((f) => f.status === "removed")
@@ -651,16 +713,25 @@ export async function incrementalIndex(
     .filter((f) => shouldIndex(f.filename, undefined, ig))
     .map((f) => f.filename);
 
-  // 1. Delete chunks for all changed files (removed + modified + added that had old version)
-  const allChangedPaths = [...new Set([...removed, ...addedOrModified])];
-  if (allChangedPaths.length > 0) {
-    await ensureCollection();
-    await deleteRepoFileChunks(owner, allChangedPaths);
-  }
+  // Capture the old points, write the new ones, then delete exactly the captured points: a failure leaves
+  // the previous chunks and overlapping updates leave at worst duplicates, never a hole.
+  const fetchFailed = new Set<string>();
+  let collectionReady = false;
+  const ensureOnce = async () => {
+    if (!collectionReady) await ensureCollection();
+    collectionReady = true;
+  };
+  const captureOldChunks = async () => {
+    const stalePaths = [...new Set([...removed, ...addedOrModified])].filter((path) => !fetchFailed.has(path));
+    if (stalePaths.length === 0) return [];
+    await ensureOnce();
+    return listRepoFileChunkIds(owner, stalePaths);
+  };
 
-  // 2. Fetch and chunk only added/modified files
+  // 1. Fetch and chunk only added/modified files
   if (addedOrModified.length === 0) {
-    return { updatedFiles: 0, removedFiles: removed.length, newVectors: 0 };
+    await deleteChunkPoints(owner, await captureOldChunks());
+    return { updatedFiles: 0, removedFiles: removed.length, newVectors: 0, incompleteFiles: [] };
   }
 
   const allChunks: { text: string; filePath: string; startLine: number; endLine: number }[] = [];
@@ -670,6 +741,12 @@ export async function incrementalIndex(
       try {
         const [owner, repoName] = fullName.split("/");
         const content = await ghGetFileContent(installationId, owner, repoName, defaultBranch, filePath);
+        // null is an unsuccessful response, not an empty file: the old chunks stay.
+        if (content === null) {
+          fetchFailed.add(filePath);
+          console.warn(`[indexer:incremental] Failed to fetch ${filePath}, skipping`);
+          continue;
+        }
         if (!content || content.includes("\0")) continue;
         if (exceedsMaxFileSize(content)) {
           console.warn(`[indexer:incremental] Skipping ${filePath}: exceeds ${MAX_FILE_SIZE} bytes`);
@@ -680,6 +757,7 @@ export async function incrementalIndex(
           allChunks.push({ text: chunk.text, filePath, startLine: chunk.startLine, endLine: chunk.endLine });
         }
       } catch {
+        fetchFailed.add(filePath);
         console.warn(`[indexer:incremental] Failed to fetch ${filePath}, skipping`);
       }
     }
@@ -698,6 +776,7 @@ export async function incrementalIndex(
           allChunks.push({ text: chunk.text, filePath, startLine: chunk.startLine, endLine: chunk.endLine });
         }
       } catch {
+        fetchFailed.add(filePath);
         console.warn(`[indexer:incremental] Failed to fetch ${filePath}, skipping`);
       }
     }
@@ -715,27 +794,31 @@ export async function incrementalIndex(
           allChunks.push({ text: chunk.text, filePath, startLine: chunk.startLine, endLine: chunk.endLine });
         }
       } catch {
+        fetchFailed.add(filePath);
         console.warn(`[indexer:incremental] Failed to fetch ${filePath}, skipping`);
       }
     }
   }
 
   if (allChunks.length === 0) {
-    return { updatedFiles: addedOrModified.length, removedFiles: removed.length, newVectors: 0 };
+    await deleteChunkPoints(owner, await captureOldChunks());
+    return { updatedFiles: addedOrModified.length, removedFiles: removed.length, newVectors: 0, incompleteFiles: [...fetchFailed] };
   }
 
-  // 3. Generate embeddings & upsert
+  // 2. Generate embeddings
   const texts = allChunks.map((c) => c.text);
-  const { createEmbeddings } = await import("@/lib/embeddings");
+  const { createEmbeddings, resolveEmbedConfig } = await import("@/lib/embeddings");
+  const embedConfig = await resolveEmbedConfig(organizationId ? { organizationId, repositoryId: repoId } : undefined);
   const vectors: number[][] = [];
   for (let i = 0; i < texts.length; i += 512) {
     const batch = texts.slice(i, i + 512);
-    const batchVectors = await createEmbeddings(batch);
+    const batchVectors = await createEmbeddings(batch, undefined, { config: embedConfig, signal: owner.signal });
     vectors.push(...batchVectors);
   }
 
   const sparseVectors = generateSparseVectors(texts);
   const indexedAt = new Date().toISOString();
+  const embeddingKey = getEmbeddingKey(embedConfig);
   const points = allChunks.map((chunk, i) => ({
     id: crypto.randomUUID(),
     vector: vectors[i],
@@ -747,12 +830,18 @@ export async function incrementalIndex(
       startLine: chunk.startLine,
       endLine: chunk.endLine,
       text: chunk.text,
+      textHash: hashText(chunk.text),
+      embeddingKey,
       language: chunk.filePath.split(".").pop() ?? "unknown",
       indexedAt,
     },
   }));
 
+  // 3. Write the new chunks, then drop the old ones of the same files
+  await ensureOnce();
+  const oldPointIds = await captureOldChunks();
   await upsertChunks(points, owner);
+  await deleteChunkPoints(owner, oldPointIds);
 
-  return { updatedFiles: addedOrModified.length, removedFiles: removed.length, newVectors: points.length };
+  return { updatedFiles: addedOrModified.length, removedFiles: removed.length, newVectors: points.length, incompleteFiles: [...fetchFailed] };
 }

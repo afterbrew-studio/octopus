@@ -7,6 +7,8 @@ import type { LogLevel } from "@/lib/indexer";
 import { notifyRepositoryIndex } from "@/lib/repository-index-notifications";
 import { deleteSyncLogs, writeSyncLog } from "@/lib/elasticsearch";
 import { createAbortController, clearAbortController } from "@/lib/indexing-abort";
+import { indexJobAbortMs } from "@/lib/index-liveness";
+import { USABLE_INDEX_WHERE } from "@/lib/usable-index";
 
 export interface RepositoryIndexJob {
   repositoryId: string;
@@ -21,9 +23,32 @@ const needsIndex = {
     { indexStatus: "indexed", totalFiles: 0 },
   ],
 };
+// Discovery leaves a stale index to the review that finds it, so the refresh job it queues must be able to claim it.
+// "cancelled" is what removing a repository mid-index leaves behind; a restored repository keeps it.
+const claimable = { OR: [...needsIndex.OR, { indexStatus: { in: ["stale", "cancelled"] } }] };
+
+// Narrower than the job's own providers: discovery only auto-indexes these.
+const DISCOVERY_PROVIDERS = ["github", "forgejo"];
+const JOB_PROVIDERS = [...DISCOVERY_PROVIDERS, "gitlab", "bitbucket"];
+
+/** The job indexes a GitHub repository only through the installation bound to its own organization. */
+export function canIndexInBackground(
+  repo: { provider: string; installationId: number | null },
+  organizationInstallationId: number | null | undefined,
+): boolean {
+  if (repo.provider !== "github") return true;
+  return !!organizationInstallationId && (!repo.installationId || repo.installationId === organizationInstallationId);
+}
+
+export function enqueueRepositoryIndexRefresh(repositoryId: string, organizationId: string) {
+  return enqueue("index-repository", { repositoryId, organizationId }, {
+    singletonKey: repositoryId,
+    singletonSeconds: 60,
+  });
+}
 
 export async function enqueuePendingRepositoryIndexes(organizationId: string, repositoryId?: string, providers?: string[]) {
-  const eligibleProviders = ["github", "forgejo"].filter(provider => !providers || providers.includes(provider));
+  const eligibleProviders = DISCOVERY_PROVIDERS.filter(provider => !providers || providers.includes(provider));
   if (!eligibleProviders.length) return;
   const repos = await prisma.repository.findMany({
     where: {
@@ -39,15 +64,13 @@ export async function enqueuePendingRepositoryIndexes(organizationId: string, re
     orderBy: { indexedAt: { sort: "asc", nulls: "first" } },
     take: 200,
   });
-  for (const repo of repos) {
-    await enqueue("index-repository", { repositoryId: repo.id, organizationId }, {
-      singletonKey: repo.id,
-      singletonSeconds: 60,
-    });
-  }
+  for (const repo of repos) await enqueueRepositoryIndexRefresh(repo.id, organizationId);
 }
 
-export async function processRepositoryIndex(job: RepositoryIndexJob) {
+export async function processRepositoryIndex(
+  job: RepositoryIndexJob,
+  queue?: { signal?: AbortSignal; expireInSeconds?: number },
+) {
   if (!job || typeof job.repositoryId !== "string" || !job.repositoryId ||
       typeof job.organizationId !== "string" || !job.organizationId) {
     throw new Error("Repository indexing requires repositoryId and organizationId");
@@ -58,27 +81,33 @@ export async function processRepositoryIndex(job: RepositoryIndexJob) {
     where: {
       id: job.repositoryId,
       organizationId: job.organizationId,
-      provider: { in: ["github", "forgejo"] },
+      provider: { in: JOB_PROVIDERS },
       isActive: true,
       dismissedAt: null,
-      organization: { deletedAt: null, bannedAt: null, autoDiscoverRepos: true },
+      organization: { deletedAt: null, bannedAt: null },
+      // A repository that already has an index was opted in by use; only first-time indexing needs auto-discovery.
+      OR: [{ organization: { autoDiscoverRepos: true } }, USABLE_INDEX_WHERE],
     },
     include: { organization: { select: { githubInstallationId: true } } },
   });
   const installationId = repo?.organization.githubInstallationId;
-  if (!repo || (repo.provider === "github" && (!installationId || (repo.installationId && repo.installationId !== installationId)))) return;
+  if (!repo || !canIndexInBackground(repo, installationId)) return;
 
   // Share the reviewer's claim so a first PR and discovery cannot both index.
   const indexAttemptId = randomUUID();
   const claim = await prisma.repository.updateMany({
-    where: { id: repo.id, organizationId: job.organizationId, ...needsIndex },
+    where: { id: repo.id, organizationId: job.organizationId, ...claimable },
     data: { indexStatus: "indexing", indexAttemptId },
   });
   if (!claim.count) return;
 
   const controller = createAbortController(indexAttemptId);
   // Abort before pg-boss expires the attempt, so the catch can release its claim.
-  const timeout = setTimeout(() => controller.abort(new DOMException("Repository indexing timed out", "TimeoutError")), 25 * 60_000);
+  const timeout = setTimeout(() => controller.abort(new DOMException("Repository indexing timed out", "TimeoutError")), indexJobAbortMs(queue?.expireInSeconds));
+  // pg-boss aborts the signal on expiry or shutdown; the run must stop with it.
+  const abortWithQueue = () => controller.abort(new DOMException("Repository indexing job was aborted by the queue", "TimeoutError"));
+  if (queue?.signal?.aborted) abortWithQueue();
+  else queue?.signal?.addEventListener("abort", abortWithQueue, { once: true });
   const channel = `presence-org-${job.organizationId}`;
   const log = (message: string, level: LogLevel = "info") => {
     writeSyncLog({ orgId: job.organizationId, repoId: repo.id, message, level, timestamp: Date.now() });
@@ -103,6 +132,7 @@ export async function processRepositoryIndex(job: RepositoryIndexJob) {
     if (!isCancelled) throw error;
   } finally {
     clearTimeout(timeout);
+    queue?.signal?.removeEventListener("abort", abortWithQueue);
     clearAbortController(indexAttemptId);
   }
 }

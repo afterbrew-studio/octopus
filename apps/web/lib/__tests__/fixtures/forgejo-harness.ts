@@ -212,9 +212,10 @@ for (const strict of [false, true]) {
 let vectorWrites = 0;
 mock.module("@/lib/qdrant", () => ({
   ensureCollection: async () => {},
-  upsertChunks: async () => { vectorWrites++; }, deleteRepoFileChunks: async () => {},
+  upsertChunks: async () => { vectorWrites++; }, listRepoFileChunkIds: async () => [], deleteChunkPoints: async () => {},
+  scrollActiveChunkVectors: async function* () {},
 }));
-mock.module("@/lib/embeddings", () => ({ createEmbeddings: async (texts: string[]) => texts.map(() => [0.1]) }));
+mock.module("@/lib/embeddings", () => ({ resolveEmbedConfig: async () => (await import("@/lib/embed-config")).getEmbedConfig(), createEmbeddings: async (texts: string[]) => texts.map(() => [0.1]) }));
 const { indexRepository } = await import("@/lib/indexer");
 for (const missingPath of ["missing.ts", ".octopusignore"]) {
   const paths = missingPath === ".octopusignore" ? [".octopusignore", "good.ts"] : ["good.ts", "missing.ts"];

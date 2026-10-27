@@ -5,9 +5,10 @@ import { prisma, type Repository } from "@octopus/db";
 
 export async function exerciseStorageRace(scenario: string, repo: Repository) {
   type Point = { id: string; vector: unknown; payload: Record<string, unknown> };
-  type Filter = { must?: Filter[]; should?: Filter[]; key?: string; match?: { value?: unknown; any?: unknown[] }; is_empty?: { key: string } };
+  type Filter = { must?: Filter[]; must_not?: Filter[]; should?: Filter[]; key?: string; match?: { value?: unknown; any?: unknown[] }; is_empty?: { key: string } };
   const matches = (point: Point, filter: Filter): boolean => {
     if (filter.must && !filter.must.every(item => matches(point, item))) return false;
+    if (filter.must_not && filter.must_not.some(item => matches(point, item))) return false;
     if (filter.should && !filter.should.some(item => matches(point, item))) return false;
     if (filter.is_empty) return point.payload[filter.is_empty.key] == null;
     if (filter.key) return filter.match?.any ? filter.match.any.includes(point.payload[filter.key]) : point.payload[filter.key] === filter.match?.value;
@@ -45,7 +46,8 @@ export async function exerciseStorageRace(scenario: string, repo: Repository) {
       if (operation === "upsert") for (const point of body.points as Point[]) stored.set(point.id, point);
       else {
         deleteCalls++;
-        for (const [id, point] of stored) if (matches(point, body.filter)) stored.delete(id);
+        if (body.points) for (const id of body.points as string[]) stored.delete(id);
+        else for (const [id, point] of stored) if (matches(point, body.filter)) stored.delete(id);
       }
       if (paused) applied.resolve();
       return reply({ operation_id: 1, status: "completed" });
@@ -60,8 +62,9 @@ export async function exerciseStorageRace(scenario: string, repo: Repository) {
   } });
   const storageUrl = new URL(liveStorageUrl ?? service.url.toString());
   process.env.QDRANT_URL = storageUrl.toString();
-  mock.module("@/lib/embed-config", () => ({ getEmbedConfig: () => ({ dim: 1 }) }));
-  mock.module("@/lib/embeddings", () => ({ createEmbeddings: async (texts: string[]) => texts.map(() => [0.1]) }));
+  mock.module("@/lib/embed-config", () => ({ getEmbedConfig: () => ({ dim: 1 }), getEmbeddingKey: () => "fixture:model:1" }));
+  let embeddedTexts = 0;
+  mock.module("@/lib/embeddings", () => ({ resolveEmbedConfig: async () => ({ provider: "fixture", model: "model", dim: 1 }), createEmbeddings: async (texts: string[]) => { embeddedTexts += texts.length; return texts.map(() => [0.1]); } }));
   let content = "baseline";
   let empty = false;
   const files = () => Array.from({ length: 101 }, (_, i) => ({ path: `file${i}.ts`, content: `export const value = '${content}-${i}';` }));
@@ -96,7 +99,7 @@ export async function exerciseStorageRace(scenario: string, repo: Repository) {
     const { indexRepository, incrementalIndex } = await import("@/lib/indexer");
     const { runRepositoryIndex } = await import("@/lib/repository-index-completion");
     const { prepareRepoForLocalIndex, claimLocalIndexBatch, indexLocalBatch, recordLocalIndexProgress, markLocalIndexFailed } = await import("@/lib/index-local");
-    const { deleteRepoFileChunks, upsertChunks, getRepoChunks, searchSimilarChunks, searchCodeChunksAcrossRepos, getQdrantClient, ensureCollection } = await import("@/lib/qdrant");
+    const { listRepoFileChunkIds, deleteChunkPoints, upsertChunks, getRepoChunks, searchSimilarChunks, searchCodeChunksAcrossRepos, getQdrantClient, ensureCollection } = await import("@/lib/qdrant");
     const { buildRepoGraph } = await import("@/lib/repo-graph");
     const snapshot = () => prisma.repository.findUniqueOrThrow({ where: { id: repo.id } });
     const claim = async () => {
@@ -133,6 +136,25 @@ export async function exerciseStorageRace(scenario: string, repo: Repository) {
       assert.deepEqual(await getRepoChunks(repo.id), ["new generation"], "Legacy point IDs must not overwrite generation points");
       assert.deepEqual((await legacyRead()).map(point => point.payload?.text), ["legacy"]);
       assert.deepEqual((await buildRepoGraph(repo.id)).nodes.map(node => node.path), ["code.ts"]);
+      return;
+    }
+    if (scenario === "storage-reuse") {
+      const first = await claim();
+      await full(first);
+      assert.equal(embeddedTexts, 101);
+      const second = await claim();
+      embeddedTexts = 0;
+      await full(second);
+      assert.equal(embeddedTexts, 0, "an unchanged snapshot must reuse every stored vector");
+      assert.equal((await snapshot()).activeIndexGeneration, second);
+      assert.equal((await getRepoChunks(repo.id, 200)).length, 101, "reused vectors are written to the new generation");
+      const generations = new Set([...stored.values()].map(point => point.payload.indexGeneration));
+      assert.deepEqual(generations, new Set([first, second]), "the replaced generation is left untouched");
+      content = "changed";
+      const third = await claim();
+      embeddedTexts = 0;
+      await full(third);
+      assert.equal(embeddedTexts, 101, "changed text must be embedded again");
       return;
     }
     if (scenario === "storage-reads") {
@@ -215,6 +237,8 @@ export async function exerciseStorageRace(scenario: string, repo: Repository) {
         resolveGithubWebhookTenant: async () => ({ status: "resolved", organizationId: repo.organizationId, repositoryId: repo.id }),
         observeGithubWebhookDeliveryBestEffort: async () => {},
       }));
+      const { processIncrementalIndex } = await import("@/lib/incremental-index-job");
+      mock.module("@/lib/queue", () => ({ enqueue: async (_name: string, data: Parameters<typeof processIncrementalIndex>[0]) => { await processIncrementalIndex(data); return "fixture"; } }));
       const { POST } = await import("@/app/api/github/webhook/route");
       const webhook = (number: number) => {
         const body = JSON.stringify({ action: "closed", installation: { id: 1 }, repository: { id: repo.externalId }, pull_request: { number, merged: true } });
@@ -291,7 +315,8 @@ export async function exerciseStorageRace(scenario: string, repo: Repository) {
     await applied.promise;
     const stale = await observed;
     assert.match(String(stale.error), timeout ? /timeout|abort/i : /no longer current|cancelled or replaced/);
-    await assert.rejects(() => deleteRepoFileChunks(owner, ["file0.ts"]), /no longer current/);
+    await assert.rejects(() => listRepoFileChunkIds(owner, ["file0.ts"]), /no longer current/);
+    await assert.rejects(() => deleteChunkPoints(owner, ["any"]), /no longer current/);
     const visible = await searchSimilarChunks(repo.id, [1], 200);
     assert.equal(visible.length, 101);
     assert.ok(visible.every(point => point.text.includes("replacement")), "Late remote mutations must not corrupt the active replacement");

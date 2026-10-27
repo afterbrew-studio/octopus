@@ -1,14 +1,28 @@
 import "server-only";
 import { prisma, type Prisma } from "@octopus/db";
 import type { IndexStats } from "@/lib/indexer";
+import { INDEX_SILENCE_LIMIT_MS, SupersededIndexError } from "@/lib/index-liveness";
 
-/** A replacement attempt or cancellation owns the row now. */
-export class SupersededIndexError extends Error {
-  constructor() { super("Indexing attempt is no longer current"); }
-}
+export { SupersededIndexError };
 
 export function isIndexingCancelled(signal?: AbortSignal): boolean {
   return !!signal?.aborted && signal.reason?.name !== "TimeoutError";
+}
+
+/**
+ * Frees `indexing` rows that went silent, for any provider and whatever the organization's discovery setting.
+ * A local upload has no attempt id between batches but touches the row on every batch claim and commit,
+ * so the same window covers it.
+ */
+export async function releaseAbandonedIndexClaims(now: Date = new Date()): Promise<number> {
+  const released = await prisma.repository.updateMany({
+    where: {
+      indexStatus: "indexing",
+      updatedAt: { lt: new Date(now.getTime() - INDEX_SILENCE_LIMIT_MS) },
+    },
+    data: { indexStatus: "failed" },
+  });
+  return released.count;
 }
 
 /** Persist a complete snapshot and its milestones in one guarded transaction. */
@@ -38,6 +52,8 @@ export async function runRepositoryIndex(
       const saved = await tx.repository.updateMany({ where, data: {
         indexStatus: "indexed",
         activeIndexGeneration: indexAttemptId,
+        // The analysis describes the previous generation.
+        analysisStatus: "none",
         totalFiles: stats.totalFiles, indexedFiles: stats.indexedFiles,
         totalChunks: stats.totalChunks, totalVectors: stats.totalVectors,
         contributorCount: stats.contributorCount,
