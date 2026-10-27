@@ -365,6 +365,52 @@ try {
     assert.equal(result.firstIndexedAt !== null, verified);
     if (scenario === "local-legacy") assert.ok(result.indexedAt);
     if (scenario === "local-cancel") assert.equal(result.indexStatus, "pending");
+  } else if (scenario === "staged-upload") {
+    mock.module("@/lib/qdrant", () => ({ upsertChunks: async () => {} }));
+    mock.module("@/lib/embeddings", () => ({ createEmbeddings: async (texts: string[]) => texts.map(() => [0.1]) }));
+    const { prepareRepoForLocalIndex, claimLocalIndexBatch, recordLocalIndexProgress, indexLocalBatch, liveIndexCounts } = await import("@/lib/index-local");
+    const { resolveIndexGate } = await import("@/lib/usable-index");
+    const name = `local/${fixture}`;
+    const files = [{ path: "a.ts", content: "export const a = 1;" }, { path: "b.ts", content: "export const b = 2;" }];
+    const upload = async (publishLast: boolean) => {
+      const prepared = await prepareRepoForLocalIndex(org.id, "github", name, "main", { totalBatches: 2, totalFiles: 2 });
+      assert.ok(prepared.ok);
+      const first = await claimLocalIndexBatch(prepared.repoId, 0, 2, files.slice(0, 1), prepared.uploadId);
+      const delta = await indexLocalBatch(prepared.repoId, name, org.id, files.slice(0, 1), first);
+      await recordLocalIndexProgress(prepared.repoId, null, { indexedFiles: delta.indexedInBatch, totalChunks: delta.chunksInBatch, totalVectors: delta.chunksInBatch }, false, first);
+      if (publishLast) {
+        const final = await claimLocalIndexBatch(prepared.repoId, 1, 2, files.slice(1), prepared.uploadId);
+        const last = await indexLocalBatch(prepared.repoId, name, org.id, files.slice(1), final);
+        await recordLocalIndexProgress(prepared.repoId, null, { indexedFiles: last.indexedInBatch, totalChunks: last.chunksInBatch, totalVectors: last.chunksInBatch }, true, final);
+      }
+      return prepared.repoId;
+    };
+    const read = (id: string) => prisma.repository.findUniqueOrThrow({ where: { id } });
+
+    // First upload, published: the counters appear only with the generation.
+    const id = await upload(true);
+    const published = await read(id);
+    assert.equal(published.indexStatus, "indexed");
+    assert.equal(published.totalVectors, 2);
+    assert.equal(published.indexedFiles, 2);
+
+    // A re-upload that stops after one batch leaves the published statistics and the active generation alone,
+    // while the running progress stays visible.
+    await upload(false);
+    const staging = await read(id);
+    assert.equal(staging.indexStatus, "indexing");
+    assert.equal(staging.totalVectors, 2, "staged batches must not change the published counters");
+    assert.equal(staging.activeIndexGeneration, published.activeIndexGeneration);
+    assert.deepEqual(liveIndexCounts(staging), { indexedFiles: 1, totalFiles: 2 });
+    assert.equal(resolveIndexGate({ ...staging, indexStatus: "stale" }).blockOnIndex, false, "the published generation is still usable");
+
+    // A repository whose active generation is empty is not made usable by a staged upload.
+    await prisma.repository.update({ where: { id }, data: { indexStatus: "pending", indexedAt: new Date(), totalVectors: 0, totalChunks: 0, indexedFiles: 0 } });
+    await upload(false);
+    const emptied = await read(id);
+    assert.ok(emptied.indexedAt);
+    assert.equal(emptied.totalVectors, 0);
+    assert.equal(resolveIndexGate({ ...emptied, indexStatus: "stale" }).blockOnIndex, true, "an empty active generation must not pass the usable-index rule");
   } else if (scenario === "refresh-invalidates-analysis") {
     await prisma.repository.update({ where: { id: repo.id }, data: { analysisStatus: "analyzed", analysis: "previous generation" } });
     await runRepositoryIndex(repo.id, indexAttemptId, async () => stats);

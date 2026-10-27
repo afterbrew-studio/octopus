@@ -8,6 +8,7 @@ import { HARDCODED_REVIEW_MODEL, HARDCODED_EMBED_MODEL } from "@/lib/ai-client";
 import { RepositoriesContent } from "./repositories-content";
 import { WELCOME_DEFERRED_REASON } from "@/lib/org-create";
 import { hasOrgPermission } from "@/lib/org-permissions";
+import { liveIndexCounts } from "@/lib/index-local";
 
 const PAGE_SIZE = 50;
 /** Repositories created in the last week are badged "New" (auto-discovery or first sync). */
@@ -96,6 +97,7 @@ export default async function RepositoriesPage({
     indexedAt: true,
     indexedFiles: true,
     totalFiles: true,
+    localIndexUpload: true,
     totalChunks: true,
     totalVectors: true,
     indexDurationMs: true,
@@ -235,8 +237,7 @@ export default async function RepositoriesPage({
     isNew: Date.now() - r.createdAt.getTime() < NEW_REPO_WINDOW_MS,
     indexStatus: r.indexStatus,
     indexedAt: r.indexedAt?.toISOString() ?? null,
-    indexedFiles: r.indexedFiles,
-    totalFiles: r.totalFiles,
+    ...liveIndexCounts(r),
     totalChunks: r.totalChunks,
     totalVectors: r.totalVectors,
     indexDurationMs: r.indexDurationMs,

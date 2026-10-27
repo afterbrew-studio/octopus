@@ -169,9 +169,10 @@ export async function prepareRepoForLocalIndex(
   | { ok: false; reason: "managed-by-platform"; repoId: string }
   | { ok: false; reason: "in-flight"; repoId: string }
 > {
-  const uploadState = {
+  const uploadState: UploadState = {
     id: crypto.randomUUID(), nextBatch: 0, totalBatches: upload.totalBatches,
-    totalFiles: upload.totalFiles, paths: [] as string[], verified: true,
+    totalFiles: upload.totalFiles, paths: [], verified: true,
+    staged: { indexedFiles: 0, totalChunks: 0, totalVectors: 0 },
   };
   const existing = await prisma.repository.findFirst({
     where: { organizationId, provider, fullName, isActive: true },
@@ -199,11 +200,6 @@ export async function prepareRepoForLocalIndex(
         indexStatus: "indexing",
         localIndexUpload: uploadState,
         indexAttemptId: null,
-        indexedFiles: 0,
-        totalFiles: 0,
-        totalChunks: 0,
-        totalVectors: 0,
-        indexDurationMs: null,
       },
     });
     if (claim.count === 0) {
@@ -237,6 +233,13 @@ export async function prepareRepoForLocalIndex(
   return { ok: true, repoId: repo.id, reIndex: false, uploadId: uploadState.id };
 }
 
+/**
+ * The counters of an upload in progress live here, not on the Repository row, whose counters describe
+ * the active generation and change only when a generation is published. Absent on an upload that
+ * started before staging existed; that one still counts on the row.
+ */
+type StagedCounts = { indexedFiles: number; totalChunks: number; totalVectors: number };
+
 type UploadState = {
   id: string;
   nextBatch: number;
@@ -244,9 +247,18 @@ type UploadState = {
   totalFiles: number;
   paths: string[];
   verified: boolean;
+  staged?: StagedCounts;
 };
 
 export class LocalIndexConflict extends Error {}
+
+/** Counters to show: a running upload's staged progress, otherwise the published statistics. */
+export function liveIndexCounts(repo: { indexStatus: string; indexedFiles: number; totalFiles: number; localIndexUpload: unknown }) {
+  const upload = repo.localIndexUpload as UploadState | null;
+  return repo.indexStatus === "indexing" && upload?.staged
+    ? { indexedFiles: upload.staged.indexedFiles, totalFiles: upload.totalFiles }
+    : { indexedFiles: repo.indexedFiles, totalFiles: repo.totalFiles };
+}
 
 /** Claim one ordered batch before performing embeddings or vector writes. */
 export async function claimLocalIndexBatch(
@@ -289,18 +301,29 @@ export async function recordLocalIndexProgress(
   commit: boolean,
   claim: { attemptId: string; upload: UploadState },
 ): Promise<void> {
+  const previous = claim.upload.staged;
+  const staged = previous && {
+    indexedFiles: previous.indexedFiles + delta.indexedFiles,
+    totalChunks: previous.totalChunks + delta.totalChunks,
+    totalVectors: previous.totalVectors + delta.totalVectors,
+  };
   await prisma.$transaction(async tx => {
     const saved = await tx.repository.updateMany({
       where: { id: repoId, indexStatus: "indexing", indexAttemptId: claim.attemptId },
       data: {
         indexAttemptId: null,
-        localIndexUpload: claim.upload,
-        indexedFiles: { increment: delta.indexedFiles },
-        totalChunks: { increment: delta.totalChunks },
-        totalVectors: { increment: delta.totalVectors },
-        totalFiles: claim.upload.totalFiles,
+        localIndexUpload: { ...claim.upload, ...(staged ? { staged } : {}) },
+        // Published counters change only together with the active generation.
+        ...(!staged ? {
+          indexedFiles: { increment: delta.indexedFiles },
+          totalChunks: { increment: delta.totalChunks },
+          totalVectors: { increment: delta.totalVectors },
+          totalFiles: claim.upload.totalFiles,
+        } : {}),
         ...(commit ? {
+          ...(staged ? { ...staged, totalFiles: claim.upload.totalFiles } : {}),
           indexStatus: "indexed",
+          analysisStatus: "none",
           activeIndexGeneration: claim.upload.id,
           indexDurationMs: startedAt != null ? Date.now() - startedAt : null,
         } : {}),
