@@ -289,6 +289,9 @@ try {
       getFileContent: async (_id: number, _owner: string, _name: string, _ref: string, path: string) => path === ".octopusignore" ? null : "export const a = 1;",
       addCommentReaction: async () => {}, getPullRequestDetails: async () => null, createCheckRun: async () => 1, updateCheckRun: async () => {}, isOwnCheckRun: () => false,
     }));
+    // Stand-in queue: runs the merged-PR job inline; the real queue's policy is covered by "incremental-queue".
+    const { processIncrementalIndex } = await import("@/lib/incremental-index-job");
+    mock.module("@/lib/queue", () => ({ enqueue: async (_name: string, data: Parameters<typeof processIncrementalIndex>[0]) => { await processIncrementalIndex(data); return "fixture"; } }));
     mock.module("next/server", () => ({ after: () => {}, NextRequest: Request, NextResponse: { json: Response.json } }));
     mock.module("next/cache", () => ({ revalidatePath: () => {} }));
     mock.module("@/lib/github-app-config", () => ({ getGithubAppConfig: async () => ({ webhookSecret: "fixture-secret" }) }));
