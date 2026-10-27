@@ -8,6 +8,7 @@ import { analyzeRepository } from "@/lib/analyzer";
 import { enqueueAfter } from "@/lib/queue";
 import { pubby } from "@/lib/pubby";
 import { eventBus } from "@/lib/events";
+import { hasUsableIndex, USABLE_INDEX_WHERE } from "@/lib/usable-index";
 
 // Allow both AI calls to finish before recovering an abandoned analysis claim.
 const STALE_ANALYSIS_MS = 35 * 60_000;
@@ -20,10 +21,11 @@ export async function ensureRepositoryAnalysis(
   // Read fresh state: discovery or a different PR may have finished indexing.
   const repo = await prisma.repository.findFirst({
     where: { id: repositoryId, organizationId },
-    select: { fullName: true, indexStatus: true, totalChunks: true, analysisStatus: true },
+    select: { fullName: true, indexStatus: true, indexedAt: true, totalVectors: true, totalChunks: true, analysisStatus: true },
   });
   if (!repo) throw new Error("Repository not found for analysis");
-  if (repo.indexStatus !== "indexed") return "waiting";
+  // A stale or refreshing index is analysed as is; only a repository without one waits.
+  if (repo.indexStatus !== "indexed" && !hasUsableIndex(repo)) return "waiting";
   if (repo.totalChunks === 0) return "empty";
   if (repo.analysisStatus === "analyzed") return "ready";
 
@@ -31,8 +33,8 @@ export async function ensureRepositoryAnalysis(
     where: {
       id: repositoryId,
       organizationId,
-      indexStatus: "indexed",
       totalChunks: { gt: 0 },
+      AND: [{ OR: [{ indexStatus: "indexed" }, USABLE_INDEX_WHERE] }],
       OR: [
         { analysisStatus: { notIn: ["analyzing", "analyzed"] } },
         { analysisStatus: "analyzing", updatedAt: { lt: new Date(Date.now() - STALE_ANALYSIS_MS) } },

@@ -334,6 +334,19 @@ try {
     assert.equal(result.firstIndexedAt !== null, verified);
     if (scenario === "local-legacy") assert.ok(result.indexedAt);
     if (scenario === "local-cancel") assert.equal(result.indexStatus, "pending");
+  } else if (scenario === "heartbeat") {
+    const { touchRepositoryIndex } = await import("@/lib/repository-index-storage");
+    const owner = { repoId: repo.id, indexAttemptId };
+    const before = (await snapshot()).updatedAt;
+    await new Promise(resolve => setTimeout(resolve, 20));
+    await touchRepositoryIndex(owner);
+    assert.ok((await snapshot()).updatedAt > before, "a heartbeat must advance the liveness timestamp");
+    await assert.rejects(() => touchRepositoryIndex({ ...owner, indexAttemptId: randomUUID() }), /no longer current/);
+    await prisma.repository.update({ where: { id: repo.id }, data: { indexStatus: "failed" } });
+    await assert.rejects(() => touchRepositoryIndex(owner), /no longer current/);
+    const settled = (await snapshot()).updatedAt;
+    await assert.rejects(() => touchRepositoryIndex(owner), /no longer current/);
+    assert.deepEqual((await snapshot()).updatedAt, settled, "a superseded attempt must not touch the row");
   } else throw new Error(`Unknown scenario ${scenario}`);
 } finally {
   await prisma.communityReviewJob.deleteMany({ where: { organizationId: org.id } });

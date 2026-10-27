@@ -10,6 +10,7 @@ import * as gitlabLib from "@/lib/gitlab";
 import * as forgejoLib from "@/lib/forgejo";
 import { ForgejoResponseTooLargeError } from "@/lib/forgejo-http";
 import { ensureCollection, upsertChunks, deleteRepoFileChunks } from "@/lib/qdrant";
+import { throttledHeartbeat } from "@/lib/index-liveness";
 import { generateSparseVectors } from "@/lib/sparse-vector";
 import { parseOctopusIgnore, type Ignore } from "@/lib/octopus-ignore";
 import { shouldIndex, chunkText, treeBlobs, MAX_FILE_SIZE, exceedsMaxFileSize } from "@/lib/index-chunking";
@@ -47,6 +48,10 @@ export interface IndexStats {
   resolvedDefaultBranch?: string;
 }
 
+// Small enough that a heartbeat lands well inside INDEX_SILENCE_LIMIT_MS on a CPU embedder.
+const EMBED_BATCH = 128;
+const UPSERT_SLICE = 1000;
+
 export async function indexRepository(
   attempt: { repoId: string; indexAttemptId: string },
   fullName: string,
@@ -62,6 +67,10 @@ export async function indexRepository(
   const { repoId } = attempt;
   const owner = { ...attempt, signal };
   const startTime = Date.now();
+  const beat = throttledHeartbeat(async () => {
+    const { touchRepositoryIndex } = await import("@/lib/repository-index-storage");
+    await touchRepositoryIndex(owner);
+  });
 
   const allChunks: {
     text: string;
@@ -95,6 +104,7 @@ export async function indexRepository(
         : undefined;
       for (const filePath of paths.filter(p => shouldIndex(p, undefined, ig))) {
         signal?.throwIfAborted();
+        await beat();
         let content: string;
         try {
           content = await forgejoLib.getFileContent(organizationId, fullName, head, filePath, { strict: true });
@@ -228,6 +238,7 @@ export async function indexRepository(
 
       for (let i = 0; i < filePaths.length; i++) {
         if (signal?.aborted) throw new Error("Indexing cancelled");
+        await beat();
 
         const filePath = filePaths[i];
         try {
@@ -495,6 +506,7 @@ export async function indexRepository(
 
     for (let i = 0; i < files.length; i += CONCURRENCY) {
       if (signal?.aborted) throw new Error("Indexing cancelled");
+      await beat();
       const batch = files.slice(i, i + CONCURRENCY);
       await Promise.all(batch.map(fetchBlob));
       if (processed > 0) {
@@ -536,15 +548,15 @@ export async function indexRepository(
 
   // 5. Create embeddings in batches
   const texts = allChunks.map((c) => c.text);
-  const totalBatches = Math.ceil(texts.length / 512);
+  const totalBatches = Math.ceil(texts.length / EMBED_BATCH);
   onLog(`Generating embeddings for ${texts.length} chunks (${totalBatches} batch${totalBatches > 1 ? "es" : ""})...`);
 
   const vectors: number[][] = [];
-  for (let i = 0; i < texts.length; i += 512) {
+  for (let i = 0; i < texts.length; i += EMBED_BATCH) {
     if (signal?.aborted) throw new Error("Indexing cancelled");
 
-    const batch = texts.slice(i, i + 512);
-    const batchNum = Math.floor(i / 512) + 1;
+    const batch = texts.slice(i, i + EMBED_BATCH);
+    const batchNum = Math.floor(i / EMBED_BATCH) + 1;
     if (totalBatches > 1) {
       onLog(`Processing embedding batch ${batchNum}/${totalBatches}...`);
     }
@@ -555,6 +567,7 @@ export async function indexRepository(
       throw new Error("Indexing incomplete: embedding results do not cover every chunk");
     }
     vectors.push(...batchVectors);
+    await beat();
   }
 
   onLog(`Generated ${vectors.length} embeddings`, "success");
@@ -583,7 +596,10 @@ export async function indexRepository(
 
   const qdrantBatches = Math.ceil(points.length / 100);
   onLog(`Storing ${points.length} vectors in database (${qdrantBatches} batch${qdrantBatches > 1 ? "es" : ""})...`);
-  await upsertChunks(points, owner);
+  for (let i = 0; i < points.length; i += UPSERT_SLICE) {
+    await upsertChunks(points.slice(i, i + UPSERT_SLICE), owner);
+    await beat();
+  }
   signal?.throwIfAborted();
   onLog(`Successfully stored ${points.length} vectors`, "success");
 

@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 mock.module("server-only", () => ({}));
 const repo = {
   id: "repo-1", organizationId: "org-1", fullName: "acme/new",
-  indexStatus: "indexed", totalChunks: 8, analysisStatus: "none", updatedAt: new Date(),
+  indexStatus: "indexed", indexedAt: new Date() as Date | null, totalVectors: 8, totalChunks: 8, analysisStatus: "none", updatedAt: new Date(),
 };
 type Where = {
   id: string; organizationId: string; analysisStatus?: string;
@@ -33,7 +33,7 @@ mock.module("@octopus/db", () => ({
         assert.equal(write.where.organizationId, repo.organizationId);
         const staleBefore = write.where.OR?.[1]?.updatedAt?.lt;
         if (write.data.analysisStatus === "analyzing" &&
-            (repo.indexStatus !== "indexed" || repo.totalChunks === 0 || repo.analysisStatus === "analyzed" ||
+            ((repo.indexStatus !== "indexed" && !(repo.indexedAt && repo.totalVectors > 0)) || repo.totalChunks === 0 || repo.analysisStatus === "analyzed" ||
               (repo.analysisStatus === "analyzing" && (!staleBefore || repo.updatedAt >= staleBefore)))) {
           return { count: 0 };
         }
@@ -120,8 +120,18 @@ assert.deepEqual(calls, [], "completed analysis should be reused on later review
 
 repo.analysisStatus = "none";
 repo.indexStatus = "indexing";
+const completedSnapshot = { indexedAt: repo.indexedAt, totalVectors: repo.totalVectors };
+Object.assign(repo, { indexedAt: null, totalVectors: 0 });
 assert.equal(await prepare(), "waiting");
-assert.deepEqual(calls, [], "analysis must wait for the indexing worker");
+assert.deepEqual(calls, [], "analysis must wait for the first index");
+Object.assign(repo, completedSnapshot);
+for (const status of ["stale", "failed", "indexing"]) {
+  repo.indexStatus = status;
+  assert.equal(await prepare(), "ready", `a ${status} index with a completed snapshot is analysed as is`);
+  assert.deepEqual(calls, ["summary", "analysis", "persist-analysis"]);
+  calls.length = 0;
+  repo.analysisStatus = "none";
+}
 repo.indexStatus = "indexed";
 repo.totalChunks = 0;
 assert.equal(await prepare(), "empty");

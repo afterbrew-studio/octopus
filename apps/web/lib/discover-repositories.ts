@@ -2,6 +2,7 @@ import "server-only";
 import { prisma } from "@octopus/db";
 import { GithubRateLimitError } from "@/lib/github";
 import { syncOrgRepos } from "@/lib/repo-sync";
+import { INDEX_SILENCE_LIMIT_MS } from "@/lib/index-liveness";
 
 /**
  * Hourly discovery sweep (scheduled in instrumentation.ts, worker in
@@ -50,8 +51,9 @@ export async function discoverRepositories(now: Date = new Date()): Promise<{
 
   for (const org of orgs) {
     try {
-      // Recover claims left by a crashed indexing worker. Do this BEFORE sync
-      // upserts refresh updatedAt; 35 min exceeds the indexing queue's expiry.
+      // Recover claims left by a crashed indexing worker: a live attempt
+      // heartbeats updatedAt, so silence past the limit means it died. Do this
+      // BEFORE sync upserts refresh updatedAt.
       await prisma.repository.updateMany({
         where: {
           organizationId: org.id,
@@ -59,7 +61,7 @@ export async function discoverRepositories(now: Date = new Date()): Promise<{
           isActive: true,
           dismissedAt: null,
           indexStatus: "indexing",
-          updatedAt: { lt: new Date(now.getTime() - 35 * 60_000) },
+          updatedAt: { lt: new Date(now.getTime() - INDEX_SILENCE_LIMIT_MS) },
         },
         data: { indexStatus: "failed" },
       });

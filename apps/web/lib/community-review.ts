@@ -1,6 +1,7 @@
 import "server-only";
 import { randomUUID } from "node:crypto";
 import { runRepositoryIndex } from "@/lib/repository-index-completion";
+import { resolveIndexGate } from "@/lib/usable-index";
 import { prisma } from "@octopus/db";
 import { generateLocalReview } from "@/lib/review-core";
 import { indexRepository } from "@/lib/indexer";
@@ -82,7 +83,7 @@ export async function processCommunityReview(jobId: string): Promise<void> {
 
     // ── Phase 1: Indexing (with atomic claim) ─────────────────────────────
 
-    let needsIndex = repo.indexStatus !== "indexed";
+    let needsIndex = resolveIndexGate(repo).blockOnIndex;
 
     if (needsIndex) {
       const indexAttemptId = randomUUID();

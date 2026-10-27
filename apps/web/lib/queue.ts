@@ -2,6 +2,7 @@ import "server-only";
 import { PgBoss } from "pg-boss";
 import type { SendOptions } from "pg-boss";
 import { prisma } from "@octopus/db";
+import { INDEX_JOB_EXPIRE_SECONDS } from "@/lib/index-liveness";
 
 export interface QueueConfig {
   reviewTimeoutSeconds: number;
@@ -117,10 +118,12 @@ export async function startQueue(): Promise<PgBoss> {
     expireInSeconds: 1800,
   }).catch(() => {});
 
+  // A first full index on a CPU embedder takes hours; the run's heartbeat, not
+  // this expiry, is what detects a crashed worker.
   await boss.createQueue("index-repository", {
     retryLimit: 2,
     retryDelay: 60,
-    expireInSeconds: 1800,
+    expireInSeconds: INDEX_JOB_EXPIRE_SECONDS,
   }).catch(() => {});
 
   // Community-tier (no API key) async review pipeline.

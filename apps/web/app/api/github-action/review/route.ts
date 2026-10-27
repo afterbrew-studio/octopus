@@ -1,6 +1,7 @@
 import "server-only";
 import { randomUUID } from "node:crypto";
 import { runRepositoryIndex } from "@/lib/repository-index-completion";
+import { resolveIndexGate } from "@/lib/usable-index";
 import { authenticateApiToken } from "@/lib/api-auth";
 import { prisma } from "@octopus/db";
 import { generateLocalReview } from "@/lib/review-core";
@@ -219,7 +220,7 @@ export async function POST(request: NextRequest) {
   const stale =
     repo.indexedAt != null &&
     Date.now() - repo.indexedAt.getTime() > thresholdHours * 60 * 60 * 1000;
-  const needsIndex = repo.indexStatus !== "indexed" || forceReindex === true || stale;
+  const needsIndex = resolveIndexGate(repo).blockOnIndex || forceReindex === true || stale;
 
   // For community mode without an existing index → enqueue + poll.
   // Authenticated orgs keep the legacy sync flow (they can have higher CF

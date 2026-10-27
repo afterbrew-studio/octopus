@@ -1,6 +1,8 @@
 import "server-only";
 import { ReviewOutcomeRecorder, startReviewOutcome, deferReviewOutcome } from "@/lib/review-attempt-outcome";
 import { runRepositoryIndex, SupersededIndexError } from "@/lib/repository-index-completion";
+import { enqueueRepositoryIndexRefresh } from "@/lib/repository-index-job";
+import { resolveIndexGate } from "@/lib/usable-index";
 import crypto from "node:crypto";
 import { prisma, type Prisma } from "@octopus/db";
 import { pubby } from "@/lib/pubby";
@@ -1228,8 +1230,17 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
 
   try {
     if (!isForgejoConnector) reviewCommentId = await publishMainComment("> 🐙 **Octopus Review** — Preparing review...");
-    // Phase 0: Ensure the repository is indexed before preparing review context
-    if (repo.indexStatus !== "indexed") {
+    // Phase 0: Ensure the repository is indexed before preparing review context.
+    // A usable index is reviewed against as is; a refresh runs in the background.
+    const indexGate = resolveIndexGate(repo);
+    if (!indexGate.blockOnIndex && repo.indexStatus !== "indexed") {
+      console.log(`[reviewer] Repository ${repo.fullName} index is ${repo.indexStatus}; reviewing against the existing index`);
+    }
+    if (indexGate.refresh) {
+      await enqueueRepositoryIndexRefresh(repo.id, org.id)
+        .catch((err) => console.error("[reviewer] Failed to enqueue index refresh:", err));
+    }
+    if (indexGate.blockOnIndex) {
       console.log(`[reviewer] Repository ${repo.fullName} not indexed (status: ${repo.indexStatus}). Starting auto-index...`);
 
       // Atomic claim: only one process can transition to "indexing" at a time.

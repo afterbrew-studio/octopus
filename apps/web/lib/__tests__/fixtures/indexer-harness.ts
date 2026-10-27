@@ -45,6 +45,18 @@ mock.module("@/lib/qdrant", () => ({
   deleteRepoFileChunks: async () => {},
   upsertChunks: async (_points: unknown[], owner: { repoId: string; indexAttemptId: string }) => { assert.equal(owner.indexAttemptId, "attempt-1"); writes++; afterUpsert?.(); },
 }));
+let beats = 0;
+let heartbeatFailure: Error | null = null;
+mock.module("@/lib/repository-index-storage", () => ({
+  touchRepositoryIndex: async (owner: { indexAttemptId: string }) => {
+    assert.equal(owner.indexAttemptId, "attempt-1");
+    beats++;
+    if (heartbeatFailure) throw heartbeatFailure;
+  },
+}));
+// Beat on every progress point instead of once a minute.
+const actualLiveness = await import("@/lib/index-liveness");
+mock.module("@/lib/index-liveness", () => ({ ...actualLiveness, throttledHeartbeat: (touch: () => Promise<void>) => touch }));
 mock.module("@/lib/embeddings", () => ({
   createEmbeddings: async (texts: string[]) => {
     embedded.push(texts);
@@ -68,6 +80,7 @@ async function run(branch = "main") {
 }
 function reset() {
   responses.clear(); requests.length = 0; writes = 0; embedded.length = 0;
+  beats = 0; heartbeatFailure = null;
   details = { default_branch: "main" };
   responses.set("/contributors?per_page=30", [200, []]);
 }
@@ -197,3 +210,22 @@ assert.ok(tokenResult.totalVectors > 0);
 assert.ok(!requests.some(url => url.endsWith("/git/blobs/ignored")));
 ignoreContent = null;
 await assert.rejects(() => indexRepository({ repoId: "repo-1", indexAttemptId: "attempt-1" }, "acme/new", "main", 0, undefined, undefined, "github", "org-1", suppliedToken), /could not read .octopusignore/);
+
+// Progress heartbeats keep the claim alive, and a lost claim stops the run before it writes.
+suppliedToken = undefined;
+function treeWith(files: Record<string, string>) {
+  reset();
+  responses.set("/git/trees/main?recursive=1", [200, { tree: Object.keys(files).map(path => ({ path, type: "blob", sha: `blob-${path}`, size: 40 })) }]);
+  for (const [path, content] of Object.entries(files)) {
+    responses.set(`/git/blobs/blob-${path}`, [200, { encoding: "base64", content: Buffer.from(content).toString("base64") }]);
+  }
+}
+const files = { "a.ts": "export const a = 1;\n", "b.ts": "export const b = 2;\n" };
+treeWith(files);
+await run();
+assert.ok(beats >= 3, "file fetch, embedding and upsert all heartbeat");
+treeWith(files);
+heartbeatFailure = new Error("Indexing attempt is no longer current");
+await assert.rejects(run, /no longer current/);
+assert.equal(writes, 0, "a superseded attempt must not write");
+console.log("Heartbeat regressions passed");

@@ -69,7 +69,7 @@ describe("discoverRepositories", () => {
     expect(recoverIndexes.mock.calls[0][0]).toEqual({
       where: {
         organizationId: "a", provider: { in: ["github", "forgejo"] }, isActive: true, dismissedAt: null,
-        indexStatus: "indexing", updatedAt: { lt: new Date("2026-09-03T09:42:00.000Z") },
+        indexStatus: "indexing", updatedAt: { lt: new Date("2026-09-03T10:02:00.000Z") },
       },
       data: { indexStatus: "failed" },
     });
