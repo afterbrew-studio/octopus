@@ -7,6 +7,7 @@ import { createEmbeddings } from "@/lib/embeddings";
 import { generateSparseVectors } from "@/lib/sparse-vector";
 import { upsertChunks } from "@/lib/qdrant";
 import { type Ignore } from "@/lib/octopus-ignore";
+import { INDEX_SILENCE_LIMIT_MS, throttledHeartbeat } from "@/lib/index-liveness";
 
 /**
  * CLI-driven local indexing.
@@ -23,14 +24,6 @@ import { type Ignore } from "@/lib/octopus-ignore";
  * meaningfully — "batch 12/40 done" maps to real work. The repo row tracks
  * the running indexedFiles count so a poll-based UI also works.
  */
-
-/**
- * Time after which an "indexing"-status repo is considered abandoned and
- * may be re-claimed. Exported so the route's error message can quote the
- * exact same value the guard uses — without this the message would drift
- * out of sync with the guard.
- */
-export const IN_FLIGHT_WINDOW_MS = 5 * 60 * 1000;
 
 export type LocalFile = { path: string; content: string };
 
@@ -93,11 +86,17 @@ export async function indexLocalBatch(
   // Tracking ensures: (a) the same getEmbedModel chain as the query path,
   // (b) an ai_usage row so spend accounting is honest.
   const texts = allChunks.map((c) => c.text);
+  const owner = { repoId, indexAttemptId: claim.attemptId, uploadId: claim.upload.id };
+  // A long batch heartbeats like any other attempt, so the periodic recovery never frees a live upload.
+  const beat = throttledHeartbeat(async () => {
+    const { touchRepositoryIndex } = await import("@/lib/repository-index-storage");
+    await touchRepositoryIndex(owner);
+  });
   const vectors = await createEmbeddings(texts, {
     organizationId,
     operation: "index-local",
     repositoryId: repoId,
-  });
+  }, { onRequest: beat });
 
   // Defense-in-depth: createEmbeddings returns empty vectors when the org
   // is over its spend limit. The route gate ahead of us already 402s in
@@ -142,7 +141,10 @@ export async function indexLocalBatch(
     },
   }));
 
-  await upsertChunks(points, { repoId, indexAttemptId: claim.attemptId, uploadId: claim.upload.id });
+  for (let i = 0; i < points.length; i += 100) {
+    await upsertChunks(points.slice(i, i + 100), owner);
+    await beat();
+  }
 
   return { indexedInBatch: indexed, skippedInBatch: skipped, chunksInBatch: points.length };
 }
@@ -184,7 +186,7 @@ export async function prepareRepoForLocalIndex(
     if (existing.installationId != null || !existing.externalId?.startsWith("cli:")) {
       return { ok: false, reason: "managed-by-platform", repoId: existing.id };
     }
-    const inFlightCutoff = new Date(Date.now() - IN_FLIGHT_WINDOW_MS);
+    const inFlightCutoff = new Date(Date.now() - INDEX_SILENCE_LIMIT_MS);
     const claim = await prisma.repository.updateMany({
       where: {
         id: existing.id,
