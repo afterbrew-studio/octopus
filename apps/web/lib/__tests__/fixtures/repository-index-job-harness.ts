@@ -198,13 +198,14 @@ queued.length = 0;
 await enqueueRepositoryIndexRefresh("repo-1", "org-1");
 assert.deepEqual(queued, [["index-repository", job, { singletonKey: "repo-1", singletonSeconds: 60 }]],
   "a review-triggered refresh dedupes per repository");
-currentRow = { ...row, indexStatus: "stale", indexedAt: new Date(), totalFiles: 3 };
+currentRow = { ...row, indexStatus: "stale", indexedAt: new Date(), totalFiles: 3, analysisStatus: "analyzed" };
 const callsBefore = indexCalls.length;
 const claimsBefore = claims.length;
 await processRepositoryIndex(job);
 assert.equal(indexCalls.length, callsBefore + 1, "a stale index must be claimable for a background refresh");
 assert.deepEqual((claims[claimsBefore].where.OR as unknown[]).at(-1), { indexStatus: "stale" }, "the claim itself must accept a stale index");
 assert.equal(currentRow?.indexStatus, "indexed");
+assert.equal((currentRow as { analysisStatus?: string }).analysisStatus, "none", "a published refresh must invalidate the analysis of the previous generation");
 // A job queued before the expiry change still expires after 30 minutes; the abort follows that.
 currentRow = { ...row };
 abortDelays.length = 0;

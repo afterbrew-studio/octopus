@@ -21,7 +21,7 @@ export async function ensureRepositoryAnalysis(
   // Read fresh state: discovery or a different PR may have finished indexing.
   const repo = await prisma.repository.findFirst({
     where: { id: repositoryId, organizationId },
-    select: { fullName: true, indexStatus: true, indexedAt: true, totalVectors: true, totalChunks: true, analysisStatus: true },
+    select: { fullName: true, indexStatus: true, indexedAt: true, totalVectors: true, totalChunks: true, analysisStatus: true, activeIndexGeneration: true },
   });
   if (!repo) throw new Error("Repository not found for analysis");
   // A stale or refreshing index is analysed as is; only a repository without one waits.
@@ -34,6 +34,7 @@ export async function ensureRepositoryAnalysis(
       id: repositoryId,
       organizationId,
       totalChunks: { gt: 0 },
+      activeIndexGeneration: repo.activeIndexGeneration,
       AND: [{ OR: [{ indexStatus: "indexed" }, USABLE_INDEX_WHERE] }],
       OR: [
         { analysisStatus: { notIn: ["analyzing", "analyzed"] } },
@@ -52,10 +53,12 @@ export async function ensureRepositoryAnalysis(
     await onStart?.();
     const { summary, purpose } = await summarizeRepository(repositoryId, repo.fullName, organizationId);
     const analysis = await analyzeRepository(repositoryId, repo.fullName, organizationId);
-    await prisma.repository.update({
-      where: { id: repositoryId, organizationId },
+    // A refresh that published while this ran reset the status; its generation needs its own analysis.
+    const saved = await prisma.repository.updateMany({
+      where: { id: repositoryId, organizationId, analysisStatus: "analyzing", activeIndexGeneration: repo.activeIndexGeneration },
       data: { summary, purpose, analysis, analysisStatus: "analyzed", analyzedAt: new Date() },
     });
+    if (!saved.count) return "waiting";
     await notify("analyzed");
     await pubby.trigger(channel, "repo-analyzed", { repoId: repositoryId, fullName: repo.fullName })
       .catch((err: unknown) => console.error("[reviewer] Repository analysis notification failed:", err));

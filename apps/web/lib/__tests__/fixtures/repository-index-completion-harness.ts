@@ -358,6 +358,16 @@ try {
     assert.equal(result.firstIndexedAt !== null, verified);
     if (scenario === "local-legacy") assert.ok(result.indexedAt);
     if (scenario === "local-cancel") assert.equal(result.indexStatus, "pending");
+  } else if (scenario === "refresh-invalidates-analysis") {
+    await prisma.repository.update({ where: { id: repo.id }, data: { analysisStatus: "analyzed", analysis: "previous generation" } });
+    await runRepositoryIndex(repo.id, indexAttemptId, async () => stats);
+    const refreshed = await snapshot();
+    assert.equal(refreshed.indexStatus, "indexed");
+    assert.equal(refreshed.analysisStatus, "none");
+    await claim();
+    await prisma.repository.update({ where: { id: repo.id }, data: { analysisStatus: "analyzed" } });
+    await assert.rejects(() => runRepositoryIndex(repo.id, indexAttemptId, async () => { throw new Error("Read failed"); }), /Read failed/);
+    assert.equal((await snapshot()).analysisStatus, "analyzed", "a failed refresh keeps the analysis of the generation still active");
   } else if (scenario === "abandoned-claims") {
     const { releaseAbandonedIndexClaims } = await import("@/lib/repository-index-completion");
     await prisma.organization.update({ where: { id: org.id }, data: { autoDiscoverRepos: false } });
