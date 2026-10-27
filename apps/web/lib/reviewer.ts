@@ -1,7 +1,7 @@
 import "server-only";
 import { ReviewOutcomeRecorder, startReviewOutcome, deferReviewOutcome } from "@/lib/review-attempt-outcome";
 import { runRepositoryIndex, SupersededIndexError } from "@/lib/repository-index-completion";
-import { enqueueRepositoryIndexRefresh } from "@/lib/repository-index-job";
+import { canIndexInBackground, enqueueRepositoryIndexRefresh } from "@/lib/repository-index-job";
 import { resolveIndexGate } from "@/lib/usable-index";
 import crypto from "node:crypto";
 import { prisma, type Prisma } from "@octopus/db";
@@ -1233,14 +1233,17 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
     // Phase 0: Ensure the repository is indexed before preparing review context.
     // A usable index is reviewed against as is; a refresh runs in the background.
     const indexGate = resolveIndexGate(repo);
-    if (!indexGate.blockOnIndex && repo.indexStatus !== "indexed") {
+    // A refresh the background job would silently skip is still done here, as before.
+    const refreshInBackground = indexGate.refresh && canIndexInBackground(repo, org.githubInstallationId);
+    const blockOnIndex = indexGate.blockOnIndex || (indexGate.refresh && !refreshInBackground);
+    if (!blockOnIndex && repo.indexStatus !== "indexed") {
       console.log(`[reviewer] Repository ${repo.fullName} index is ${repo.indexStatus}; reviewing against the existing index`);
     }
-    if (indexGate.refresh) {
+    if (refreshInBackground) {
       await enqueueRepositoryIndexRefresh(repo.id, org.id)
         .catch((err) => console.error("[reviewer] Failed to enqueue index refresh:", err));
     }
-    if (indexGate.blockOnIndex) {
+    if (blockOnIndex) {
       console.log(`[reviewer] Repository ${repo.fullName} not indexed (status: ${repo.indexStatus}). Starting auto-index...`);
 
       // Atomic claim: only one process can transition to "indexing" at a time.

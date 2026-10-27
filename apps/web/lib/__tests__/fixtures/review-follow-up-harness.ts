@@ -58,7 +58,7 @@ const finding = {
   category: "Bug", description: "A missing value causes this access to throw.", suggestion: "", confidence: 95,
 };
 const diff = "diff --git a/src/check.ts b/src/check.ts\n--- a/src/check.ts\n+++ b/src/check.ts\n@@ -1 +1 @@\n-return value;\n+return value.name;\n";
-const org = { id: "org", defaultReviewConfig: {}, reviewLanguage: "en" };
+const org = { id: "org", defaultReviewConfig: {}, reviewLanguage: "en", githubInstallationId: 1 as number | null };
 const repo = {
   id: "repo", fullName: "fixture/repo", organization: org, reviewConfig: {},
   provider: "github", installationId: 1, indexStatus: "indexed", defaultBranch: "main",
@@ -410,6 +410,15 @@ if (preserveAutoReview) {
       ? [["index-repository", { repositoryId: "repo", organizationId: "org" }, { singletonKey: "repo", singletonSeconds: 60 }]]
       : [], `${status}: refresh enqueue`);
   }
+  // The job skips a repository without the organization's installation, so such a refresh stays inline.
+  repo.organization.githubInstallationId = null;
+  repo.indexStatus = "stale";
+  enqueued.length = 0;
+  const inlineBefore = indexingCalls;
+  await processReview("pr");
+  assert.equal(indexingCalls, inlineBefore + 1, "a refresh the job cannot run is done by the review");
+  assert.deepEqual(enqueued, [], "nothing is queued for a worker that would skip it");
+  repo.organization.githubInstallationId = 1;
   console.log("PASS one-off review preparation preserves disabled automatic reviews");
   process.exit(0);
 }

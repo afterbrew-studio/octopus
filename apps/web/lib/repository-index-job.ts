@@ -30,6 +30,15 @@ const claimable = { OR: [...needsIndex.OR, { indexStatus: "stale" }] };
 const DISCOVERY_PROVIDERS = ["github", "forgejo"];
 const JOB_PROVIDERS = [...DISCOVERY_PROVIDERS, "gitlab", "bitbucket"];
 
+/** The job indexes a GitHub repository only through the installation bound to its own organization. */
+export function canIndexInBackground(
+  repo: { provider: string; installationId: number | null },
+  organizationInstallationId: number | null | undefined,
+): boolean {
+  if (repo.provider !== "github") return true;
+  return !!organizationInstallationId && (!repo.installationId || repo.installationId === organizationInstallationId);
+}
+
 export function enqueueRepositoryIndexRefresh(repositoryId: string, organizationId: string) {
   return enqueue("index-repository", { repositoryId, organizationId }, {
     singletonKey: repositoryId,
@@ -81,7 +90,7 @@ export async function processRepositoryIndex(
     include: { organization: { select: { githubInstallationId: true } } },
   });
   const installationId = repo?.organization.githubInstallationId;
-  if (!repo || (repo.provider === "github" && (!installationId || (repo.installationId && repo.installationId !== installationId)))) return;
+  if (!repo || !canIndexInBackground(repo, installationId)) return;
 
   // Share the reviewer's claim so a first PR and discovery cannot both index.
   const indexAttemptId = randomUUID();

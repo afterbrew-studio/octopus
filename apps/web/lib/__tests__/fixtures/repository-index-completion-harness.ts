@@ -197,11 +197,20 @@ try {
     assert.deepEqual(after.firstIndexedAt, completed.firstIndexedAt);
     assert.equal(after.indexStatus, "indexed");
     assert.equal(after.indexedFiles, 2);
-  } else if (scenario === "actions" || scenario === "community") {
-    await prisma.repository.update({ where: { id: repo.id }, data: { indexStatus: "pending" } });
+  } else if (scenario.startsWith("actions") || scenario.startsWith("community")) {
+    // "-stale": a completed snapshot whose refresh is due; "-queued": the organization has an installation, so the job can run it.
+    const staleSnapshot = scenario.includes("-stale");
+    const queuedRefresh = scenario.endsWith("-queued");
+    await prisma.repository.update({ where: { id: repo.id }, data: staleSnapshot
+      ? { indexStatus: "stale", indexedAt: new Date(), firstIndexedAt: new Date(), totalVectors: 5, totalChunks: 5, indexedFiles: 1 }
+      : { indexStatus: "pending" } });
+    if (queuedRefresh) await prisma.organization.update({ where: { id: org.id }, data: { githubInstallationId: 100_000 + Math.floor(Math.random() * 1e9) } });
+    const order: string[] = [];
+    const enqueued: unknown[][] = [];
     let calls = 0;
     mock.module("@/lib/indexer", () => ({ indexRepository: async (...args: unknown[]) => {
       calls++;
+      order.push("index");
       assert.deepEqual(args[0], { repoId: repo.id, indexAttemptId: (await snapshot()).indexAttemptId });
       assert.equal(args[3], 0);
       assert.equal(args[8], "fixture-token");
@@ -210,18 +219,18 @@ try {
     } }));
     mock.module("@/lib/api-auth", () => ({ authenticateApiToken: async () => ({ org }) }));
     mock.module("@/lib/cost", () => ({ isOrgOverSpendLimit: async () => false }));
-    mock.module("@/lib/review-core", () => ({ generateLocalReview: async () => ({ findings: [], summary: "Fixture", model: "fixture" }) }));
+    mock.module("@/lib/review-core", () => ({ generateLocalReview: async () => { order.push("review"); return { findings: [], summary: "Fixture", model: "fixture" }; } }));
     mock.module("@/lib/summarizer", () => ({ summarizeRepository: async () => ({ summary: "Fixture", purpose: "Fixture" }) }));
     mock.module("@/lib/analyzer", () => ({ analyzeRepository: async () => "Fixture" }));
     mock.module("@/lib/github", () => ({ getRepositoryTree: async () => [], getPullRequestDiff: async () => "" }));
     mock.module("@/lib/events/bus", () => ({ eventBus: { emit: () => {} } }));
-    mock.module("@/lib/queue", () => ({ enqueue: async () => "fixture" }));
+    mock.module("@/lib/queue", () => ({ enqueue: async (...args: unknown[]) => { enqueued.push(args); return "fixture"; } }));
     mock.module("@/lib/community-pr-persist", () => ({ persistCommunityReviewToPR: async () => {} }));
     mock.module("@/lib/crypto", () => ({ encryptString: (text: string) => text, decryptString: (text: string) => text }));
     mock.module("@/lib/oss-bot", () => ({ getBotToken: () => "fixture-token" }));
     mock.module("@/lib/oss-review-post", () => ({ postOssReview: async () => ({ posted: 0, skipped: 0 }) }));
     const diff = "diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-old\n+new\n";
-    if (scenario === "actions") {
+    if (scenario.startsWith("actions")) {
       globalThis.fetch = (async () => Response.json({ id: fixture, default_branch: "main", private: false, full_name: repo.fullName })) as typeof fetch;
       const { POST } = await import("@/app/api/github-action/review/route");
       const response = await POST(new Request("https://fixture.invalid/api/github-action/review", {
@@ -229,7 +238,7 @@ try {
         body: JSON.stringify({ owner: "fixture", repo: "index", githubToken: "fixture-token", diff }),
       }) as never);
       assert.equal(response.status, 200);
-      assert.equal((await response.json()).indexed, true);
+      assert.equal((await response.json()).indexed, !staleSnapshot);
     } else {
       const job = await prisma.communityReviewJob.create({ data: {
         status: "pending", repoFullName: repo.fullName, repositoryId: repo.id, organizationId: org.id,
@@ -239,12 +248,26 @@ try {
       await processCommunityReview(job.id);
       assert.equal((await prisma.communityReviewJob.findUniqueOrThrow({ where: { id: job.id } })).status, "completed");
     }
-    assert.equal(calls, 1);
-    const completed = await snapshot();
-    assert.equal(completed.indexStatus, "indexed");
-    assert.equal(completed.totalVectors, 1);
-    assert.ok(completed.firstIndexedAt);
-    assert.deepEqual(completed.indexedAt, completed.firstIndexedAt);
+    if (staleSnapshot) {
+      const after = await snapshot();
+      if (queuedRefresh) {
+        assert.equal(calls, 0, "a repository the job can index must not be indexed in the request");
+        assert.equal(after.indexStatus, "stale");
+        assert.deepEqual(enqueued, [["index-repository", { repositoryId: repo.id, organizationId: org.id }, { singletonKey: repo.id, singletonSeconds: 60 }]]);
+      } else {
+        assert.equal(calls, 1, "a token-only repository is refreshed with the request token");
+        assert.deepEqual(order, ["review", "index"], "the review must not wait for the refresh");
+        assert.equal(after.indexStatus, "indexed");
+        assert.deepEqual(enqueued, [], "the job would silently skip a repository without an installation");
+      }
+    } else {
+      assert.equal(calls, 1);
+      const completed = await snapshot();
+      assert.equal(completed.indexStatus, "indexed");
+      assert.equal(completed.totalVectors, 1);
+      assert.ok(completed.firstIndexedAt);
+      assert.deepEqual(completed.indexedAt, completed.firstIndexedAt);
+    }
   } else if (scenario === "empty-incremental-full" || scenario === "legacy-incremental") {
     let writes = 0;
     let full = false;

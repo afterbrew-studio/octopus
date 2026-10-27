@@ -2,6 +2,7 @@ import "server-only";
 import { randomUUID } from "node:crypto";
 import { runRepositoryIndex } from "@/lib/repository-index-completion";
 import { resolveIndexGate } from "@/lib/usable-index";
+import { requestIndexRefresh } from "@/lib/index-refresh";
 import { prisma } from "@octopus/db";
 import { generateLocalReview } from "@/lib/review-core";
 import { indexRepository } from "@/lib/indexer";
@@ -83,7 +84,10 @@ export async function processCommunityReview(jobId: string): Promise<void> {
 
     // ── Phase 1: Indexing (with atomic claim) ─────────────────────────────
 
-    let needsIndex = resolveIndexGate(repo).blockOnIndex;
+    const indexGate = resolveIndexGate(repo);
+    let needsIndex = indexGate.blockOnIndex;
+    // A stale index is refreshed once the review exists: the Action's token only lives until it gets the result.
+    const refreshAfterReview = indexGate.refresh ? await requestIndexRefresh(repo, job.organizationId, githubToken) : null;
 
     if (needsIndex) {
       const indexAttemptId = randomUUID();
@@ -265,6 +269,8 @@ export async function processCommunityReview(jobId: string): Promise<void> {
         ERR(jobId, "bot-account post failed (non-fatal):", postErr);
       }
     }
+
+    await refreshAfterReview?.();
 
     await prisma.communityReviewJob.update({
       where: { id: jobId },

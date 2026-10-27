@@ -6,7 +6,7 @@ const cases = [
   "first", "reindex", "legacy", "concurrent-earlier-first", "concurrent-later-first",
   "migration", "failed", "cancelled", "background", "late-cancel", "empty", "superseded", "replacement", "empty-then-content", "failed-reindex",
   "local-single", "local-verified", "local-legacy", "local-nonfinal", "local-gap", "local-duplicate", "local-wrong-session", "local-cancel",
-  "actions", "community", "empty-incremental-full", "legacy-incremental",
+  "actions", "community", "actions-stale", "actions-stale-queued", "community-stale", "community-stale-queued", "empty-incremental-full", "legacy-incremental",
   "local-count-under", "local-count-over", "background-replacement", "background-setup-failure",
   "background-notification-failure", "background-unconfigured",
   "storage-provider", "storage-local", "storage-reset", "storage-incremental",

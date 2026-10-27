@@ -2,6 +2,7 @@ import "server-only";
 import { randomUUID } from "node:crypto";
 import { runRepositoryIndex } from "@/lib/repository-index-completion";
 import { resolveIndexGate } from "@/lib/usable-index";
+import { requestIndexRefresh } from "@/lib/index-refresh";
 import { authenticateApiToken } from "@/lib/api-auth";
 import { prisma } from "@octopus/db";
 import { generateLocalReview } from "@/lib/review-core";
@@ -220,7 +221,8 @@ export async function POST(request: NextRequest) {
   const stale =
     repo.indexedAt != null &&
     Date.now() - repo.indexedAt.getTime() > thresholdHours * 60 * 60 * 1000;
-  const needsIndex = resolveIndexGate(repo).blockOnIndex || forceReindex === true || stale;
+  const indexGate = resolveIndexGate(repo);
+  const needsIndex = indexGate.blockOnIndex || forceReindex === true || stale;
 
   // For community mode without an existing index → enqueue + poll.
   // Authenticated orgs keep the legacy sync flow (they can have higher CF
@@ -286,6 +288,11 @@ export async function POST(request: NextRequest) {
     }
   }
 
+  // A stale index is refreshed once the review exists: the Action's token only lives until it gets the response.
+  const refreshAfterReview = !needsIndex && indexGate.refresh
+    ? await requestIndexRefresh(repo, orgId, githubToken)
+    : null;
+
   let fileTree: string[] | undefined;
   try {
     const [ownerPart, repoPart] = fullName.split("/");
@@ -336,6 +343,8 @@ export async function POST(request: NextRequest) {
         findingsCount: reviewResult.findings.length,
       });
     }
+
+    await refreshAfterReview?.();
 
     return Response.json({
       status: "completed",
