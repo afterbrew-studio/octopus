@@ -294,6 +294,20 @@ resolveCalls.length = 0;
 await run();
 assert.deepEqual(resolveCalls, [undefined], "no organization, no override");
 
+// Two Ollama servers serving the same model name are different vector spaces; equivalent spellings of one are the same.
+const ollamaAt = (ollamaBaseUrl: string) => ({ ...actualEmbedConfig.getEmbedConfig(), provider: "ollama" as const, model: "nomic-embed-text", ollamaBaseUrl });
+for (const [name, stored_at, current_at, reused] of [
+  ["another server", "http://gpu-a:11434", "http://gpu-b:11434", false],
+  ["the same server spelled differently", "http://gpu-a:11434", "HTTP://GPU-A:11434/", true],
+] as const) {
+  treeWith(files);
+  resolvedConfig = ollamaAt(current_at); embedded.length = 0;
+  storedPages = [[{ textHash: overrideHash, embeddingKey: actualEmbedConfig.getEmbeddingKey(ollamaAt(stored_at)), vector: stored }]];
+  await withOrg();
+  assert.equal(embedded.flat().length, reused ? 1 : 2, `vectors from ${name} are ${reused ? "" : "not "}reused`);
+}
+resolvedConfig = undefined;
+
 // Progress heartbeats keep the claim alive, and a lost claim stops the run before it writes.
 treeWith(files);
 await run();
