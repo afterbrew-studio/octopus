@@ -55,7 +55,7 @@ function estimateTokens(text: string): number {
 /**
  * The provider, model and dimension `createEmbeddings` uses for this org and repository.
  *
- * Per-org / per-repo embed-model override beats the env default — but ONLY
+ * Per-org / per-repo embed-model override beats the env default, but ONLY
  * for OpenAI. The `getEmbedModel` chain (Repository.embedModelId →
  * Organization.defaultEmbedModelId → platform default → text-embedding-3-large)
  * ALWAYS returns a non-empty string, so applying it in Ollama mode would send
@@ -66,7 +66,7 @@ function estimateTokens(text: string): number {
  * Caveat: an OpenAI org-level override must produce vectors with the same dim
  * as the global Qdrant collection. Mismatched dim is rejected explicitly
  * below with an actionable message instead of a cryptic Qdrant 400. Hosters
- * who want per-org dims would need per-org collections — out of scope here.
+ * who want per-org dims would need per-org collections, out of scope here.
  *
  * Indexing resolves this once per repository and passes it back as `options.config`,
  * so what it stores, and the identity it reuses vectors by, match what retrieval embeds with.
