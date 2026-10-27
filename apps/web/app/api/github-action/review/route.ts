@@ -2,7 +2,7 @@ import "server-only";
 import { randomUUID } from "node:crypto";
 import { runRepositoryIndex } from "@/lib/repository-index-completion";
 import { resolveIndexGate } from "@/lib/usable-index";
-import { requestIndexRefresh } from "@/lib/index-refresh";
+import { queueIndexRefresh } from "@/lib/index-refresh";
 import { authenticateApiToken } from "@/lib/api-auth";
 import { prisma } from "@octopus/db";
 import { generateLocalReview } from "@/lib/review-core";
@@ -288,10 +288,8 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // A stale index is refreshed once the review exists: the Action's token only lives until it gets the response.
-  const refreshAfterReview = !needsIndex && indexGate.refresh
-    ? await requestIndexRefresh(repo, orgId, githubToken)
-    : null;
+  // shortcut: without an installation a stale index waits for the forceReindex / reindexThresholdHours policy, since the Action's token ends with the response and an inline refresh would outlast the proxy window, upgrade when the Action can hand off to a background job
+  if (!needsIndex && indexGate.refresh) await queueIndexRefresh(repo, orgId);
 
   let fileTree: string[] | undefined;
   try {
@@ -343,8 +341,6 @@ export async function POST(request: NextRequest) {
         findingsCount: reviewResult.findings.length,
       });
     }
-
-    await refreshAfterReview?.();
 
     return Response.json({
       status: "completed",

@@ -4,39 +4,30 @@ import { prisma } from "@octopus/db";
 import { runRepositoryIndex, SupersededIndexError } from "@/lib/repository-index-completion";
 import { canIndexInBackground, enqueueRepositoryIndexRefresh } from "@/lib/repository-index-job";
 
-// A token-backed refresh must finish while the caller's short-lived token is valid.
-const TOKEN_REFRESH_BUDGET_MS = 10 * 60_000;
-
 type RefreshTarget = { id: string; fullName: string; defaultBranch: string; installationId: number | null };
 
 /**
- * Starts the refresh of a stale GitHub index without holding up the review. A repository the
- * background job can index is queued. One reachable only through a request token is refreshed
- * by the returned function, which the caller runs once its review exists and the token is
- * still valid. A failure leaves the index stale, so the next review asks again.
+ * Queues the background refresh of a stale GitHub index when the job can index the repository
+ * (an installation bound to its organization). Returns false when it cannot, so the caller
+ * can decide what else to do; a failed enqueue still counts as queued, since the next review asks again.
  */
-export async function requestIndexRefresh(
-  repo: RefreshTarget,
-  organizationId: string,
-  githubToken: string,
-): Promise<(() => Promise<void>) | null> {
+export async function queueIndexRefresh(repo: RefreshTarget, organizationId: string): Promise<boolean> {
   const org = await prisma.organization.findUnique({ where: { id: organizationId }, select: { githubInstallationId: true } });
-  if (canIndexInBackground({ provider: "github", installationId: repo.installationId }, org?.githubInstallationId)) {
-    await enqueueRepositoryIndexRefresh(repo.id, organizationId)
-      .catch((err) => console.error("[index-refresh] Failed to enqueue index refresh:", err));
-    return null;
-  }
-  return () => refreshWithToken(repo, organizationId, githubToken);
+  if (!canIndexInBackground({ provider: "github", installationId: repo.installationId }, org?.githubInstallationId)) return false;
+  await enqueueRepositoryIndexRefresh(repo.id, organizationId)
+    .catch((err) => console.error("[index-refresh] Failed to enqueue index refresh:", err));
+  return true;
 }
 
-async function refreshWithToken(repo: RefreshTarget, organizationId: string, githubToken: string) {
+/** Refreshes with a request token, for a repository the job cannot index. Stops at `budgetMs`; a failure leaves the index stale. */
+export async function refreshIndexWithToken(repo: RefreshTarget, organizationId: string, githubToken: string, budgetMs: number) {
   const indexAttemptId = randomUUID();
   const claim = await prisma.repository.updateMany({
     where: { id: repo.id, indexStatus: { notIn: ["indexed", "indexing"] } },
     data: { indexStatus: "indexing", indexAttemptId },
   });
   if (!claim.count) return;
-  const signal = AbortSignal.timeout(TOKEN_REFRESH_BUDGET_MS);
+  const signal = AbortSignal.timeout(budgetMs);
   const { indexRepository } = await import("@/lib/indexer");
   await runRepositoryIndex(repo.id, indexAttemptId, () => indexRepository(
     { repoId: repo.id, indexAttemptId }, repo.fullName, repo.defaultBranch, 0, () => {},

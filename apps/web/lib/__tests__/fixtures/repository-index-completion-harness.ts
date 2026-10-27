@@ -206,11 +206,13 @@ try {
       : { indexStatus: "pending" } });
     if (queuedRefresh) await prisma.organization.update({ where: { id: org.id }, data: { githubInstallationId: 100_000 + Math.floor(Math.random() * 1e9) } });
     const order: string[] = [];
+    let reviewJobStatusAtIndex: string | undefined;
     const enqueued: unknown[][] = [];
     let calls = 0;
     mock.module("@/lib/indexer", () => ({ indexRepository: async (...args: unknown[]) => {
       calls++;
       order.push("index");
+      reviewJobStatusAtIndex = (await prisma.communityReviewJob.findFirst({ where: { repositoryId: repo.id } }))?.status;
       assert.deepEqual(args[0], { repoId: repo.id, indexAttemptId: (await snapshot()).indexAttemptId });
       assert.equal(args[3], 0);
       assert.equal(args[8], "fixture-token");
@@ -254,9 +256,14 @@ try {
         assert.equal(calls, 0, "a repository the job can index must not be indexed in the request");
         assert.equal(after.indexStatus, "stale");
         assert.deepEqual(enqueued, [["index-repository", { repositoryId: repo.id, organizationId: org.id }, { singletonKey: repo.id, singletonSeconds: 60 }]]);
+      } else if (scenario.startsWith("actions")) {
+        assert.equal(calls, 0, "the Action response must not wait for an inline refresh");
+        assert.equal(after.indexStatus, "stale");
+        assert.deepEqual(enqueued, [], "the job would silently skip a repository without an installation");
       } else {
         assert.equal(calls, 1, "a token-only repository is refreshed with the request token");
-        assert.deepEqual(order, ["review", "index"], "the review must not wait for the refresh");
+        assert.deepEqual(order, ["review", "index"]);
+        assert.equal(reviewJobStatusAtIndex, "completed", "the review must be stored before the refresh starts");
         assert.equal(after.indexStatus, "indexed");
         assert.deepEqual(enqueued, [], "the job would silently skip a repository without an installation");
       }

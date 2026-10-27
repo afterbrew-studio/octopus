@@ -2,7 +2,7 @@ import "server-only";
 import { PgBoss } from "pg-boss";
 import type { SendOptions } from "pg-boss";
 import { prisma } from "@octopus/db";
-import { INDEX_JOB_EXPIRE_SECONDS } from "@/lib/index-liveness";
+import { COMMUNITY_REVIEW_EXPIRE_SECONDS, INDEX_JOB_EXPIRE_SECONDS } from "@/lib/index-liveness";
 
 export interface QueueConfig {
   reviewTimeoutSeconds: number;
@@ -133,7 +133,7 @@ export async function startQueue(): Promise<PgBoss> {
   await boss.createQueue("community-review", {
     retryLimit: 2,
     retryDelay: 30,
-    expireInSeconds: 1800, // 30 min hard cap per attempt
+    expireInSeconds: COMMUNITY_REVIEW_EXPIRE_SECONDS, // 30 min hard cap per attempt
   }).catch(() => {});
 
   await boss.createQueue("cleanup-forgejo-connector", {

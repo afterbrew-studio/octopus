@@ -12,6 +12,9 @@ export const INDEX_SILENCE_LIMIT_MS = 15 * 60_000;
 /** pg-boss expiry of one background index run; a first full embed on CPU takes hours. */
 export const INDEX_JOB_EXPIRE_SECONDS = 4 * 60 * 60;
 
+/** pg-boss expiry of a community review job; a token-backed refresh after its review must end inside it. */
+export const COMMUNITY_REVIEW_EXPIRE_SECONDS = 30 * 60;
+
 /** The in-process abort fires this long before expiry so the failure path can release the claim first. */
 export const INDEX_JOB_ABORT_MARGIN_SECONDS = 120;
 
