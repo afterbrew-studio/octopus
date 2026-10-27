@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { INDEX_HEARTBEAT_INTERVAL_MS, INDEX_JOB_EXPIRE_SECONDS, INDEX_SILENCE_LIMIT_MS, indexJobAbortMs, throttledHeartbeat } from "@/lib/index-liveness";
+import { INDEX_HEARTBEAT_INTERVAL_MS, INDEX_JOB_EXPIRE_SECONDS, INDEX_SILENCE_LIMIT_MS, indexJobAbortMs, requestSignal, throttledHeartbeat } from "@/lib/index-liveness";
 
 describe("throttledHeartbeat", () => {
   it("touches at most once per interval and waits a full interval after the claim", async () => {
@@ -34,5 +34,19 @@ describe("index liveness timing", () => {
     expect(indexJobAbortMs()).toBeLessThan(INDEX_JOB_EXPIRE_SECONDS * 1000);
     expect(indexJobAbortMs(1800)).toBe(1680_000);
     expect(INDEX_JOB_EXPIRE_SECONDS).toBeGreaterThanOrEqual(3 * 3600);
+  });
+});
+
+describe("requestSignal", () => {
+  it("aborts a silent request after its timeout and follows the attempt's own abort", async () => {
+    const timedOut = requestSignal(undefined, 10);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(timedOut.aborted).toBe(true);
+
+    const attempt = new AbortController();
+    const bounded = requestSignal(attempt.signal, 60_000);
+    expect(bounded.aborted).toBe(false);
+    attempt.abort(new Error("cancelled"));
+    expect(bounded.aborted).toBe(true);
   });
 });

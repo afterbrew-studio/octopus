@@ -1,12 +1,9 @@
 import "server-only";
 import { prisma, type Prisma } from "@octopus/db";
 import type { IndexStats } from "@/lib/indexer";
-import { INDEX_SILENCE_LIMIT_MS } from "@/lib/index-liveness";
+import { INDEX_SILENCE_LIMIT_MS, SupersededIndexError } from "@/lib/index-liveness";
 
-/** A replacement attempt or cancellation owns the row now. */
-export class SupersededIndexError extends Error {
-  constructor() { super("Indexing attempt is no longer current"); }
-}
+export { SupersededIndexError };
 
 export function isIndexingCancelled(signal?: AbortSignal): boolean {
   return !!signal?.aborted && signal.reason?.name !== "TimeoutError";

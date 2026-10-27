@@ -11,7 +11,7 @@ import * as forgejoLib from "@/lib/forgejo";
 import { ForgejoResponseTooLargeError } from "@/lib/forgejo-http";
 import { ensureCollection, upsertChunks, deleteRepoFileChunks, scrollActiveChunkVectors } from "@/lib/qdrant";
 import { getEmbedConfig, getEmbeddingKey } from "@/lib/embed-config";
-import { throttledHeartbeat } from "@/lib/index-liveness";
+import { SupersededIndexError, requestSignal, throttledHeartbeat, waitWhileAlive } from "@/lib/index-liveness";
 import { generateSparseVectors } from "@/lib/sparse-vector";
 import { parseOctopusIgnore, type Ignore } from "@/lib/octopus-ignore";
 import { shouldIndex, chunkText, treeBlobs, MAX_FILE_SIZE, exceedsMaxFileSize } from "@/lib/index-chunking";
@@ -51,7 +51,8 @@ export interface IndexStats {
 
 // Small enough that a heartbeat lands well inside INDEX_SILENCE_LIMIT_MS on a CPU embedder.
 const EMBED_BATCH = 128;
-const UPSERT_SLICE = 1000;
+// One Qdrant request per slice, so a slow store still yields a heartbeat between requests.
+const UPSERT_SLICE = 100;
 
 function hashText(text: string): string {
   return crypto.createHash("sha256").update(text).digest("hex");
@@ -331,7 +332,7 @@ export async function indexRepository(
     onLog(`Fetching repository tree for ${fullName}@${activeBranch}...`);
     let treeRes = await fetch(
       `${GITHUB_API}/repos/${fullName}/git/trees/${encodeURIComponent(activeBranch)}?recursive=1`,
-      { headers, signal },
+      { headers, signal: requestSignal(signal) },
     );
 
     let branchExists = false;
@@ -349,7 +350,7 @@ export async function indexRepository(
         resolvedDefaultBranch = details.default_branch;
         treeRes = await fetch(
           `${GITHUB_API}/repos/${fullName}/git/trees/${encodeURIComponent(activeBranch)}?recursive=1`,
-          { headers, signal },
+          { headers, signal: requestSignal(signal) },
         );
       }
     }
@@ -359,7 +360,7 @@ export async function indexRepository(
     if (!treeRes.ok && treeRes.status === 404) {
       const commitRes = await fetch(
         `${GITHUB_API}/repos/${fullName}/commits/${encodeURIComponent(activeBranch)}`,
-        { headers, signal },
+        { headers, signal: requestSignal(signal) },
       );
       if (commitRes.ok) {
         branchExists = true;
@@ -419,7 +420,7 @@ export async function indexRepository(
     try {
       const contribRes = await fetch(
         `${GITHUB_API}/repos/${fullName}/contributors?per_page=30`,
-        { headers },
+        { headers, signal: requestSignal(signal) },
       );
       if (contribRes.ok) {
         const contribData = await contribRes.json();
@@ -479,7 +480,7 @@ export async function indexRepository(
           if (blobRes.status === 403 || blobRes.status === 429) {
             const retryAfter = parseInt(blobRes.headers.get("retry-after") ?? "5", 10);
             onLog(`Rate limited, waiting ${retryAfter}s...`, "warning");
-            await new Promise((r) => setTimeout(r, retryAfter * 1000));
+            await waitWhileAlive(retryAfter * 1000, beat, signal);
 
             const retry = await fetchWithTimeout(url);
             if (!retry.ok) {
@@ -497,7 +498,7 @@ export async function indexRepository(
         const blobData = await blobRes.json();
         processBlob(blobData, file.path);
       } catch (err) {
-        if (signal?.aborted) throw err;
+        if (signal?.aborted || err instanceof SupersededIndexError) throw err;
         const msg = err instanceof Error ? err.message : String(err);
         skip(file.path, msg);
       }

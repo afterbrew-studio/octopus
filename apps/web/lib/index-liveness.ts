@@ -20,6 +20,36 @@ export function indexJobAbortMs(expireInSeconds: number = INDEX_JOB_EXPIRE_SECON
   return Math.max(1, expireInSeconds - INDEX_JOB_ABORT_MARGIN_SECONDS) * 1000;
 }
 
+/** A replacement attempt or cancellation owns the row now. */
+export class SupersededIndexError extends Error {
+  constructor() { super("Indexing attempt is no longer current"); }
+}
+
+/** Longest a single outbound request may stay silent; well inside INDEX_SILENCE_LIMIT_MS. */
+export const INDEX_REQUEST_TIMEOUT_MS = 5 * 60_000;
+
+/** Longest rate-limit wait honored before the attempt gives up on a file. */
+export const INDEX_MAX_RATE_LIMIT_WAIT_MS = 10 * 60_000;
+
+/** Bounds one outbound request while still honoring the attempt's own abort signal. */
+export function requestSignal(signal?: AbortSignal, timeoutMs: number = INDEX_REQUEST_TIMEOUT_MS): AbortSignal {
+  const timeout = AbortSignal.timeout(timeoutMs);
+  return signal ? AbortSignal.any([signal, timeout]) : timeout;
+}
+
+/** Sleeps in heartbeat-sized slices so a long wait keeps the attempt alive, and stops as soon as it is cancelled. */
+export async function waitWhileAlive(ms: number, beat: () => Promise<void>, signal?: AbortSignal): Promise<void> {
+  for (let left = Math.min(ms, INDEX_MAX_RATE_LIMIT_WAIT_MS); left > 0; left -= INDEX_HEARTBEAT_INTERVAL_MS) {
+    signal?.throwIfAborted();
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, Math.min(left, INDEX_HEARTBEAT_INTERVAL_MS));
+      signal?.addEventListener("abort", () => { clearTimeout(timer); resolve(); }, { once: true });
+    });
+    signal?.throwIfAborted();
+    await beat();
+  }
+}
+
 /** Wraps `touch` so it runs at most once per heartbeat interval; the first call waits a full interval because the claim just touched the row. */
 export function throttledHeartbeat(
   touch: () => Promise<void>,

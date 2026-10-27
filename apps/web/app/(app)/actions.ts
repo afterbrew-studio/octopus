@@ -4,6 +4,7 @@ import "server-only";
 
 import { organizationCreationProvenance } from "@/lib/creation-provenance";
 import { isActionId } from "@/lib/action-input";
+import { INDEX_SILENCE_LIMIT_MS } from "@/lib/index-liveness";
 import { isTextFormData } from "@/lib/form-input";
 import { headers, cookies } from "next/headers";
 import { redirect } from "next/navigation";
@@ -666,11 +667,10 @@ export async function indexRepository(repoId: string): Promise<{ error?: string 
     }
   }
 
-  // If stuck in "indexing" for more than 10 minutes, reset to allow re-trigger
-  const STALE_INDEX_MS = 10 * 60 * 1000;
+  // A live attempt heartbeats updatedAt; silence past the limit means it died, so allow a re-trigger
   if (repo.indexStatus === "indexing") {
     const elapsed = Date.now() - repo.updatedAt.getTime();
-    if (elapsed < STALE_INDEX_MS) {
+    if (elapsed < INDEX_SILENCE_LIMIT_MS) {
       return { error: "Indexing is already in progress." };
     }
   }
