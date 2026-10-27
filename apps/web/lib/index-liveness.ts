@@ -39,6 +39,9 @@ export class SupersededIndexError extends Error {
 /** Longest a single outbound request may stay silent; well inside INDEX_SILENCE_LIMIT_MS. */
 export const INDEX_REQUEST_TIMEOUT_MS = 5 * 60_000;
 
+/** Per Qdrant request on the indexing paths; four attempts plus backoff stay near a third of the silence limit. */
+export const INDEX_QDRANT_REQUEST_TIMEOUT_MS = 90_000;
+
 /** Longest rate-limit wait honored before the attempt gives up on a file. */
 export const INDEX_MAX_RATE_LIMIT_WAIT_MS = 10 * 60_000;
 

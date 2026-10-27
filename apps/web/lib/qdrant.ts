@@ -4,6 +4,7 @@ import { createHash } from "crypto";
 import { QdrantClient } from "@qdrant/js-client-rest";
 import { generateSparseVector } from "@/lib/sparse-vector";
 import { getEmbedConfig } from "@/lib/embed-config";
+import { INDEX_QDRANT_REQUEST_TIMEOUT_MS } from "@/lib/index-liveness";
 
 // Qdrant point IDs must be uint or UUID. Existing UUID inputs pass through
 // unchanged (so callers using crypto.randomUUID() are unaffected); non-UUID
@@ -79,20 +80,34 @@ function isTransientError(error: unknown): boolean {
     || message.includes("other side closed");
 }
 
-async function withQdrantRetry<T>(fn: () => Promise<T>, label: string, maxAttempts = 4): Promise<T> {
+/** `signal` (indexing paths) is checked before each attempt, cuts a backoff short and stops waiting on a request in flight. */
+async function withQdrantRetry<T>(fn: () => Promise<T>, label: string, maxAttempts = 4, signal?: AbortSignal): Promise<T> {
   let lastError: unknown;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    signal?.throwIfAborted();
     try {
-      return await fn();
+      return await (signal ? abortable(fn(), signal) : fn());
     } catch (error) {
       lastError = error;
-      if (!isTransientError(error) || attempt === maxAttempts) throw error;
+      if (signal?.aborted || !isTransientError(error) || attempt === maxAttempts) throw error;
       const delay = Math.min(500 * 2 ** (attempt - 1), 4000);
       console.warn(`[qdrant] ${label} transient failure (attempt ${attempt}/${maxAttempts}), retrying in ${delay}ms:`, error instanceof Error ? error.message : error);
-      await new Promise((resolve) => setTimeout(resolve, delay));
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, delay);
+        signal?.addEventListener("abort", () => { clearTimeout(timer); resolve(); }, { once: true });
+      });
     }
   }
   throw lastError;
+}
+
+function abortable<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    if (signal.aborted) onAbort();
+    signal.addEventListener("abort", onAbort, { once: true });
+    work.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  });
 }
 
 const COLLECTION_NAME = "code_chunks";
@@ -131,6 +146,18 @@ export function getQdrantClient(): QdrantClient {
     });
   }
   return client;
+}
+
+let indexingClient: QdrantClient | null = null;
+
+/**
+ * Client for the indexing paths. Its request timeout is short enough that a whole retry sequence
+ * (attempts times this, plus backoff) stays well inside INDEX_SILENCE_LIMIT_MS, where the default
+ * five minutes per attempt could keep an attempt silent for twenty.
+ */
+function getIndexingQdrantClient(): QdrantClient {
+  if (!indexingClient) indexingClient = new QdrantClient({ url: process.env.QDRANT_URL!, timeout: INDEX_QDRANT_REQUEST_TIMEOUT_MS });
+  return indexingClient;
 }
 
 export async function ensureCollection() {
@@ -180,7 +207,7 @@ export async function upsertChunks(
     if (originalCount > 0) console.warn(`[qdrant] upsertChunks: all ${originalCount} points had empty vectors, skipping upsert (org may be over spend limit)`);
     return;
   }
-  const qdrant = getQdrantClient();
+  const qdrant = getIndexingQdrantClient();
   // Qdrant accepts max 100 points per request
   for (let i = 0; i < points.length; i += 100) {
     const generation = await getRepositoryIndexGeneration(owner);
@@ -200,7 +227,7 @@ export async function upsertChunks(
       payload: p.payload,
     }));
     try {
-      await withQdrantRetry(() => qdrant.upsert(COLLECTION_NAME, { points: batch, wait: true }), `upsert ${COLLECTION_NAME}`);
+      await withQdrantRetry(() => qdrant.upsert(COLLECTION_NAME, { points: batch, wait: true }), `upsert ${COLLECTION_NAME}`, undefined, owner.signal);
     } catch (error) {
       if (!isSparseVectorError(error)) throw error;
       console.warn("[qdrant] Falling back to dense-only upsert", { collection: COLLECTION_NAME, error: error instanceof Error ? error.message : error });
@@ -209,7 +236,7 @@ export async function upsertChunks(
         vector: p.vector,
         payload: p.payload,
       }));
-      await withQdrantRetry(() => qdrant.upsert(COLLECTION_NAME, { points: denseBatch, wait: true }), `upsert ${COLLECTION_NAME} dense`);
+      await withQdrantRetry(() => qdrant.upsert(COLLECTION_NAME, { points: denseBatch, wait: true }), `upsert ${COLLECTION_NAME} dense`, undefined, owner.signal);
     }
   }
 }
@@ -221,7 +248,7 @@ export async function listRepoFileChunkIds(owner: RepositoryIndexOwner, filePath
   if (filePaths.length === 0) return [];
   const { getRepositoryIndexGeneration, repositoryCodeFilter } = await import("@/lib/repository-index-storage");
   const generation = await getRepositoryIndexGeneration(owner);
-  const qdrant = getQdrantClient();
+  const qdrant = getIndexingQdrantClient();
   const filter = { must: [repositoryCodeFilter(owner.repoId, generation), { key: "filePath", match: { any: filePaths } }] };
   const ids: string[] = [];
   let offset: string | number | Record<string, unknown> | null | undefined;
@@ -229,7 +256,7 @@ export async function listRepoFileChunkIds(owner: RepositoryIndexOwner, filePath
     owner.signal?.throwIfAborted();
     const page = await withQdrantRetry(() => qdrant.scroll(COLLECTION_NAME, {
       filter, limit: ID_SCROLL_PAGE, offset: offset ?? undefined, with_payload: false, with_vector: false,
-    }), `scroll ${COLLECTION_NAME} ids`);
+    }), `scroll ${COLLECTION_NAME} ids`, undefined, owner.signal);
     ids.push(...page.points.map((point) => String(point.id)));
     offset = page.next_page_offset;
   } while (offset !== null && offset !== undefined);
@@ -240,11 +267,11 @@ export async function listRepoFileChunkIds(owner: RepositoryIndexOwner, filePath
 export async function deleteChunkPoints(owner: RepositoryIndexOwner, pointIds: string[]) {
   if (pointIds.length === 0) return;
   const { getRepositoryIndexGeneration } = await import("@/lib/repository-index-storage");
-  const qdrant = getQdrantClient();
+  const qdrant = getIndexingQdrantClient();
   for (let i = 0; i < pointIds.length; i += ID_SCROLL_PAGE) {
     await getRepositoryIndexGeneration(owner);
     const points = pointIds.slice(i, i + ID_SCROLL_PAGE);
-    await withQdrantRetry(() => qdrant.delete(COLLECTION_NAME, { wait: true, points }), `delete ${COLLECTION_NAME} points`);
+    await withQdrantRetry(() => qdrant.delete(COLLECTION_NAME, { wait: true, points }), `delete ${COLLECTION_NAME} points`, undefined, owner.signal);
   }
 }
 
@@ -280,14 +307,14 @@ export async function* scrollActiveChunkVectors(
   const { getActiveRepositoryCodeFilter } = await import("@/lib/repository-index-storage");
   const filter = await getActiveRepositoryCodeFilter([repoId]);
   if (!filter) return;
-  const qdrant = getQdrantClient();
+  const qdrant = getIndexingQdrantClient();
   let offset: string | number | Record<string, unknown> | null | undefined;
   do {
     signal?.throwIfAborted();
     const page = await withQdrantRetry(() => qdrant.scroll(COLLECTION_NAME, {
       filter, limit: REUSE_SCROLL_PAGE, offset: offset ?? undefined,
       with_payload: ["textHash", "embeddingKey"], with_vector: true,
-    }), `scroll ${COLLECTION_NAME}`);
+    }), `scroll ${COLLECTION_NAME}`, undefined, signal);
     yield page.points.flatMap((point) => {
       // The dense vector is the unnamed default; a sparse companion turns the value into a named map.
       const raw = point.vector as unknown;
