@@ -335,10 +335,13 @@ export async function indexRepository(
       { headers, signal: requestSignal(signal) },
     );
 
+    await beat();
+
     let branchExists = false;
     if (!treeRes.ok && treeRes.status === 404) {
       const [owner, repoName] = fullName.split("/");
-      const details = await getRepositoryDetails(installationId, owner, repoName, token);
+      const details = await getRepositoryDetails(installationId, owner, repoName, token, requestSignal(signal));
+      await beat();
       if (!details) {
         onLog(`Repository not found or GitHub App lacks access to ${fullName}`, "error");
         onLog("Go to GitHub Settings → Applications → Configure to grant access", "warning");
@@ -352,6 +355,7 @@ export async function indexRepository(
           `${GITHUB_API}/repos/${fullName}/git/trees/${encodeURIComponent(activeBranch)}?recursive=1`,
           { headers, signal: requestSignal(signal) },
         );
+        await beat();
       }
     }
 
@@ -362,6 +366,7 @@ export async function indexRepository(
         `${GITHUB_API}/repos/${fullName}/commits/${encodeURIComponent(activeBranch)}`,
         { headers, signal: requestSignal(signal) },
       );
+      await beat();
       if (commitRes.ok) {
         branchExists = true;
         const commit = await commitRes.json();
@@ -385,6 +390,7 @@ export async function indexRepository(
     }
 
     const treeData = emptyRepository ? { tree: [] } : await treeRes.json();
+    await beat();
     if (!Array.isArray(treeData.tree)) throw new Error("Invalid repository tree response from GitHub");
     if (treeData.truncated) throw new Error("GitHub returned a partial repository tree; indexing was not completed");
     const allItems = treeData.tree as TreeItem[];
@@ -399,7 +405,7 @@ export async function indexRepository(
     if (ignoreBlob) {
       try {
         const [owner, repoName] = fullName.split("/");
-        const ignoreContent = await ghGetFileContent(installationId, owner, repoName, activeBranch, ".octopusignore", token);
+        const ignoreContent = await ghGetFileContent(installationId, owner, repoName, activeBranch, ".octopusignore", token, requestSignal(signal));
         if (ignoreContent === null) throw new Error("Missing .octopusignore content");
         if (ignoreContent) {
           ig = parseOctopusIgnore(ignoreContent);
@@ -408,6 +414,7 @@ export async function indexRepository(
       } catch {
         throw new Error("Indexing incomplete: could not read .octopusignore");
       }
+      await beat();
     }
 
     const blobs = treeBlobs(allItems);
@@ -443,6 +450,7 @@ export async function indexRepository(
     } catch {
       onLog("Could not fetch contributor count", "warning");
     }
+    await beat();
 
     // 2. Fetch file contents and chunk
     onLog("Fetching and chunking file contents...");
