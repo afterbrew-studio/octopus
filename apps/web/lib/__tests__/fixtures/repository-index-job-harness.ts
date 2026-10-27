@@ -13,11 +13,13 @@ let claimCount = 1;
 let indexFailure: Error | null = null;
 let cancelled = false;
 let timedOut = false;
+let queueAbort: AbortController | null = null;
 let timeoutCallback: (() => void) | undefined;
-const { INDEX_JOB_ABORT_MS } = await import("@/lib/index-liveness");
+const { indexJobAbortMs } = await import("@/lib/index-liveness");
+const abortDelays: number[] = [];
 const realSetTimeout = globalThis.setTimeout;
 globalThis.setTimeout = ((callback: () => void, ms?: number, ...args: unknown[]) => {
-  if (ms === INDEX_JOB_ABORT_MS) timeoutCallback = callback;
+  if (ms === indexJobAbortMs() || ms === indexJobAbortMs(1800)) { timeoutCallback = callback; abortDelays.push(ms); }
   return realSetTimeout(callback, ms, ...args);
 }) as typeof setTimeout;
 let populated = false;
@@ -82,6 +84,11 @@ mock.module("@/lib/indexer", () => ({
     indexCalls.push(args);
     if (cancelled) { controller.abort(); throw controller.signal.reason; }
     if (timedOut) { assert.ok(timeoutCallback); timeoutCallback(); throw controller.signal.reason; }
+    if (queueAbort) {
+      queueAbort.abort();
+      assert.ok(controller.signal.aborted, "the queue's abort must reach the running index");
+      throw controller.signal.reason;
+    }
     if (replaceAttempt) {
       Object.assign(currentRow!, { indexStatus: "indexing", indexAttemptId: "replacement" });
       throw new Error("Old worker failed after replacement");
@@ -198,5 +205,16 @@ await processRepositoryIndex(job);
 assert.equal(indexCalls.length, callsBefore + 1, "a stale index must be claimable for a background refresh");
 assert.deepEqual((claims[claimsBefore].where.OR as unknown[]).at(-1), { indexStatus: "stale" }, "the claim itself must accept a stale index");
 assert.equal(currentRow?.indexStatus, "indexed");
+// A job queued before the expiry change still expires after 30 minutes; the abort follows that.
+currentRow = { ...row };
+abortDelays.length = 0;
+await processRepositoryIndex(job, { expireInSeconds: 1800 });
+assert.deepEqual(abortDelays, [(1800 - 120) * 1000]);
+// pg-boss aborting its signal (expiry, shutdown) stops the run and releases the claim for retry.
+currentRow = { ...row };
+queueAbort = new AbortController();
+await assert.rejects(() => processRepositoryIndex(job, { signal: queueAbort!.signal }), { name: "TimeoutError" });
+assert.equal(currentRow?.indexStatus, "failed");
+queueAbort = null;
 globalThis.setTimeout = realSetTimeout;
 console.log("Repository queue, tenant, claim, empty snapshot, failure, retry and cancellation checks passed");

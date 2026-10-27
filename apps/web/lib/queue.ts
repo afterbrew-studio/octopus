@@ -119,12 +119,12 @@ export async function startQueue(): Promise<PgBoss> {
   }).catch(() => {});
 
   // A first full index on a CPU embedder takes hours; the run's heartbeat, not
-  // this expiry, is what detects a crashed worker.
-  await boss.createQueue("index-repository", {
-    retryLimit: 2,
-    retryDelay: 60,
-    expireInSeconds: INDEX_JOB_EXPIRE_SECONDS,
-  }).catch(() => {});
+  // this expiry, is what detects a crashed worker. createQueue leaves an existing
+  // queue untouched, so the options are also applied to one created earlier.
+  const indexQueueOptions = { retryLimit: 2, retryDelay: 60, expireInSeconds: INDEX_JOB_EXPIRE_SECONDS };
+  await boss.createQueue("index-repository", indexQueueOptions).catch(() => {});
+  await boss.updateQueue("index-repository", indexQueueOptions)
+    .catch((err) => console.error("[queue] Failed to apply index-repository options:", err));
 
   // Community-tier (no API key) async review pipeline.
   // Indexing can take minutes for first-touch repos, so the action enqueues

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { INDEX_HEARTBEAT_INTERVAL_MS, INDEX_JOB_ABORT_MS, INDEX_JOB_EXPIRE_SECONDS, INDEX_SILENCE_LIMIT_MS, throttledHeartbeat } from "@/lib/index-liveness";
+import { INDEX_HEARTBEAT_INTERVAL_MS, INDEX_JOB_EXPIRE_SECONDS, INDEX_SILENCE_LIMIT_MS, indexJobAbortMs, throttledHeartbeat } from "@/lib/index-liveness";
 
 describe("throttledHeartbeat", () => {
   it("touches at most once per interval and waits a full interval after the claim", async () => {
@@ -31,7 +31,8 @@ describe("throttledHeartbeat", () => {
 describe("index liveness timing", () => {
   it("lets many heartbeats fit inside the silence limit and aborts before expiry", () => {
     expect(INDEX_SILENCE_LIMIT_MS).toBeGreaterThanOrEqual(5 * INDEX_HEARTBEAT_INTERVAL_MS);
-    expect(INDEX_JOB_ABORT_MS).toBeLessThan(INDEX_JOB_EXPIRE_SECONDS * 1000);
+    expect(indexJobAbortMs()).toBeLessThan(INDEX_JOB_EXPIRE_SECONDS * 1000);
+    expect(indexJobAbortMs(1800)).toBe(1680_000);
     expect(INDEX_JOB_EXPIRE_SECONDS).toBeGreaterThanOrEqual(3 * 3600);
   });
 });

@@ -7,7 +7,7 @@ import type { LogLevel } from "@/lib/indexer";
 import { notifyRepositoryIndex } from "@/lib/repository-index-notifications";
 import { deleteSyncLogs, writeSyncLog } from "@/lib/elasticsearch";
 import { createAbortController, clearAbortController } from "@/lib/indexing-abort";
-import { INDEX_JOB_ABORT_MS } from "@/lib/index-liveness";
+import { indexJobAbortMs } from "@/lib/index-liveness";
 import { USABLE_INDEX_WHERE } from "@/lib/usable-index";
 
 export interface RepositoryIndexJob {
@@ -57,7 +57,10 @@ export async function enqueuePendingRepositoryIndexes(organizationId: string, re
   for (const repo of repos) await enqueueRepositoryIndexRefresh(repo.id, organizationId);
 }
 
-export async function processRepositoryIndex(job: RepositoryIndexJob) {
+export async function processRepositoryIndex(
+  job: RepositoryIndexJob,
+  queue?: { signal?: AbortSignal; expireInSeconds?: number },
+) {
   if (!job || typeof job.repositoryId !== "string" || !job.repositoryId ||
       typeof job.organizationId !== "string" || !job.organizationId) {
     throw new Error("Repository indexing requires repositoryId and organizationId");
@@ -90,7 +93,11 @@ export async function processRepositoryIndex(job: RepositoryIndexJob) {
 
   const controller = createAbortController(indexAttemptId);
   // Abort before pg-boss expires the attempt, so the catch can release its claim.
-  const timeout = setTimeout(() => controller.abort(new DOMException("Repository indexing timed out", "TimeoutError")), INDEX_JOB_ABORT_MS);
+  const timeout = setTimeout(() => controller.abort(new DOMException("Repository indexing timed out", "TimeoutError")), indexJobAbortMs(queue?.expireInSeconds));
+  // pg-boss aborts the signal when it gives up on the job (expiry, shutdown); the run must stop with it.
+  const abortWithQueue = () => controller.abort(new DOMException("Repository indexing job was aborted by the queue", "TimeoutError"));
+  if (queue?.signal?.aborted) abortWithQueue();
+  else queue?.signal?.addEventListener("abort", abortWithQueue, { once: true });
   const channel = `presence-org-${job.organizationId}`;
   const log = (message: string, level: LogLevel = "info") => {
     writeSyncLog({ orgId: job.organizationId, repoId: repo.id, message, level, timestamp: Date.now() });
@@ -115,6 +122,7 @@ export async function processRepositoryIndex(job: RepositoryIndexJob) {
     if (!isCancelled) throw error;
   } finally {
     clearTimeout(timeout);
+    queue?.signal?.removeEventListener("abort", abortWithQueue);
     clearAbortController(indexAttemptId);
   }
 }

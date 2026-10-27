@@ -78,7 +78,9 @@ export async function registerWorkers(boss: PgBoss, config: QueueConfig): Promis
   });
 
   await boss.work<RepositoryIndexJob>("index-repository", { localConcurrency: 1 }, async (jobs) => {
-    for (const job of jobs) await processRepositoryIndex(job.data);
+    for (const job of jobs) {
+      await processRepositoryIndex(job.data, { signal: job.signal, expireInSeconds: job.expireInSeconds });
+    }
   });
 
   await boss.work<WelcomeEmailJob>("welcome-email", async (jobs) => {
