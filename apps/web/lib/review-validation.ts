@@ -38,6 +38,7 @@ export async function gatherCrossFileContext(
     embeddings = await createEmbeddings(queryTexts, {
       organizationId: orgId,
       operation: "cross-file-verification",
+      repositoryId: repoId,
     });
   } catch {
     console.warn("[review-validation] Failed to create embeddings for cross-file queries");
@@ -141,6 +142,7 @@ export async function gatherVerificationContext(
     embeddings = await createEmbeddings(queryTexts, {
       organizationId: orgId,
       operation: "finding-verification",
+      repositoryId: repoId,
     });
   } catch {
     console.warn("[review-validation] Failed to create embeddings for verification queries");

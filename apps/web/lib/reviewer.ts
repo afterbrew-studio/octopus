@@ -359,6 +359,7 @@ async function embedFeedbackPattern(
   const [vector] = await createEmbeddings([text], {
     organizationId: issue.pullRequest.repository.organizationId,
     operation: "embedding",
+    repositoryId: issue.pullRequest.repositoryId,
   });
   await upsertFeedbackPattern({
     id: issue.id,

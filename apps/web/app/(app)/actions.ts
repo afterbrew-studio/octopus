@@ -1371,6 +1371,7 @@ export async function feedbackIssue(
         const [vector] = await createEmbeddings([text], {
           organizationId: fullIssue.pullRequest.repository.organizationId,
           operation: "embedding",
+          repositoryId: fullIssue.pullRequest.repositoryId,
         });
         await upsertFeedbackPattern({
           id: fullIssue.id,
@@ -1485,6 +1486,7 @@ export async function syncGithubReactions(
           const [vector] = await createEmbeddings([text], {
             organizationId: issue.pullRequest.repository.organizationId,
             operation: "embedding",
+            repositoryId: issue.pullRequest.repositoryId,
           });
           await upsertFeedbackPattern({
             id: issue.id,
