@@ -106,7 +106,7 @@ describe("createEmbeddings — Qdrant dim validation", () => {
   });
 
   it("resolves the same configuration for indexing as retrieval embeds with", async () => {
-    // Retrieval embeds with tracking, which applies the org/repo model override; indexing resolves it once and passes it in.
+    // Retrieval's tracking applies the org/repo model override; indexing resolves it once and passes it in.
     const retrieval = await resolveEmbedConfig({ organizationId: "org-test", repositoryId: "repo-test" });
     expect(retrieval.model).toBe("text-embedding-3-small");
     expect((await resolveEmbedConfig()).model).not.toBe("text-embedding-3-small");

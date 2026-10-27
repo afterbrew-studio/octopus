@@ -10,9 +10,9 @@ export function isIndexingCancelled(signal?: AbortSignal): boolean {
 }
 
 /**
- * Frees `indexing` rows that went silent; any provider, whatever the organization's discovery setting.
- * A live attempt heartbeats, and a local upload touches the row on every batch claim and commit, so a row
- * with no attempt id (between upload batches, or from before attempt ids) is covered by the same window.
+ * Frees `indexing` rows that went silent, for any provider and whatever the organization's discovery setting.
+ * A local upload has no attempt id between batches but touches the row on every batch claim and commit,
+ * so the same window covers it.
  */
 export async function releaseAbandonedIndexClaims(now: Date = new Date()): Promise<number> {
   const released = await prisma.repository.updateMany({

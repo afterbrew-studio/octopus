@@ -1,9 +1,8 @@
 /**
- * Whether a repository can be reviewed against its stored index regardless of
- * indexStatus. Completion writes indexedAt and totalVectors together with the
- * active generation, and a failed or replaced attempt never clears them, so
- * they outlive a stale, failed or in-flight refresh. Legacy snapshots (no
- * active generation) qualify too.
+ * Whether a repository can be reviewed against its stored index regardless of indexStatus.
+ * indexedAt and totalVectors are written with the active generation and never cleared by a failed
+ * or replaced attempt, so they outlive a stale, failed or in-flight refresh. Legacy snapshots
+ * without an active generation qualify too.
  */
 
 export const USABLE_INDEX_WHERE = { indexedAt: { not: null }, totalVectors: { gt: 0 } };

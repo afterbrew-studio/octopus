@@ -289,7 +289,7 @@ try {
       getFileContent: async (_id: number, _owner: string, _name: string, _ref: string, path: string) => path === ".octopusignore" ? null : "export const a = 1;",
       addCommentReaction: async () => {}, getPullRequestDetails: async () => null, createCheckRun: async () => 1, updateCheckRun: async () => {}, isOwnCheckRun: () => false,
     }));
-    // Stand-in queue: runs the merged-PR job inline; the real queue's policy is covered by "incremental-queue".
+    // Runs the merged-PR job inline; "incremental-queue" covers the real queue.
     const { processIncrementalIndex } = await import("@/lib/incremental-index-job");
     mock.module("@/lib/queue", () => ({ enqueue: async (_name: string, data: Parameters<typeof processIncrementalIndex>[0]) => { await processIncrementalIndex(data); return "fixture"; } }));
     mock.module("next/server", () => ({ after: () => {}, NextRequest: Request, NextResponse: { json: Response.json } }));
@@ -390,15 +390,12 @@ try {
     };
     const read = (id: string) => prisma.repository.findUniqueOrThrow({ where: { id } });
 
-    // First upload, published: the counters appear only with the generation.
     const id = await upload(true);
     const published = await read(id);
     assert.equal(published.indexStatus, "indexed");
     assert.equal(published.totalVectors, 2);
     assert.equal(published.indexedFiles, 2);
 
-    // A re-upload that stops after one batch leaves the published statistics and the active generation alone,
-    // while the running progress stays visible.
     await upload(false);
     const staging = await read(id);
     assert.equal(staging.indexStatus, "indexing");
@@ -407,7 +404,6 @@ try {
     assert.deepEqual(liveIndexCounts(staging), { indexedFiles: 1, totalFiles: 2 });
     assert.equal(resolveIndexGate({ ...staging, indexStatus: "stale" }).blockOnIndex, false, "the published generation is still usable");
 
-    // A repository whose active generation is empty is not made usable by a staged upload.
     await prisma.repository.update({ where: { id }, data: { indexStatus: "pending", indexedAt: new Date(), totalVectors: 0, totalChunks: 0, indexedFiles: 0 } });
     await upload(false);
     const emptied = await read(id);
@@ -459,7 +455,6 @@ try {
       await prisma.$executeRawUnsafe(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
     }
   } else if (scenario === "restore-cancelled") {
-    // A refresh is running, the repository is removed (cancelled) and restored, then a review queues a refresh.
     await prisma.organization.update({ where: { id: org.id }, data: { githubInstallationId: 100_000 + Math.floor(Math.random() * 1e9) } });
     await prisma.repository.update({ where: { id: repo.id }, data: { indexedAt: new Date(), totalVectors: 5, totalChunks: 5, indexedFiles: 1, activeIndexGeneration: randomUUID() } });
     await assert.rejects(() => runRepositoryIndex(repo.id, indexAttemptId, async () => {

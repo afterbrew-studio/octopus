@@ -153,7 +153,6 @@ assert.equal(await prepare(), "ready");
 assert.deepEqual(calls, ["summary", "analysis", "persist-analysis"]);
 holdSummary = undefined;
 
-// A published refresh resets the analysis of an analyzed repository, so its generation is analyzed again.
 calls.length = 0;
 assert.equal(repo.analysisStatus, "analyzed");
 assert.equal(await prepare(), "ready");
@@ -162,7 +161,6 @@ Object.assign(repo, { activeIndexGeneration: "gen-2", analysisStatus: "none" });
 assert.equal(await prepare(), "ready");
 assert.deepEqual(calls, ["summary", "analysis", "persist-analysis"]);
 
-// A refresh that publishes mid-analysis is not overwritten by the analysis of the generation it replaced.
 calls.length = 0;
 repo.analysisStatus = "none";
 let publish!: () => void;
@@ -181,7 +179,6 @@ calls.length = 0;
 assert.equal(await prepare(), "ready");
 assert.deepEqual(calls, ["summary", "analysis", "persist-analysis"]);
 
-// An analysis of a replaced generation that fails late must not fail the one now running for the new generation.
 calls.length = 0;
 repo.analysisStatus = "none";
 failAt = "analysis";

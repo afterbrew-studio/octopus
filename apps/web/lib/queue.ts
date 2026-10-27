@@ -118,17 +118,14 @@ export async function startQueue(): Promise<PgBoss> {
     expireInSeconds: 1800,
   }).catch(() => {});
 
-  // A first full index on a CPU embedder takes hours; the run's heartbeat, not
-  // this expiry, is what detects a crashed worker. createQueue leaves an existing
-  // queue untouched, so the options are also applied to one created earlier.
+  // A first full index on a CPU embedder takes hours; the heartbeat, not this expiry,
+  // detects a crashed worker. createQueue leaves an existing queue untouched, hence updateQueue.
   const indexQueueOptions = { retryLimit: 2, retryDelay: 60, expireInSeconds: INDEX_JOB_EXPIRE_SECONDS };
   await boss.createQueue("index-repository", indexQueueOptions).catch(() => {});
   await boss.updateQueue("index-repository", indexQueueOptions)
     .catch((err) => console.error("[queue] Failed to apply index-repository options:", err));
 
-  // The singleton policy allows one active job per singleton key (the repository id), enforced by a
-  // unique index in the database, so merged-PR updates of one repository never run concurrently, on
-  // any replica.
+  // Singleton policy: a database unique index allows one active job per key (the repository id), on any replica.
   await boss.createQueue(INCREMENTAL_INDEX_QUEUE, INCREMENTAL_INDEX_QUEUE_OPTIONS).catch(() => {});
 
   // Community-tier (no API key) async review pipeline.
@@ -138,7 +135,7 @@ export async function startQueue(): Promise<PgBoss> {
   await boss.createQueue("community-review", {
     retryLimit: 2,
     retryDelay: 30,
-    expireInSeconds: COMMUNITY_REVIEW_EXPIRE_SECONDS, // 30 min hard cap per attempt
+    expireInSeconds: COMMUNITY_REVIEW_EXPIRE_SECONDS,
   }).catch(() => {});
 
   await boss.createQueue("cleanup-forgejo-connector", {

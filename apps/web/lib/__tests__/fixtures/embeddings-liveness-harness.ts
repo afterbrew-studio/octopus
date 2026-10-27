@@ -31,14 +31,11 @@ globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => 
 
 const texts = Array.from({ length: 320 }, (_, i) => `chunk ${i}`);
 
-// In Ollama mode the env model always wins, whatever the org or repository override says.
 assert.equal((await resolveEmbedConfig({ organizationId: "org-1", repositoryId: "repo-1" })).model, "nomic-embed-text");
 
-// Without progress options a request carries no signal: existing callers are unchanged.
 assert.equal((await createEmbeddings(texts.slice(0, 2))).length, 2);
 assert.equal(seenSignals[0], undefined);
 
-// One call that is slow overall (5 requests of 4 minutes) but always making progress keeps its heartbeat inside the silence limit.
 requests = 0; requestSeconds = 240;
 const touches: number[] = [];
 const beat = throttledHeartbeat(async () => { touches.push(clock); }, () => clock);
@@ -51,7 +48,6 @@ assert.ok(touches.length >= 4, `heartbeat between provider requests, got ${touch
 for (let i = 1; i < touches.length; i++) assert.ok(touches[i] - touches[i - 1] < INDEX_SILENCE_LIMIT_MS);
 assert.ok(seenSignals.slice(-5).every(signal => signal), "each provider request has a deadline");
 
-// Cancelling mid-request ends the call without further requests.
 requests = 0; hang = true;
 const controller = new AbortController();
 const cancelled = createEmbeddings(texts, undefined, { signal: controller.signal });

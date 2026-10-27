@@ -68,8 +68,7 @@ function estimateTokens(text: string): number {
  * below with an actionable message instead of a cryptic Qdrant 400. Hosters
  * who want per-org dims would need per-org collections, out of scope here.
  *
- * Indexing resolves this once per repository and passes it back as `options.config`,
- * so what it stores, and the identity it reuses vectors by, match what retrieval embeds with.
+ * Indexing resolves this once and passes it as `options.config`, so stored vectors match what retrieval embeds with.
  */
 export async function resolveEmbedConfig(tracking?: { organizationId: string; repositoryId?: string }): Promise<EmbedConfig> {
   const baseConfig = getEmbedConfig();
@@ -90,8 +89,7 @@ export async function resolveEmbedConfig(tracking?: { organizationId: string; re
  * response). The mapping back to original positions happens at the bottom.
  *
  * `options` is for long, cancellable runs such as indexing: `config` skips the per-call model
- * resolution, each provider request gets a deadline and `signal`, and `onRequest` runs between
- * requests. Without it nothing changes.
+ * resolution, each provider request gets a deadline and `signal`, and `onRequest` runs after each.
  *
  * `tracking` is for ai_usage rows + the spend-limit gate. When omitted
  * (system-level embeddings outside any org), the usage row is skipped and

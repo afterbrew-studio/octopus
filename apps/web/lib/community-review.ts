@@ -294,7 +294,6 @@ export async function processCommunityReview(jobId: string): Promise<void> {
 
     LOG(jobId, `completed: ${reviewResult.findings.length} findings`);
 
-    // The review is final; the refresh gets what is left of the job's expiry, with a margin to finish.
     const remainingMs = COMMUNITY_REVIEW_EXPIRE_SECONDS * 1000 - (Date.now() - startedAt) - REFRESH_MARGIN_MS;
     if (refreshWithToken && remainingMs >= MIN_REFRESH_BUDGET_MS) {
       await refreshIndexWithToken(repo, job.organizationId, githubToken, Math.min(remainingMs, MAX_REFRESH_BUDGET_MS))

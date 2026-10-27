@@ -1,7 +1,7 @@
 import { mock } from "bun:test";
 import assert from "node:assert/strict";
 
-// Own process, fake clock: a whole Qdrant retry sequence on an indexing path must stay well inside the silence limit.
+// Own process: the fake clock and patched setTimeout must not reach other tests.
 mock.module("server-only", () => ({}));
 process.env.QDRANT_URL = "http://localhost:6333";
 let clock = 1_000_000;
@@ -23,7 +23,7 @@ mock.module("@qdrant/js-client-rest", () => ({
       attempts++;
       onAttempt?.();
       if (behavior === "hang") return new Promise(() => {});
-      // A request that runs to its timeout before failing, the worst a slow store can do.
+      // Runs to its timeout before failing: the worst case.
       clock += this.options.timeout ?? 300_000;
       throw Object.assign(new Error("fetch failed"), { cause: { code: "ETIMEDOUT" } });
     }
@@ -34,7 +34,6 @@ const { scrollActiveChunkVectors } = await import("@/lib/qdrant");
 const { INDEX_SILENCE_LIMIT_MS, INDEX_QDRANT_REQUEST_TIMEOUT_MS } = await import("@/lib/index-liveness");
 const drain = async (signal?: AbortSignal) => { for await (const page of scrollActiveChunkVectors("repo-1", signal)) void page; };
 
-// Every attempt times out: four attempts plus backoff, with no heartbeat in between, stay far below the limit.
 const started = clock;
 await assert.rejects(() => drain(), /fetch failed/);
 assert.equal(attempts, 4);
@@ -43,14 +42,12 @@ const silent = clock - started;
 assert.ok(silent < INDEX_SILENCE_LIMIT_MS / 2, `a retry sequence stayed silent for ${silent}ms`);
 assert.ok(4 * 300_000 >= INDEX_SILENCE_LIMIT_MS, "with the client's default timeout the same sequence would not have fit");
 
-// Cancellation between attempts: no further attempt starts.
 attempts = 0;
 const between = new AbortController();
 onAttempt = () => between.abort(new Error("cancelled"));
 await assert.rejects(() => drain(between.signal), /cancelled/);
 assert.equal(attempts, 1);
 
-// Cancellation of a request in flight stops the wait.
 attempts = 0; behavior = "hang";
 const inFlight = new AbortController();
 onAttempt = () => realSetTimeout(() => inFlight.abort(new Error("stopped")), 10);

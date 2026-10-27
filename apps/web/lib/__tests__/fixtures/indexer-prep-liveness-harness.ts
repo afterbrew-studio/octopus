@@ -1,8 +1,7 @@
 import { mock } from "bun:test";
 import assert from "node:assert/strict";
 
-// Own process, real heartbeat throttle on a fake clock: GitHub preparation made of several slow requests
-// in a row must keep the attempt alive between them.
+// Own process, real heartbeat throttle on a fake clock.
 mock.module("server-only", () => ({}));
 let clock = 1_000_000;
 Date.now = () => clock;
@@ -37,7 +36,7 @@ mock.module("@/lib/embeddings", () => ({
 const { indexRepository } = await import("@/lib/indexer");
 const { INDEX_SILENCE_LIMIT_MS } = await import("@/lib/index-liveness");
 
-// Stored branch is wrong: tree 404, repository details, corrected tree, .octopusignore, contributors: five requests of four minutes.
+// Wrong stored branch: five slow requests (tree 404, details, corrected tree, .octopusignore, contributors).
 globalThis.fetch = (async (input: string | URL | Request) => {
   const url = String(input);
   if (url.includes("/git/trees/main")) { slow(); return new Response("{}", { status: 404 }); }

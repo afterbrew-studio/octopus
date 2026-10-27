@@ -586,7 +586,7 @@ export async function indexRepository(
   // 5. Embed chunks whose text has no stored vector in the active generation
   const texts = allChunks.map((c) => c.text);
   const textHashes = texts.map(hashText);
-  // Resolved once for the repository, the way retrieval resolves it, so vectors are generated and reused in the space queries use.
+  // Resolved once, as retrieval does, so vectors are generated and reused in the space queries use.
   const { createEmbeddings: embed, resolveEmbedConfig } = await import("@/lib/embeddings");
   const embedConfig = await resolveEmbedConfig(organizationId ? { organizationId, repositoryId: repoId } : undefined);
   const embeddingKey = getEmbeddingKey(embedConfig);
@@ -713,9 +713,8 @@ export async function incrementalIndex(
     .filter((f) => shouldIndex(f.filename, undefined, ig))
     .map((f) => f.filename);
 
-  // The old points are captured before anything is written, then the new ones are written, then exactly
-  // the captured points are deleted. A failure at any step leaves the previous chunks, and overlapping
-  // updates of the same file leave at worst duplicates, never a hole. A path whose fetch failed keeps its old chunks.
+  // Capture the old points, write the new ones, then delete exactly the captured points: a failure leaves
+  // the previous chunks and overlapping updates leave at worst duplicates, never a hole.
   const fetchFailed = new Set<string>();
   let collectionReady = false;
   const ensureOnce = async () => {

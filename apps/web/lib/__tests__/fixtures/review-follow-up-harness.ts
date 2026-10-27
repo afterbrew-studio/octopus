@@ -394,7 +394,6 @@ if (preserveAutoReview) {
     assert.equal(events.some(event => event.eventName === "index-status" && event.status === "failed"), mode === "fail");
     if (mode !== "fail") assert.equal(repo.indexAttemptId, "replacement-attempt");
   }
-  // A completed snapshot is reviewed against as is; only a refresh is queued.
   indexPreparation = "normal";
   for (const [status, refreshes] of [["stale", 1], ["failed", 1], ["pending", 1], ["indexing", 0]] as const) {
     repo.indexStatus = status;
@@ -410,7 +409,6 @@ if (preserveAutoReview) {
       ? [["index-repository", { repositoryId: "repo", organizationId: "org" }, { singletonKey: "repo", singletonSeconds: 60 }]]
       : [], `${status}: refresh enqueue`);
   }
-  // The job skips a repository without the organization's installation, so such a refresh stays inline.
   repo.organization.githubInstallationId = null;
   repo.indexStatus = "stale";
   enqueued.length = 0;

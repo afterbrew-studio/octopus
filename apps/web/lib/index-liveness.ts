@@ -26,7 +26,7 @@ export const INCREMENTAL_INDEX_QUEUE_OPTIONS = {
 /** The in-process abort fires this long before expiry so the failure path can release the claim first. */
 export const INDEX_JOB_ABORT_MARGIN_SECONDS = 120;
 
-/** Jobs queued before an expiry change keep their old one, so the abort follows the job's own expiry. */
+/** Follows the job's own expiry, which can differ from the current default for jobs queued earlier. */
 export function indexJobAbortMs(expireInSeconds: number = INDEX_JOB_EXPIRE_SECONDS): number {
   return Math.max(1, expireInSeconds - INDEX_JOB_ABORT_MARGIN_SECONDS) * 1000;
 }
@@ -39,19 +39,18 @@ export class SupersededIndexError extends Error {
 /** Longest a single outbound request may stay silent; well inside INDEX_SILENCE_LIMIT_MS. */
 export const INDEX_REQUEST_TIMEOUT_MS = 5 * 60_000;
 
-/** Per Qdrant request on the indexing paths; four attempts plus backoff stay near a third of the silence limit. */
+/** Per Qdrant request on the indexing paths; four attempts plus backoff stay under half the silence limit. */
 export const INDEX_QDRANT_REQUEST_TIMEOUT_MS = 90_000;
 
 /** Longest rate-limit wait honored before the attempt gives up on a file. */
 export const INDEX_MAX_RATE_LIMIT_WAIT_MS = 10 * 60_000;
 
-/** Bounds one outbound request while still honoring the attempt's own abort signal. */
 export function requestSignal(signal?: AbortSignal, timeoutMs: number = INDEX_REQUEST_TIMEOUT_MS): AbortSignal {
   const timeout = AbortSignal.timeout(timeoutMs);
   return signal ? AbortSignal.any([signal, timeout]) : timeout;
 }
 
-/** Sleeps in heartbeat-sized slices so a long wait keeps the attempt alive, and stops as soon as it is cancelled. */
+/** Sleeps in heartbeat-sized slices so a long wait keeps the attempt alive. */
 export async function waitWhileAlive(ms: number, beat: () => Promise<void>, signal?: AbortSignal): Promise<void> {
   for (let left = Math.min(ms, INDEX_MAX_RATE_LIMIT_WAIT_MS); left > 0; left -= INDEX_HEARTBEAT_INTERVAL_MS) {
     signal?.throwIfAborted();
@@ -64,7 +63,7 @@ export async function waitWhileAlive(ms: number, beat: () => Promise<void>, sign
   }
 }
 
-/** Wraps `touch` so it runs at most once per heartbeat interval; the first call waits a full interval because the claim just touched the row. */
+/** At most one `touch` per heartbeat interval; the first waits a full interval since the claim just touched the row. */
 export function throttledHeartbeat(
   touch: () => Promise<void>,
   now: () => number = Date.now,

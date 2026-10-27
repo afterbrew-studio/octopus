@@ -1,7 +1,7 @@
 import { mock } from "bun:test";
 import assert from "node:assert/strict";
 
-// Own process, fake clock: a slow paginated tree listing must keep its owner's heartbeat alive.
+// Own process: module mocks must not reach other tests.
 mock.module("server-only", () => ({}));
 let clock = 1_000_000;
 mock.module("@octopus/db", () => ({ prisma: { forgejoIntegration: { findUnique: async () => ({
@@ -18,7 +18,7 @@ mock.module("@/lib/forgejo-http", () => ({
   forgejoRequest: async (_host: string, _token: string, path: string, options?: { signal?: AbortSignal }) => {
     pagesRequested.push(path);
     if (hang) return new Promise((_, reject) => options?.signal?.addEventListener("abort", () => reject(options.signal!.reason), { once: true }));
-    clock += 6 * 60_000; // six minutes per page
+    clock += 6 * 60_000;
     const page = Number(new URL(`https://x${path}`).searchParams.get("page"));
     return { body: JSON.stringify({ total_count: 3000, tree: Array.from({ length: 1000 }, (_, i) => ({ path: `p${page}/f${i}.ts`, type: "blob", mode: "100644" })) }) };
   },
@@ -36,7 +36,6 @@ assert.ok(touches.length >= 2, `a heartbeat between pages, got ${touches.length}
 let last = started;
 for (const at of touches) { assert.ok(at - last < INDEX_SILENCE_LIMIT_MS); last = at; }
 
-// Cancelling during a page request ends the listing without fetching more pages.
 pagesRequested.length = 0; hang = true;
 const controller = new AbortController();
 const cancelled = getRepositoryTree("org-1", "acme/big", sha, { signal: controller.signal });

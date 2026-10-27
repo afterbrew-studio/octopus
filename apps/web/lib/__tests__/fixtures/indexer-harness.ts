@@ -226,7 +226,6 @@ assert.ok(!requests.some(url => url.endsWith("/git/blobs/ignored")));
 ignoreContent = null;
 await assert.rejects(() => indexRepository({ repoId: "repo-1", indexAttemptId: "attempt-1" }, "acme/new", "main", 0, undefined, undefined, "github", "org-1", suppliedToken), /could not read .octopusignore/);
 
-// Re-indexing reuses stored vectors only for the same text, embedding model and dimension.
 suppliedToken = undefined;
 const { getEmbedConfig, getEmbeddingKey } = await import("@/lib/embed-config");
 const { dim } = getEmbedConfig();
@@ -270,7 +269,6 @@ await run();
 assert.equal(embedded.length, 0, "a fully reused snapshot embeds nothing");
 console.log("Vector reuse regressions passed");
 
-// Indexing resolves the embedding configuration once for the repository, the way retrieval does, and reuses vectors by it.
 const withOrg = () => indexRepository({ repoId: "repo-1", indexAttemptId: "attempt-1" }, "acme/new", "main", 123, undefined, undefined, "github", "org-1");
 const overrideConfig = { ...actualEmbedConfig.getEmbedConfig(), model: "org-override-model" };
 const overrideKey = actualEmbedConfig.getEmbeddingKey(overrideConfig);
@@ -294,7 +292,6 @@ resolveCalls.length = 0;
 await run();
 assert.deepEqual(resolveCalls, [undefined], "no organization, no override");
 
-// Two Ollama servers serving the same model name are different vector spaces; equivalent spellings of one are the same.
 const ollamaAt = (ollamaBaseUrl: string) => ({ ...actualEmbedConfig.getEmbedConfig(), provider: "ollama" as const, model: "nomic-embed-text", ollamaBaseUrl });
 for (const [name, stored_at, current_at, reused] of [
   ["another server", "http://gpu-a:11434", "http://gpu-b:11434", false],
@@ -308,7 +305,6 @@ for (const [name, stored_at, current_at, reused] of [
 }
 resolvedConfig = undefined;
 
-// Progress heartbeats keep the claim alive, and a lost claim stops the run before it writes.
 treeWith(files);
 await run();
 assert.ok(beats >= 3, "file fetch, embedding and upsert all heartbeat");

@@ -31,14 +31,12 @@ const markedStale = () => writes.some(write => write.data.indexStatus === "stale
 const advancedIndexedAt = () => writes.some(write => write.data.indexedAt instanceof Date);
 console.warn = () => {};
 
-// A complete update advances indexedAt.
 reset();
 await processIncrementalIndex(job);
 assert.equal(incrementalCalls, 1);
 assert.ok(advancedIndexedAt());
 assert.ok(!markedStale());
 
-// A file whose fetch failed keeps its old chunks: the generation is marked stale with the guarded update and not stamped fresh.
 reset();
 incremental = async () => ({ updatedFiles: 2, removedFiles: 0, newVectors: 1, incompleteFiles: ["src/broken.ts"] });
 await processIncrementalIndex(job);
@@ -46,7 +44,6 @@ assert.ok(markedStale());
 assert.ok(!advancedIndexedAt(), "a partial update must not advance indexedAt");
 assert.deepEqual(writes.find(write => write.data.indexStatus === "stale")!.where, { id: "repo-1", indexStatus: "indexed", activeIndexGeneration: "gen-1" });
 
-// A later page of the PR's file list failing is not a complete list.
 reset();
 incremental = async () => ({ updatedFiles: 1, removedFiles: 0, newVectors: 1, incompleteFiles: [] });
 pageStatuses = [200, 500]; pageSizes = [100, 0];
@@ -55,7 +52,6 @@ assert.equal(incrementalCalls, 0, "an incomplete file list is never indexed");
 assert.ok(markedStale());
 assert.ok(!advancedIndexedAt());
 
-// A repository that is no longer indexed is left alone.
 reset();
 repo = { ...indexed, indexStatus: "indexing" };
 await processIncrementalIndex(job);

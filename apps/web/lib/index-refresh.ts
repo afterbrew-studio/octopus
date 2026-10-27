@@ -8,8 +8,8 @@ type RefreshTarget = { id: string; fullName: string; defaultBranch: string; inst
 
 /**
  * Queues the background refresh of a stale GitHub index when the job can index the repository
- * (an installation bound to its organization). Returns false when it cannot, so the caller
- * can decide what else to do; a failed enqueue still counts as queued, since the next review asks again.
+ * (an installation bound to its organization); returns false otherwise. A failed enqueue still
+ * returns true, since the next review asks again.
  */
 export async function queueIndexRefresh(repo: RefreshTarget, organizationId: string): Promise<boolean> {
   const org = await prisma.organization.findUnique({ where: { id: organizationId }, select: { githubInstallationId: true } });
@@ -19,7 +19,7 @@ export async function queueIndexRefresh(repo: RefreshTarget, organizationId: str
   return true;
 }
 
-/** Refreshes with a request token, for a repository the job cannot index. Stops at `budgetMs`; a failure leaves the index stale. */
+/** For a repository the job cannot index: refreshes with the request token and stops at `budgetMs`. */
 export async function refreshIndexWithToken(repo: RefreshTarget, organizationId: string, githubToken: string, budgetMs: number) {
   const indexAttemptId = randomUUID();
   const claim = await prisma.repository.updateMany({

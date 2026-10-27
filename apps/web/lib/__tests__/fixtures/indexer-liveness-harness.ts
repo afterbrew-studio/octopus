@@ -1,14 +1,14 @@
 import { mock } from "bun:test";
 import assert from "node:assert/strict";
 
-// Real heartbeat throttle on a fake clock: a slow operation must still produce heartbeats.
+// Real heartbeat throttle on a fake clock.
 mock.module("server-only", () => ({}));
 let clock = 1_000_000;
 Date.now = () => clock;
 const delays: number[] = [];
 const realSetTimeout = globalThis.setTimeout;
 globalThis.setTimeout = ((callback: () => void, ms?: number, ...args: unknown[]) => {
-  if (ms === 30_000) return realSetTimeout(callback, ms, ...args);
+  if (ms === 30_000) return realSetTimeout(callback, ms, ...args); // blob request timeout stays real
   delays.push(ms ?? 0);
   clock += ms ?? 0;
   return realSetTimeout(callback, 0, ...args);
@@ -34,7 +34,6 @@ mock.module("@/lib/qdrant", () => ({
 mock.module("@/lib/embeddings", () => ({ resolveEmbedConfig: async () => (await import("@/lib/embed-config")).getEmbedConfig(), createEmbeddings: async (texts: string[]) => texts.map(() => [0.1]) }));
 const { indexRepository } = await import("@/lib/indexer");
 
-// 130s slices into 60/60/10, avoiding the 30s blob timeout the spy lets through untouched.
 let retryAfter = "130";
 let blobCalls = 0;
 const signals: Record<string, AbortSignal | null | undefined> = {};
@@ -51,7 +50,6 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
 const run = () => indexRepository({ repoId: "repo-1", indexAttemptId: "attempt-1" }, "acme/new", "main", 123);
 function reset() { touches.length = 0; delays.length = 0; blobCalls = 0; supersedeAfter = Infinity; }
 
-// A 130 second rate-limit wait is slept in heartbeat-sized slices, with a heartbeat between slices.
 reset();
 assert.equal((await run()).indexedFiles, 1);
 assert.ok(delays.every(ms => ms <= INDEX_HEARTBEAT_INTERVAL_MS), `a single wait must not outlast the heartbeat interval: ${delays}`);
@@ -60,12 +58,10 @@ assert.ok(touches.length >= 2, `the wait must heartbeat, got ${touches.length}`)
 for (let i = 1; i < touches.length; i++) assert.ok(touches[i] - touches[i - 1] <= INDEX_HEARTBEAT_INTERVAL_MS + 1, "heartbeats must stay within the interval");
 assert.ok(signals.tree && signals.contributors, "provider requests must carry a timeout");
 
-// An absurd Retry-After is capped.
 reset(); retryAfter = "7200";
 await run();
 assert.ok(delays.reduce((sum, ms) => sum + ms, 0) <= INDEX_MAX_RATE_LIMIT_WAIT_MS);
 
-// Losing the claim during the wait ends the attempt instead of sleeping on and skipping the file.
 reset(); retryAfter = "130"; supersedeAfter = 1;
 await assert.rejects(run, SupersededIndexError);
 assert.ok(delays.reduce((sum, ms) => sum + ms, 0) < 130_000, "a superseded attempt must stop waiting");

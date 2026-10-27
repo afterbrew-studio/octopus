@@ -1234,7 +1234,7 @@ async function processReviewInternal(pullRequestId: string, reviewRunId?: string
     // Phase 0: Ensure the repository is indexed before preparing review context.
     // A usable index is reviewed against as is; a refresh runs in the background.
     const indexGate = resolveIndexGate(repo);
-    // A refresh the background job would silently skip is still done here, as before.
+    // A refresh the background job would skip runs inline.
     const refreshInBackground = indexGate.refresh && canIndexInBackground(repo, org.githubInstallationId);
     const blockOnIndex = indexGate.blockOnIndex || (indexGate.refresh && !refreshInBackground);
     if (!blockOnIndex && repo.indexStatus !== "indexed") {

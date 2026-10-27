@@ -81,7 +81,7 @@ export function getEmbedConfig(): EmbedConfig {
   return config;
 }
 
-/** Scheme and host lowercased, default port and trailing slashes dropped, so equivalent spellings of one endpoint match. */
+/** Equivalent spellings of one endpoint normalize to the same string. */
 function normalizeEndpoint(url: string): string {
   try {
     const parsed = new URL(url);

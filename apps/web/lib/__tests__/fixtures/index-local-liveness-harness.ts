@@ -1,7 +1,7 @@
 import { mock } from "bun:test";
 import assert from "node:assert/strict";
 
-// Own process, real heartbeat throttle on a fake clock: a slow local batch must keep its upload alive.
+// Own process: module mocks and the patched Date.now must not reach other tests.
 mock.module("server-only", () => ({}));
 let clock = 1_000_000;
 Date.now = () => clock;
@@ -18,7 +18,7 @@ mock.module("@/lib/repository-index-storage", () => ({
 let upserts = 0;
 mock.module("@/lib/qdrant", () => ({ upsertChunks: async () => { upserts++; clock += 30_000; } }));
 mock.module("@/lib/embeddings", () => ({
-  // Five provider requests of four minutes each, the way a slow CPU embedder behaves.
+  // A slow CPU embedder: five requests of four minutes.
   createEmbeddings: async (texts: string[], _tracking: unknown, progress?: { onRequest?: () => Promise<void> }) => {
     for (let i = 0; i < 5; i++) { clock += 240_000; await progress?.onRequest?.(); }
     return texts.map(() => [0.1]);
@@ -40,7 +40,6 @@ for (const touch of touches) { assert.ok(touch.at - last < INDEX_SILENCE_LIMIT_M
 assert.ok(clock - last < INDEX_SILENCE_LIMIT_MS);
 assert.equal(upserts, 3, "upserts go out one Qdrant request at a time");
 
-// Losing the upload during the embedding stops the batch before anything is written.
 touches.length = 0; upserts = 0; supersedeAfter = 1;
 await assert.rejects(() => indexLocalBatch("repo-1", "acme/local", "org-1", files, claim), SupersededIndexError);
 assert.equal(upserts, 0);

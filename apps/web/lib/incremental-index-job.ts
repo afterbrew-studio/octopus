@@ -73,7 +73,7 @@ export async function processIncrementalIndex(
       repo.organizationId,
     );
     if (result.incompleteFiles.length > 0) {
-      // The old chunks of these files were kept; the index is not current, so it is not stamped as fresh.
+      // Old chunks of these files were kept, so the index is not stamped fresh.
       await markStale();
       console.warn(`[incremental-index] PR #${job.prNumber} merged, ${result.incompleteFiles.length} file(s) could not be fetched, marked as stale`);
       return;

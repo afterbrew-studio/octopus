@@ -80,7 +80,6 @@ function isTransientError(error: unknown): boolean {
     || message.includes("other side closed");
 }
 
-/** `signal` (indexing paths) is checked before each attempt, cuts a backoff short and stops waiting on a request in flight. */
 async function withQdrantRetry<T>(fn: () => Promise<T>, label: string, maxAttempts = 4, signal?: AbortSignal): Promise<T> {
   let lastError: unknown;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -151,9 +150,8 @@ export function getQdrantClient(): QdrantClient {
 let indexingClient: QdrantClient | null = null;
 
 /**
- * Client for the indexing paths. Its request timeout is short enough that a whole retry sequence
- * (attempts times this, plus backoff) stays well inside INDEX_SILENCE_LIMIT_MS, where the default
- * five minutes per attempt could keep an attempt silent for twenty.
+ * Client for the indexing paths. The short request timeout keeps a whole retry sequence well inside
+ * INDEX_SILENCE_LIMIT_MS, which the default five minutes per attempt would not.
  */
 function getIndexingQdrantClient(): QdrantClient {
   if (!indexingClient) indexingClient = new QdrantClient({ url: process.env.QDRANT_URL!, timeout: INDEX_QDRANT_REQUEST_TIMEOUT_MS });
@@ -243,7 +241,6 @@ export async function upsertChunks(
 
 const ID_SCROLL_PAGE = 1000;
 
-/** Qdrant ids of the stored chunks of `filePaths` in the owner's generation. */
 export async function listRepoFileChunkIds(owner: RepositoryIndexOwner, filePaths: string[]): Promise<string[]> {
   if (filePaths.length === 0) return [];
   const { getRepositoryIndexGeneration, repositoryCodeFilter } = await import("@/lib/repository-index-storage");
@@ -299,7 +296,7 @@ export type StoredChunkVector = { textHash?: string; embeddingKey?: string; vect
 
 const REUSE_SCROLL_PAGE = 256;
 
-/** Streams the dense vectors of the repository's active generation page by page, so callers keep only what they need. */
+/** Streams active-generation dense vectors page by page so callers keep only what they need. */
 export async function* scrollActiveChunkVectors(
   repoId: string,
   signal?: AbortSignal,

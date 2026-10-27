@@ -206,12 +206,10 @@ assert.equal(indexCalls.length, callsBefore + 1, "a stale index must be claimabl
 assert.deepEqual((claims[claimsBefore].where.OR as unknown[]).at(-1), { indexStatus: { in: ["stale", "cancelled"] } }, "the claim itself must accept a stale or restored-after-cancel index");
 assert.equal(currentRow?.indexStatus, "indexed");
 assert.equal((currentRow as { analysisStatus?: string }).analysisStatus, "none", "a published refresh must invalidate the analysis of the previous generation");
-// A job queued before the expiry change still expires after 30 minutes; the abort follows that.
 currentRow = { ...row };
 abortDelays.length = 0;
 await processRepositoryIndex(job, { expireInSeconds: 1800 });
 assert.deepEqual(abortDelays, [(1800 - 120) * 1000]);
-// pg-boss aborting its signal (expiry, shutdown) stops the run and releases the claim for retry.
 currentRow = { ...row };
 queueAbort = new AbortController();
 await assert.rejects(() => processRepositoryIndex(job, { signal: queueAbort!.signal }), { name: "TimeoutError" });

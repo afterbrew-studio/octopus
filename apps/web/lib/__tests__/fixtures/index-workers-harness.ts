@@ -41,17 +41,14 @@ const boss = {
 };
 await registerWorkers(boss as never, { reviewConcurrency: 1 } as Parameters<typeof registerWorkers>[1]);
 
-// The index worker hands pg-boss's abort signal and the job's own expiry to the run.
 const signal = new AbortController().signal;
 await handlers.get("index-repository")!([{ id: "job1", data: { repositoryId: "r", organizationId: "o" }, expireInSeconds: 1800, signal }]);
 assert.deepEqual(indexCalls, [[{ repositoryId: "r", organizationId: "o" }, { signal, expireInSeconds: 1800 }]]);
 
-// Merged-PR updates are worked from the singleton queue with the job's own signal and expiry.
 const incrementalJob = { repositoryId: "r", organizationId: "o", prNumber: 7, installationId: 1 };
 await handlers.get("incremental-index")!([{ id: "job4", data: incrementalJob, expireInSeconds: 1800, signal }]);
 assert.deepEqual(incrementalCalls, [[incrementalJob, { signal, expireInSeconds: 1800 }]]);
 
-// The reaper also releases abandoned index claims, and a failure there does not stop the review reaper.
 const reap = handlers.get("reap-stuck-reviews")!;
 await reap([{ id: "job2" }]);
 assert.deepEqual(reaperCalls, ["index", "reviews"]);

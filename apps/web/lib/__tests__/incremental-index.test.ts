@@ -6,7 +6,6 @@ import { describe, it, expect, mock, beforeEach } from "bun:test";
 // Component context; neutralize it for bun test (same as sibling tests).
 mock.module("server-only", () => ({}));
 
-// A small in-memory chunk store, so overlapping updates can be replayed against it.
 type StoredChunk = { id: string; filePath: string };
 let store: StoredChunk[] = [];
 const storeUpsert = (points: { id: string; payload: { filePath: string } }[]) => {

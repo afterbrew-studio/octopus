@@ -23,9 +23,8 @@ const needsIndex = {
     { indexStatus: "indexed", totalFiles: 0 },
   ],
 };
-// Discovery leaves a stale index to the review that finds it; the refresh job it queues may claim it.
-// "cancelled" is what removing a repository mid-index leaves behind; a restored repository keeps it,
-// and every other claimant (reviewer, community, Action) already takes any status but indexed and indexing.
+// Discovery leaves a stale index to the review that finds it, so the refresh job it queues must be able to claim it.
+// "cancelled" is what removing a repository mid-index leaves behind; a restored repository keeps it.
 const claimable = { OR: [...needsIndex.OR, { indexStatus: { in: ["stale", "cancelled"] } }] };
 
 // Narrower than the job's own providers: discovery only auto-indexes these.
@@ -105,7 +104,7 @@ export async function processRepositoryIndex(
   const controller = createAbortController(indexAttemptId);
   // Abort before pg-boss expires the attempt, so the catch can release its claim.
   const timeout = setTimeout(() => controller.abort(new DOMException("Repository indexing timed out", "TimeoutError")), indexJobAbortMs(queue?.expireInSeconds));
-  // pg-boss aborts the signal when it gives up on the job (expiry, shutdown); the run must stop with it.
+  // pg-boss aborts the signal on expiry or shutdown; the run must stop with it.
   const abortWithQueue = () => controller.abort(new DOMException("Repository indexing job was aborted by the queue", "TimeoutError"));
   if (queue?.signal?.aborted) abortWithQueue();
   else queue?.signal?.addEventListener("abort", abortWithQueue, { once: true });

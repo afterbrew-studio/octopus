@@ -457,14 +457,13 @@ export async function POST(request: NextRequest) {
         data: { mergedAt: new Date() },
       });
 
-      // Incremental index: queued, with one active job per repository, so updates of the same files never overlap
+      // One active job per repository (singletonKey) keeps updates of the same files from overlapping
       if (repo.indexStatus === "indexed" && installationId) {
         try {
           await enqueue(INCREMENTAL_INDEX_QUEUE, {
             repositoryId: repo.id, organizationId: repo.organizationId, prNumber, installationId,
           } satisfies IncrementalIndexJob, { singletonKey: repo.id });
         } catch (err) {
-          // Fallback: mark as stale when the update cannot even be queued
           await prisma.repository.updateMany({ where: { id: repo.id, indexStatus: "indexed", activeIndexGeneration: repo.activeIndexGeneration }, data: { indexStatus: "stale" } });
           console.warn(`[webhook] PR #${prNumber} incremental index could not be queued, marked as stale:`, err);
         }

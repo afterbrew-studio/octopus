@@ -288,7 +288,7 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // shortcut: without an installation a stale index waits for the forceReindex / reindexThresholdHours policy, since the Action's token ends with the response and an inline refresh would outlast the proxy window, upgrade when the Action can hand off to a background job
+  // shortcut: no installation means no refresh here (the Action's token ends with the response), so a stale index waits for the forceReindex / reindexThresholdHours policy, upgrade when the Action can hand off to a background job
   if (!needsIndex && indexGate.refresh) await queueIndexRefresh(repo, orgId);
 
   let fileTree: string[] | undefined;

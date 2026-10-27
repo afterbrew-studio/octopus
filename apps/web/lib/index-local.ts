@@ -234,9 +234,8 @@ export async function prepareRepoForLocalIndex(
 }
 
 /**
- * The counters of an upload in progress live here, not on the Repository row, whose counters describe
- * the active generation and change only when a generation is published. Absent on an upload that
- * started before staging existed; that one still counts on the row.
+ * Counters of an upload in progress. The Repository row's counters describe the active generation and
+ * change only on publish. Absent on an upload that started before staging; that one counts on the row.
  */
 type StagedCounts = { indexedFiles: number; totalChunks: number; totalVectors: number };
 
@@ -252,7 +251,6 @@ type UploadState = {
 
 export class LocalIndexConflict extends Error {}
 
-/** Counters to show: a running upload's staged progress, otherwise the published statistics. */
 export function liveIndexCounts(repo: { indexStatus: string; indexedFiles: number; totalFiles: number; localIndexUpload: unknown }) {
   const upload = repo.localIndexUpload as UploadState | null;
   return repo.indexStatus === "indexing" && upload?.staged
