@@ -687,6 +687,7 @@ async function loadIncrementalIgnore(
 
 /**
  * Incrementally re-index only the changed files from a merged PR.
+ * `incompleteFiles` lists files whose fetch failed: their old chunks were kept, so the index is not current.
  * Deletes old chunks for changed/removed files, fetches & indexes added/modified files.
  * The repo stays "indexed" throughout — no downtime window.
  */
@@ -698,7 +699,7 @@ export async function incrementalIndex(
   changedFiles: { filename: string; status: string }[],
   provider: string = "github",
   organizationId?: string,
-): Promise<{ updatedFiles: number; removedFiles: number; newVectors: number }> {
+): Promise<{ updatedFiles: number; removedFiles: number; newVectors: number; incompleteFiles: string[] }> {
   const { repoId } = owner;
   const removed = changedFiles
     .filter((f) => f.status === "removed")
@@ -731,7 +732,7 @@ export async function incrementalIndex(
   // 1. Fetch and chunk only added/modified files
   if (addedOrModified.length === 0) {
     await deleteChunkPoints(owner, await captureOldChunks());
-    return { updatedFiles: 0, removedFiles: removed.length, newVectors: 0 };
+    return { updatedFiles: 0, removedFiles: removed.length, newVectors: 0, incompleteFiles: [] };
   }
 
   const allChunks: { text: string; filePath: string; startLine: number; endLine: number }[] = [];
@@ -802,7 +803,7 @@ export async function incrementalIndex(
 
   if (allChunks.length === 0) {
     await deleteChunkPoints(owner, await captureOldChunks());
-    return { updatedFiles: addedOrModified.length, removedFiles: removed.length, newVectors: 0 };
+    return { updatedFiles: addedOrModified.length, removedFiles: removed.length, newVectors: 0, incompleteFiles: [...fetchFailed] };
   }
 
   // 2. Generate embeddings
@@ -843,5 +844,5 @@ export async function incrementalIndex(
   await upsertChunks(points, owner);
   await deleteChunkPoints(owner, oldPointIds);
 
-  return { updatedFiles: addedOrModified.length, removedFiles: removed.length, newVectors: points.length };
+  return { updatedFiles: addedOrModified.length, removedFiles: removed.length, newVectors: points.length, incompleteFiles: [...fetchFailed] };
 }

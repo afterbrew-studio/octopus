@@ -219,11 +219,13 @@ describe("incrementalIndex", () => {
     });
     store = [{ id: "u", filePath: "src/unavailable.ts" }, { id: "e", filePath: "src/emptied.ts" }];
 
-    await incrementalIndex(
+    const result = await incrementalIndex(
       indexOwner, "owner/repo", "main", 12345,
       [{ filename: "src/unavailable.ts", status: "modified" }, { filename: "src/emptied.ts", status: "modified" }, { filename: "src/utils.ts", status: "modified" }],
       "github",
     );
+
+    expect(result.incompleteFiles).toEqual(["src/unavailable.ts"]);
 
     expect(mockListChunkIds.mock.calls[0][1]).toEqual(["src/emptied.ts", "src/utils.ts"]);
     expect(store.map((chunk) => chunk.id)).toContain("u");
@@ -236,12 +238,13 @@ describe("incrementalIndex", () => {
       return Promise.resolve("export const x = 1;\n");
     });
 
-    await incrementalIndex(
+    const result = await incrementalIndex(
       indexOwner, "owner/repo", "main", 12345,
       [{ filename: "src/broken.ts", status: "modified" }, { filename: "src/utils.ts", status: "modified" }],
       "github",
     );
 
+    expect(result.incompleteFiles).toEqual(["src/broken.ts"]);
     expect(mockListChunkIds.mock.calls[0][1]).toEqual(["src/utils.ts"]);
   });
 

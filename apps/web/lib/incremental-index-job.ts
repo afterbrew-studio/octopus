@@ -50,7 +50,7 @@ export async function processIncrementalIndex(
         `https://api.github.com/repos/${repo.fullName}/pulls/${job.prNumber}/files?per_page=100&page=${page}`,
         { headers, signal: controller.signal },
       );
-      if (!res.ok) break;
+      if (!res.ok) throw new Error(`Could not list the files of PR #${job.prNumber}: HTTP ${res.status}`);
       const batch = await res.json() as { filename: string; status: string }[];
       if (batch.length === 0) break;
       files.push(...batch);
@@ -72,6 +72,12 @@ export async function processIncrementalIndex(
       "github",
       repo.organizationId,
     );
+    if (result.incompleteFiles.length > 0) {
+      // The old chunks of these files were kept; the index is not current, so it is not stamped as fresh.
+      await markStale();
+      console.warn(`[incremental-index] PR #${job.prNumber} merged, ${result.incompleteFiles.length} file(s) could not be fetched, marked as stale`);
+      return;
+    }
     await prisma.repository.updateMany({
       where: { id: repo.id, indexStatus: "indexed", activeIndexGeneration: repo.activeIndexGeneration, indexedAt: { not: null } },
       data: { indexedAt: new Date() },
