@@ -65,11 +65,12 @@ export async function ensureRepositoryAnalysis(
     eventBus.emit({ type: "repo-analyzed", orgId: organizationId, repoFullName: repo.fullName });
     return "ready";
   } catch (error) {
-    await prisma.repository.updateMany({
-      where: { id: repositoryId, organizationId, analysisStatus: "analyzing" },
+    // An analysis of a replaced generation must not fail the analysis now running for the new one.
+    const failed = await prisma.repository.updateMany({
+      where: { id: repositoryId, organizationId, analysisStatus: "analyzing", activeIndexGeneration: repo.activeIndexGeneration },
       data: { analysisStatus: "failed" },
     });
-    await notify("failed");
+    if (failed.count) await notify("failed");
     throw error;
   }
 }

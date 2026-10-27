@@ -85,7 +85,11 @@ mock.module("@/lib/analyzer", () => ({
     return "Repository analysis";
   },
 }));
-mock.module("@/lib/pubby", () => ({ pubby: { trigger: async (_channel: string, event: string) => { notifications.push(event); } } }));
+const statusNotifications: string[] = [];
+mock.module("@/lib/pubby", () => ({ pubby: { trigger: async (_channel: string, event: string, payload?: { status?: string }) => {
+  notifications.push(event);
+  if (event === "analysis-status" && payload?.status) statusNotifications.push(payload.status);
+} } }));
 mock.module("@/lib/events", () => ({ eventBus: { emit: () => {} } }));
 mock.module("@/lib/queue", () => ({
   enqueueAfter: async (...args: unknown[]) => {
@@ -176,6 +180,27 @@ holdSummary = undefined;
 calls.length = 0;
 assert.equal(await prepare(), "ready");
 assert.deepEqual(calls, ["summary", "analysis", "persist-analysis"]);
+
+// An analysis of a replaced generation that fails late must not fail the one now running for the new generation.
+calls.length = 0;
+repo.analysisStatus = "none";
+failAt = "analysis";
+let supersede!: () => void;
+let analysisHeld!: () => void;
+const held = new Promise<void>((resolve) => { analysisHeld = resolve; });
+holdSummary = () => new Promise<void>((resolve) => { supersede = resolve; analysisHeld(); });
+const late = prepare();
+await held;
+Object.assign(repo, { activeIndexGeneration: "gen-5", analysisStatus: "analyzing" });
+statusNotifications.length = 0;
+supersede();
+await assert.rejects(late, /unavailable/);
+assert.equal(repo.analysisStatus, "analyzing", "the new generation's in-flight analysis must survive");
+assert.ok(!statusNotifications.includes("failed"), "a failure of the replaced generation is not announced");
+holdSummary = undefined;
+failAt = undefined;
+repo.analysisStatus = "none";
+assert.equal(await prepare(), "ready");
 
 for (const failure of ["summary", "analysis"] as const) {
   repo.analysisStatus = "none";
