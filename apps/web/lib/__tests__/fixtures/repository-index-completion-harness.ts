@@ -389,13 +389,17 @@ try {
     const gitlab = await make("gitlab", { indexAttemptId: randomUUID() });
     const bitbucket = await make("bitbucket", { indexAttemptId: randomUUID() });
     const alive = await make("github", { indexAttemptId: randomUUID(), updatedAt: new Date() });
-    const betweenUploadBatches = await make("github", { indexAttemptId: null });
+    // Local uploads clear the attempt id between batches; legacy rows never had one.
+    const upload = { id: randomUUID(), nextBatch: 1, totalBatches: 3, totalFiles: 3, paths: ["a.ts"], verified: true };
+    const abandonedUpload = await make("github", { indexAttemptId: null, localIndexUpload: upload });
+    const legacy = await make("github", { indexAttemptId: null });
+    const activeUpload = await make("github", { indexAttemptId: null, localIndexUpload: upload, updatedAt: new Date(Date.now() - 2 * 60_000) });
     const status = async (id: string) => (await prisma.repository.findUniqueOrThrow({ where: { id } })).indexStatus;
-    assert.equal(await releaseAbandonedIndexClaims(), 2);
+    assert.equal(await releaseAbandonedIndexClaims(), 4);
     assert.deepEqual(
-      [await status(gitlab), await status(bitbucket), await status(alive), await status(betweenUploadBatches)],
-      ["failed", "failed", "indexing", "indexing"],
-      "every provider is recovered regardless of discovery; live and unclaimed rows are left alone",
+      [await status(gitlab), await status(bitbucket), await status(abandonedUpload), await status(legacy), await status(alive), await status(activeUpload)],
+      ["failed", "failed", "failed", "failed", "indexing", "indexing"],
+      "every provider and every kind of silent row is recovered regardless of discovery; a live attempt and an upload still touching the row are left alone",
     );
   } else if (scenario === "heartbeat") {
     const { touchRepositoryIndex } = await import("@/lib/repository-index-storage");

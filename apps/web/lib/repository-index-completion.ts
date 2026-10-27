@@ -9,12 +9,15 @@ export function isIndexingCancelled(signal?: AbortSignal): boolean {
   return !!signal?.aborted && signal.reason?.name !== "TimeoutError";
 }
 
-/** Frees claims of attempts that stopped heartbeating; any provider, whatever the organization's discovery setting. */
+/**
+ * Frees `indexing` rows that went silent; any provider, whatever the organization's discovery setting.
+ * A live attempt heartbeats, and a local upload touches the row on every batch claim and commit, so a row
+ * with no attempt id (between upload batches, or from before attempt ids) is covered by the same window.
+ */
 export async function releaseAbandonedIndexClaims(now: Date = new Date()): Promise<number> {
   const released = await prisma.repository.updateMany({
     where: {
       indexStatus: "indexing",
-      indexAttemptId: { not: null },
       updatedAt: { lt: new Date(now.getTime() - INDEX_SILENCE_LIMIT_MS) },
     },
     data: { indexStatus: "failed" },
