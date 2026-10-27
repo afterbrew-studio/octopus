@@ -126,7 +126,19 @@ describe("incrementalIndex", () => {
     expect(mockUpsertChunks).not.toHaveBeenCalled();
   });
 
-  it("deletes the old chunks only after the new vectors exist", async () => {
+  it("keeps the old chunks when the upsert fails after the embeddings succeed", async () => {
+    mockUpsertChunks = mock(() => Promise.reject(new Error("Qdrant unavailable")));
+
+    await expect(incrementalIndex(
+      indexOwner, "owner/repo", "main", 12345,
+      [{ filename: "src/index.ts", status: "modified" }],
+      "github",
+    )).rejects.toThrow("Qdrant unavailable");
+
+    expect(mockDeleteRepoFileChunks).not.toHaveBeenCalled();
+  });
+
+  it("deletes the old chunks only after the new points are written, sparing the new ones", async () => {
     const order: string[] = [];
     mockCreateEmbeddings = (texts: string[]) => { order.push("embed"); return Promise.resolve(texts.map(() => [0.1])); };
     mockDeleteRepoFileChunks = mock(() => { order.push("delete"); return Promise.resolve(); });
@@ -134,7 +146,9 @@ describe("incrementalIndex", () => {
 
     await incrementalIndex(indexOwner, "owner/repo", "main", 12345, [{ filename: "src/index.ts", status: "modified" }], "github");
 
-    expect(order).toEqual(["embed", "delete", "upsert"]);
+    expect(order).toEqual(["embed", "upsert", "delete"]);
+    const written = (mockUpsertChunks.mock.calls[0] as [{ id: string }[]])[0].map((point) => point.id);
+    expect(mockDeleteRepoFileChunks.mock.calls[0][2]).toEqual(written);
   });
 
   it("keeps the old chunks of a file whose fetch failed", async () => {

@@ -702,19 +702,24 @@ export async function incrementalIndex(
     .filter((f) => shouldIndex(f.filename, undefined, ig))
     .map((f) => f.filename);
 
-  // Old chunks are replaced only after every new vector exists, so a failed fetch or
-  // embedding leaves the previous index intact. A path whose fetch failed keeps its old chunks.
+  // New points are written before the old ones are deleted, so a failure at any step leaves the
+  // previous chunks (or at worst duplicates), never a hole. A path whose fetch failed keeps its old chunks.
   const fetchFailed = new Set<string>();
-  const replaceChunks = async () => {
+  let collectionReady = false;
+  const ensureOnce = async () => {
+    if (!collectionReady) await ensureCollection();
+    collectionReady = true;
+  };
+  const deleteOldChunks = async (keepIds: string[] = []) => {
     const stalePaths = [...new Set([...removed, ...addedOrModified])].filter((path) => !fetchFailed.has(path));
     if (stalePaths.length === 0) return;
-    await ensureCollection();
-    await deleteRepoFileChunks(owner, stalePaths);
+    await ensureOnce();
+    await deleteRepoFileChunks(owner, stalePaths, keepIds);
   };
 
   // 1. Fetch and chunk only added/modified files
   if (addedOrModified.length === 0) {
-    await replaceChunks();
+    await deleteOldChunks();
     return { updatedFiles: 0, removedFiles: removed.length, newVectors: 0 };
   }
 
@@ -779,7 +784,7 @@ export async function incrementalIndex(
   }
 
   if (allChunks.length === 0) {
-    await replaceChunks();
+    await deleteOldChunks();
     return { updatedFiles: addedOrModified.length, removedFiles: removed.length, newVectors: 0 };
   }
 
@@ -814,9 +819,10 @@ export async function incrementalIndex(
     },
   }));
 
-  // 3. Swap the old chunks for the new ones
-  await replaceChunks();
+  // 3. Write the new chunks, then drop the old ones of the same files
+  await ensureOnce();
   await upsertChunks(points, owner);
+  await deleteOldChunks(points.map((point) => point.id));
 
   return { updatedFiles: addedOrModified.length, removedFiles: removed.length, newVectors: points.length };
 }

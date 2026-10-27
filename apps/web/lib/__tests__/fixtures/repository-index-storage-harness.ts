@@ -5,9 +5,10 @@ import { prisma, type Repository } from "@octopus/db";
 
 export async function exerciseStorageRace(scenario: string, repo: Repository) {
   type Point = { id: string; vector: unknown; payload: Record<string, unknown> };
-  type Filter = { must?: Filter[]; should?: Filter[]; key?: string; match?: { value?: unknown; any?: unknown[] }; is_empty?: { key: string } };
+  type Filter = { must?: Filter[]; must_not?: Filter[]; should?: Filter[]; key?: string; match?: { value?: unknown; any?: unknown[] }; is_empty?: { key: string } };
   const matches = (point: Point, filter: Filter): boolean => {
     if (filter.must && !filter.must.every(item => matches(point, item))) return false;
+    if (filter.must_not && filter.must_not.some(item => matches(point, item))) return false;
     if (filter.should && !filter.should.some(item => matches(point, item))) return false;
     if (filter.is_empty) return point.payload[filter.is_empty.key] == null;
     if (filter.key) return filter.match?.any ? filter.match.any.includes(point.payload[filter.key]) : point.payload[filter.key] === filter.match?.value;

@@ -214,16 +214,20 @@ export async function upsertChunks(
   }
 }
 
-export async function deleteRepoFileChunks(owner: RepositoryIndexOwner, filePaths: string[]) {
+/** Deletes the chunks of `filePaths`, except points whose caller-side id is in `keepIds` (the ones just written). */
+export async function deleteRepoFileChunks(owner: RepositoryIndexOwner, filePaths: string[], keepIds: string[] = []) {
   if (filePaths.length === 0) return;
   const { getRepositoryIndexGeneration, repositoryCodeFilter } = await import("@/lib/repository-index-storage");
   const generation = await getRepositoryIndexGeneration(owner);
   await getQdrantClient().delete(COLLECTION_NAME, {
     wait: true,
-    filter: { must: [
-      repositoryCodeFilter(owner.repoId, generation),
-      { key: "filePath", match: { any: filePaths } },
-    ] },
+    filter: {
+      must: [
+        repositoryCodeFilter(owner.repoId, generation),
+        { key: "filePath", match: { any: filePaths } },
+      ],
+      ...(keepIds.length ? { must_not: [{ key: "originalId", match: { any: keepIds } }] } : {}),
+    },
   });
 }
 
