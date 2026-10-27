@@ -80,3 +80,8 @@ export function getEmbedConfig(): EmbedConfig {
   }
   return config;
 }
+
+/** Identifies the vector space a stored embedding lives in; equal keys mean the same text embeds to the same vector. */
+export function getEmbeddingKey(config: EmbedConfig = getEmbedConfig()): string {
+  return `${config.provider}:${config.model}:${config.dim}`;
+}

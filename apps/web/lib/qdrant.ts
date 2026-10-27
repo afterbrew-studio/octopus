@@ -247,6 +247,42 @@ export async function getRepoChunks(
     .filter(Boolean);
 }
 
+export type StoredChunkVector = { textHash?: string; embeddingKey?: string; vector: number[] };
+
+const REUSE_SCROLL_PAGE = 256;
+
+/** Streams the dense vectors of the repository's active generation page by page, so callers keep only what they need. */
+export async function* scrollActiveChunkVectors(
+  repoId: string,
+  signal?: AbortSignal,
+): AsyncGenerator<StoredChunkVector[]> {
+  const { getActiveRepositoryCodeFilter } = await import("@/lib/repository-index-storage");
+  const filter = await getActiveRepositoryCodeFilter([repoId]);
+  if (!filter) return;
+  const qdrant = getQdrantClient();
+  let offset: string | number | Record<string, unknown> | null | undefined;
+  do {
+    signal?.throwIfAborted();
+    const page = await withQdrantRetry(() => qdrant.scroll(COLLECTION_NAME, {
+      filter, limit: REUSE_SCROLL_PAGE, offset: offset ?? undefined,
+      with_payload: ["textHash", "embeddingKey"], with_vector: true,
+    }), `scroll ${COLLECTION_NAME}`);
+    yield page.points.flatMap((point) => {
+      // The dense vector is the unnamed default; a sparse companion turns the value into a named map.
+      const raw = point.vector as unknown;
+      const dense = Array.isArray(raw) ? raw : (raw as Record<string, unknown> | null | undefined)?.[""];
+      if (!Array.isArray(dense)) return [];
+      const { textHash, embeddingKey } = point.payload ?? {};
+      return [{
+        vector: dense as number[],
+        textHash: typeof textHash === "string" ? textHash : undefined,
+        embeddingKey: typeof embeddingKey === "string" ? embeddingKey : undefined,
+      }];
+    });
+    offset = page.next_page_offset;
+  } while (offset !== null && offset !== undefined);
+}
+
 export async function searchSimilarChunks(
   repoId: string,
   queryVector: number[],

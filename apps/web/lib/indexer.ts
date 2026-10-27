@@ -9,7 +9,8 @@ import * as bitbucketLib from "@/lib/bitbucket";
 import * as gitlabLib from "@/lib/gitlab";
 import * as forgejoLib from "@/lib/forgejo";
 import { ForgejoResponseTooLargeError } from "@/lib/forgejo-http";
-import { ensureCollection, upsertChunks, deleteRepoFileChunks } from "@/lib/qdrant";
+import { ensureCollection, upsertChunks, deleteRepoFileChunks, scrollActiveChunkVectors } from "@/lib/qdrant";
+import { getEmbedConfig, getEmbeddingKey } from "@/lib/embed-config";
 import { throttledHeartbeat } from "@/lib/index-liveness";
 import { generateSparseVectors } from "@/lib/sparse-vector";
 import { parseOctopusIgnore, type Ignore } from "@/lib/octopus-ignore";
@@ -51,6 +52,33 @@ export interface IndexStats {
 // Small enough that a heartbeat lands well inside INDEX_SILENCE_LIMIT_MS on a CPU embedder.
 const EMBED_BATCH = 128;
 const UPSERT_SLICE = 1000;
+
+function hashText(text: string): string {
+  return crypto.createHash("sha256").update(text).digest("hex");
+}
+
+/** Vectors of the active generation whose text, embedding model and dimension match what this run would otherwise embed. */
+async function collectReusableVectors(
+  repoId: string,
+  wanted: ReadonlySet<string>,
+  signal: AbortSignal | undefined,
+  beat: () => Promise<void>,
+): Promise<Map<string, number[]>> {
+  const config = getEmbedConfig();
+  const key = getEmbeddingKey(config);
+  const found = new Map<string, number[]>();
+  for await (const page of scrollActiveChunkVectors(repoId, signal)) {
+    for (const stored of page) {
+      const { textHash } = stored;
+      if (textHash && wanted.has(textHash) && !found.has(textHash)
+        && stored.embeddingKey === key && stored.vector.length === config.dim) {
+        found.set(textHash, stored.vector);
+      }
+    }
+    await beat();
+  }
+  return found;
+}
 
 export async function indexRepository(
   attempt: { repoId: string; indexAttemptId: string },
@@ -546,31 +574,35 @@ export async function indexRepository(
   await ensureCollection();
   onLog("Vector database ready", "success");
 
-  // 5. Create embeddings in batches
+  // 5. Embed chunks whose text has no stored vector in the active generation
   const texts = allChunks.map((c) => c.text);
-  const totalBatches = Math.ceil(texts.length / EMBED_BATCH);
-  onLog(`Generating embeddings for ${texts.length} chunks (${totalBatches} batch${totalBatches > 1 ? "es" : ""})...`);
+  const textHashes = texts.map(hashText);
+  const embeddingKey = getEmbeddingKey();
+  const reused = await collectReusableVectors(repoId, new Set(textHashes), signal, beat);
+  const vectors: number[][] = textHashes.map((hash) => reused.get(hash) ?? []);
+  const missing = vectors.flatMap((vector, i) => (vector.length ? [] : [i]));
+  const totalBatches = Math.ceil(missing.length / EMBED_BATCH);
+  onLog(`Reusing ${texts.length - missing.length} stored embeddings, generating ${missing.length} (${totalBatches} batch${totalBatches === 1 ? "" : "es"})...`);
 
-  const vectors: number[][] = [];
-  for (let i = 0; i < texts.length; i += EMBED_BATCH) {
+  for (let i = 0; i < missing.length; i += EMBED_BATCH) {
     if (signal?.aborted) throw new Error("Indexing cancelled");
 
-    const batch = texts.slice(i, i + EMBED_BATCH);
+    const batchIndexes = missing.slice(i, i + EMBED_BATCH);
     const batchNum = Math.floor(i / EMBED_BATCH) + 1;
     if (totalBatches > 1) {
       onLog(`Processing embedding batch ${batchNum}/${totalBatches}...`);
     }
 
     const { createEmbeddings: embed } = await import("@/lib/embeddings");
-    const batchVectors = await embed(batch);
-    if (batchVectors.length !== batch.length || batchVectors.some(vector => vector.length === 0)) {
+    const batchVectors = await embed(batchIndexes.map((index) => texts[index]));
+    if (batchVectors.length !== batchIndexes.length || batchVectors.some(vector => vector.length === 0)) {
       throw new Error("Indexing incomplete: embedding results do not cover every chunk");
     }
-    vectors.push(...batchVectors);
+    batchIndexes.forEach((index, j) => { vectors[index] = batchVectors[j]; });
     await beat();
   }
 
-  onLog(`Generated ${vectors.length} embeddings`, "success");
+  onLog(`Generated ${missing.length} embeddings, reused ${texts.length - missing.length}`, "success");
 
   if (signal?.aborted) throw new Error("Indexing cancelled");
 
@@ -589,6 +621,8 @@ export async function indexRepository(
       startLine: chunk.startLine,
       endLine: chunk.endLine,
       text: chunk.text,
+      textHash: textHashes[i],
+      embeddingKey,
       language: chunk.filePath.split(".").pop() ?? "unknown",
       indexedAt,
     },
@@ -752,6 +786,7 @@ export async function incrementalIndex(
 
   const sparseVectors = generateSparseVectors(texts);
   const indexedAt = new Date().toISOString();
+  const embeddingKey = getEmbeddingKey();
   const points = allChunks.map((chunk, i) => ({
     id: crypto.randomUUID(),
     vector: vectors[i],
@@ -763,6 +798,8 @@ export async function incrementalIndex(
       startLine: chunk.startLine,
       endLine: chunk.endLine,
       text: chunk.text,
+      textHash: hashText(chunk.text),
+      embeddingKey,
       language: chunk.filePath.split(".").pop() ?? "unknown",
       indexedAt,
     },

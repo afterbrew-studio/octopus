@@ -251,6 +251,7 @@ try {
     mock.module("@/lib/qdrant", () => ({
       ensureCollection: async () => {}, deleteRepoFileChunks: async () => {},
       upsertChunks: async () => { writes++; },
+      scrollActiveChunkVectors: async function* () {},
     }));
     mock.module("@/lib/embeddings", () => ({ createEmbeddings: async (texts: string[]) => texts.map(() => [0.1]) }));
     mock.module("@/lib/github", () => ({

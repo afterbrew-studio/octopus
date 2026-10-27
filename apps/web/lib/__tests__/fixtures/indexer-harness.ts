@@ -40,10 +40,19 @@ mock.module("@/lib/forgejo", () => ({
     return "export const greeting = 'hello';\n";
   },
 }));
+type StoredPoint = { textHash?: string; embeddingKey?: string; vector: number[] };
+let storedPages: StoredPoint[][] = [];
+let upserted: Array<{ payload: Record<string, unknown>; vector: number[] }> = [];
 mock.module("@/lib/qdrant", () => ({
   ensureCollection: async () => {},
   deleteRepoFileChunks: async () => {},
-  upsertChunks: async (_points: unknown[], owner: { repoId: string; indexAttemptId: string }) => { assert.equal(owner.indexAttemptId, "attempt-1"); writes++; afterUpsert?.(); },
+  upsertChunks: async (points: typeof upserted, owner: { repoId: string; indexAttemptId: string }) => {
+    assert.equal(owner.indexAttemptId, "attempt-1");
+    upserted.push(...points);
+    writes++;
+    afterUpsert?.();
+  },
+  scrollActiveChunkVectors: async function* () { for (const page of storedPages) yield page; },
 }));
 let beats = 0;
 let heartbeatFailure: Error | null = null;
@@ -80,7 +89,7 @@ async function run(branch = "main") {
 }
 function reset() {
   responses.clear(); requests.length = 0; writes = 0; embedded.length = 0;
-  beats = 0; heartbeatFailure = null;
+  storedPages = []; upserted = []; beats = 0; heartbeatFailure = null;
   details = { default_branch: "main" };
   responses.set("/contributors?per_page=30", [200, []]);
 }
@@ -211,8 +220,12 @@ assert.ok(!requests.some(url => url.endsWith("/git/blobs/ignored")));
 ignoreContent = null;
 await assert.rejects(() => indexRepository({ repoId: "repo-1", indexAttemptId: "attempt-1" }, "acme/new", "main", 0, undefined, undefined, "github", "org-1", suppliedToken), /could not read .octopusignore/);
 
-// Progress heartbeats keep the claim alive, and a lost claim stops the run before it writes.
+// Re-indexing reuses stored vectors only for the same text, embedding model and dimension.
 suppliedToken = undefined;
+const { getEmbedConfig, getEmbeddingKey } = await import("@/lib/embed-config");
+const { dim } = getEmbedConfig();
+const currentKey = getEmbeddingKey();
+const stored = new Array(dim).fill(0.5);
 function treeWith(files: Record<string, string>) {
   reset();
   responses.set("/git/trees/main?recursive=1", [200, { tree: Object.keys(files).map(path => ({ path, type: "blob", sha: `blob-${path}`, size: 40 })) }]);
@@ -221,6 +234,37 @@ function treeWith(files: Record<string, string>) {
   }
 }
 const files = { "a.ts": "export const a = 1;\n", "b.ts": "export const b = 2;\n" };
+treeWith(files);
+await run();
+const [pointA, pointB] = upserted.sort((x, y) => String(x.payload.filePath).localeCompare(String(y.payload.filePath)));
+assert.equal(pointA.payload.embeddingKey, currentKey, "new points record the model that embedded them");
+assert.match(String(pointA.payload.textHash), /^[0-9a-f]{64}$/);
+const hashA = String(pointA.payload.textHash);
+const hashB = String(pointB.payload.textHash);
+
+const reuseScenarios: Array<[string, StoredPoint, number]> = [
+  ["matching key and dimension", { textHash: hashA, embeddingKey: currentKey, vector: stored }, 1],
+  ["different embedding key", { textHash: hashA, embeddingKey: "ollama:other-model:768", vector: stored }, 2],
+  ["different dimension", { textHash: hashA, embeddingKey: currentKey, vector: [0.5] }, 2],
+  ["legacy point without hash fields", { vector: stored }, 2],
+  ["hash of other text", { textHash: "0".repeat(64), embeddingKey: currentKey, vector: stored }, 2],
+];
+for (const [name, point, expectedEmbedded] of reuseScenarios) {
+  treeWith(files);
+  storedPages = [[point]];
+  await run();
+  assert.equal(embedded.flat().length, expectedEmbedded, name);
+  const rerun = upserted.find(p => p.payload.textHash === hashA)!;
+  assert.deepEqual(rerun.vector, expectedEmbedded === 1 ? stored : [0.1], name);
+  assert.deepEqual(upserted.find(p => p.payload.textHash === hashB)!.vector, [0.1], `${name}: unmatched text is embedded`);
+}
+treeWith(files);
+storedPages = [[{ textHash: hashA, embeddingKey: currentKey, vector: stored }], [{ textHash: hashB, embeddingKey: currentKey, vector: stored }]];
+await run();
+assert.equal(embedded.length, 0, "a fully reused snapshot embeds nothing");
+console.log("Vector reuse regressions passed");
+
+// Progress heartbeats keep the claim alive, and a lost claim stops the run before it writes.
 treeWith(files);
 await run();
 assert.ok(beats >= 3, "file fetch, embedding and upsert all heartbeat");

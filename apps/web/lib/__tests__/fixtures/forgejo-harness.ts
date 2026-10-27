@@ -213,6 +213,7 @@ let vectorWrites = 0;
 mock.module("@/lib/qdrant", () => ({
   ensureCollection: async () => {},
   upsertChunks: async () => { vectorWrites++; }, deleteRepoFileChunks: async () => {},
+  scrollActiveChunkVectors: async function* () {},
 }));
 mock.module("@/lib/embeddings", () => ({ createEmbeddings: async (texts: string[]) => texts.map(() => [0.1]) }));
 const { indexRepository } = await import("@/lib/indexer");

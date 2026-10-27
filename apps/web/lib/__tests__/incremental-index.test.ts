@@ -14,6 +14,7 @@ mock.module("@/lib/qdrant", () => ({
   deleteRepoFileChunks: (...args: unknown[]) => mockDeleteRepoFileChunks(...args),
   ensureCollection: () => mockEnsureCollection(),
   upsertChunks: (...args: unknown[]) => mockUpsertChunks(...args),
+  scrollActiveChunkVectors: async function* () {},
 }));
 
 mock.module("@/lib/embeddings", () => ({

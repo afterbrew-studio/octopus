@@ -60,8 +60,9 @@ export async function exerciseStorageRace(scenario: string, repo: Repository) {
   } });
   const storageUrl = new URL(liveStorageUrl ?? service.url.toString());
   process.env.QDRANT_URL = storageUrl.toString();
-  mock.module("@/lib/embed-config", () => ({ getEmbedConfig: () => ({ dim: 1 }) }));
-  mock.module("@/lib/embeddings", () => ({ createEmbeddings: async (texts: string[]) => texts.map(() => [0.1]) }));
+  mock.module("@/lib/embed-config", () => ({ getEmbedConfig: () => ({ dim: 1 }), getEmbeddingKey: () => "fixture:model:1" }));
+  let embeddedTexts = 0;
+  mock.module("@/lib/embeddings", () => ({ createEmbeddings: async (texts: string[]) => { embeddedTexts += texts.length; return texts.map(() => [0.1]); } }));
   let content = "baseline";
   let empty = false;
   const files = () => Array.from({ length: 101 }, (_, i) => ({ path: `file${i}.ts`, content: `export const value = '${content}-${i}';` }));
@@ -133,6 +134,25 @@ export async function exerciseStorageRace(scenario: string, repo: Repository) {
       assert.deepEqual(await getRepoChunks(repo.id), ["new generation"], "Legacy point IDs must not overwrite generation points");
       assert.deepEqual((await legacyRead()).map(point => point.payload?.text), ["legacy"]);
       assert.deepEqual((await buildRepoGraph(repo.id)).nodes.map(node => node.path), ["code.ts"]);
+      return;
+    }
+    if (scenario === "storage-reuse") {
+      const first = await claim();
+      await full(first);
+      assert.equal(embeddedTexts, 101);
+      const second = await claim();
+      embeddedTexts = 0;
+      await full(second);
+      assert.equal(embeddedTexts, 0, "an unchanged snapshot must reuse every stored vector");
+      assert.equal((await snapshot()).activeIndexGeneration, second);
+      assert.equal((await getRepoChunks(repo.id, 200)).length, 101, "reused vectors are written to the new generation");
+      const generations = new Set([...stored.values()].map(point => point.payload.indexGeneration));
+      assert.deepEqual(generations, new Set([first, second]), "the replaced generation is left untouched");
+      content = "changed";
+      const third = await claim();
+      embeddedTexts = 0;
+      await full(third);
+      assert.equal(embeddedTexts, 101, "changed text must be embedded again");
       return;
     }
     if (scenario === "storage-reads") {
