@@ -45,7 +45,7 @@ let storedPages: StoredPoint[][] = [];
 let upserted: Array<{ payload: Record<string, unknown>; vector: number[] }> = [];
 mock.module("@/lib/qdrant", () => ({
   ensureCollection: async () => {},
-  deleteRepoFileChunks: async () => {},
+  listRepoFileChunkIds: async () => [], deleteChunkPoints: async () => {},
   upsertChunks: async (points: typeof upserted, owner: { repoId: string; indexAttemptId: string }) => {
     assert.equal(owner.indexAttemptId, "attempt-1");
     upserted.push(...points);

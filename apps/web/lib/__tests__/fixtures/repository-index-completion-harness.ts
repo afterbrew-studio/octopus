@@ -279,7 +279,7 @@ try {
     let writes = 0;
     let full = false;
     mock.module("@/lib/qdrant", () => ({
-      ensureCollection: async () => {}, deleteRepoFileChunks: async () => {},
+      ensureCollection: async () => {}, listRepoFileChunkIds: async () => [], deleteChunkPoints: async () => {},
       upsertChunks: async () => { writes++; },
       scrollActiveChunkVectors: async function* () {},
     }));

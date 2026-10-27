@@ -214,21 +214,38 @@ export async function upsertChunks(
   }
 }
 
-/** Deletes the chunks of `filePaths`, except points whose caller-side id is in `keepIds` (the ones just written). */
-export async function deleteRepoFileChunks(owner: RepositoryIndexOwner, filePaths: string[], keepIds: string[] = []) {
-  if (filePaths.length === 0) return;
+const ID_SCROLL_PAGE = 1000;
+
+/** Qdrant ids of the stored chunks of `filePaths` in the owner's generation. */
+export async function listRepoFileChunkIds(owner: RepositoryIndexOwner, filePaths: string[]): Promise<string[]> {
+  if (filePaths.length === 0) return [];
   const { getRepositoryIndexGeneration, repositoryCodeFilter } = await import("@/lib/repository-index-storage");
   const generation = await getRepositoryIndexGeneration(owner);
-  await getQdrantClient().delete(COLLECTION_NAME, {
-    wait: true,
-    filter: {
-      must: [
-        repositoryCodeFilter(owner.repoId, generation),
-        { key: "filePath", match: { any: filePaths } },
-      ],
-      ...(keepIds.length ? { must_not: [{ key: "originalId", match: { any: keepIds } }] } : {}),
-    },
-  });
+  const qdrant = getQdrantClient();
+  const filter = { must: [repositoryCodeFilter(owner.repoId, generation), { key: "filePath", match: { any: filePaths } }] };
+  const ids: string[] = [];
+  let offset: string | number | Record<string, unknown> | null | undefined;
+  do {
+    owner.signal?.throwIfAborted();
+    const page = await withQdrantRetry(() => qdrant.scroll(COLLECTION_NAME, {
+      filter, limit: ID_SCROLL_PAGE, offset: offset ?? undefined, with_payload: false, with_vector: false,
+    }), `scroll ${COLLECTION_NAME} ids`);
+    ids.push(...page.points.map((point) => String(point.id)));
+    offset = page.next_page_offset;
+  } while (offset !== null && offset !== undefined);
+  return ids;
+}
+
+/** Deletes exactly these points, so chunks a concurrent writer stored for the same files are never touched. */
+export async function deleteChunkPoints(owner: RepositoryIndexOwner, pointIds: string[]) {
+  if (pointIds.length === 0) return;
+  const { getRepositoryIndexGeneration } = await import("@/lib/repository-index-storage");
+  const qdrant = getQdrantClient();
+  for (let i = 0; i < pointIds.length; i += ID_SCROLL_PAGE) {
+    await getRepositoryIndexGeneration(owner);
+    const points = pointIds.slice(i, i + ID_SCROLL_PAGE);
+    await withQdrantRetry(() => qdrant.delete(COLLECTION_NAME, { wait: true, points }), `delete ${COLLECTION_NAME} points`);
+  }
 }
 
 export async function getRepoChunks(

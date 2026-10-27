@@ -28,7 +28,7 @@ mock.module("@/lib/bitbucket", () => ({}));
 mock.module("@/lib/gitlab", () => ({}));
 mock.module("@/lib/forgejo", () => ({}));
 mock.module("@/lib/qdrant", () => ({
-  ensureCollection: async () => {}, deleteRepoFileChunks: async () => {}, upsertChunks: async () => {},
+  ensureCollection: async () => {}, listRepoFileChunkIds: async () => [], deleteChunkPoints: async () => {}, upsertChunks: async () => {},
   scrollActiveChunkVectors: async function* () {},
 }));
 mock.module("@/lib/embeddings", () => ({ createEmbeddings: async (texts: string[]) => texts.map(() => [0.1]) }));

@@ -6,12 +6,24 @@ import { describe, it, expect, mock, beforeEach } from "bun:test";
 // Component context; neutralize it for bun test (same as sibling tests).
 mock.module("server-only", () => ({}));
 
-let mockDeleteRepoFileChunks = mock(() => Promise.resolve());
+// A small in-memory chunk store, so overlapping updates can be replayed against it.
+type StoredChunk = { id: string; filePath: string };
+let store: StoredChunk[] = [];
+const storeUpsert = (points: { id: string; payload: { filePath: string } }[]) => {
+  store.push(...points.map((point) => ({ id: point.id, filePath: point.payload.filePath })));
+  return Promise.resolve();
+};
+let mockListChunkIds = mock((_owner: unknown, paths: string[]) => Promise.resolve(store.filter((chunk) => paths.includes(chunk.filePath)).map((chunk) => chunk.id)));
+let mockDeleteChunkPoints = mock((_owner: unknown, ids: string[]) => {
+  store = store.filter((chunk) => !ids.includes(chunk.id));
+  return Promise.resolve();
+});
 let mockEnsureCollection = mock(() => Promise.resolve());
-let mockUpsertChunks = mock(() => Promise.resolve());
+let mockUpsertChunks = mock(storeUpsert as (...args: never[]) => Promise<void>);
 
 mock.module("@/lib/qdrant", () => ({
-  deleteRepoFileChunks: (...args: unknown[]) => mockDeleteRepoFileChunks(...args),
+  listRepoFileChunkIds: (...args: [unknown, string[]]) => mockListChunkIds(...args),
+  deleteChunkPoints: (...args: [unknown, string[]]) => mockDeleteChunkPoints(...args),
   ensureCollection: () => mockEnsureCollection(),
   upsertChunks: (...args: unknown[]) => mockUpsertChunks(...args),
   scrollActiveChunkVectors: async function* () {},
@@ -64,9 +76,14 @@ const indexOwner = { repoId: "repo-1", activeIndexGeneration: null };
 describe("incrementalIndex", () => {
   beforeEach(() => {
     mockCreateEmbeddings = (texts: string[]) => Promise.resolve(texts.map(() => new Array(3072).fill(0.1)));
-    mockDeleteRepoFileChunks = mock(() => Promise.resolve());
+    store = [];
+    mockListChunkIds = mock((_owner: unknown, paths: string[]) => Promise.resolve(store.filter((chunk) => paths.includes(chunk.filePath)).map((chunk) => chunk.id)));
+    mockDeleteChunkPoints = mock((_owner: unknown, ids: string[]) => {
+      store = store.filter((chunk) => !ids.includes(chunk.id));
+      return Promise.resolve();
+    });
     mockEnsureCollection = mock(() => Promise.resolve());
-    mockUpsertChunks = mock(() => Promise.resolve());
+    mockUpsertChunks = mock(storeUpsert as (...args: never[]) => Promise<void>);
     mockGetInstallationToken = mock(() => Promise.resolve("test-token"));
     mockGhGetFileContent = mock((_installationId: number, _owner: string, _repo: string, _branch: string, filePath: string) => {
       if (filePath === "src/index.ts") return Promise.resolve("export const hello = 'world';\n");
@@ -91,8 +108,8 @@ describe("incrementalIndex", () => {
     );
 
     // Should delete chunks for changed files
-    expect(mockDeleteRepoFileChunks).toHaveBeenCalledTimes(1);
-    const deleteArgs = mockDeleteRepoFileChunks.mock.calls[0];
+    expect(mockListChunkIds).toHaveBeenCalledTimes(1);
+    const deleteArgs = mockListChunkIds.mock.calls[0];
     expect(deleteArgs[0]).toEqual(indexOwner);
     expect(deleteArgs[1]).toEqual(["src/index.ts", "src/utils.ts"]);
 
@@ -122,11 +139,12 @@ describe("incrementalIndex", () => {
       "github",
     )).rejects.toThrow("Embedding service unavailable");
 
-    expect(mockDeleteRepoFileChunks).not.toHaveBeenCalled();
+    expect(mockListChunkIds).not.toHaveBeenCalled();
     expect(mockUpsertChunks).not.toHaveBeenCalled();
   });
 
   it("keeps the old chunks when the upsert fails after the embeddings succeed", async () => {
+    store = [{ id: "old-1", filePath: "src/index.ts" }];
     mockUpsertChunks = mock(() => Promise.reject(new Error("Qdrant unavailable")));
 
     await expect(incrementalIndex(
@@ -135,20 +153,61 @@ describe("incrementalIndex", () => {
       "github",
     )).rejects.toThrow("Qdrant unavailable");
 
-    expect(mockDeleteRepoFileChunks).not.toHaveBeenCalled();
+    expect(mockDeleteChunkPoints).not.toHaveBeenCalled();
+    expect(store).toEqual([{ id: "old-1", filePath: "src/index.ts" }]);
   });
 
-  it("deletes the old chunks only after the new points are written, sparing the new ones", async () => {
+  it("captures the old chunks, writes the new ones, then deletes exactly the captured ones", async () => {
     const order: string[] = [];
+    store = [{ id: "old-1", filePath: "src/index.ts" }, { id: "other", filePath: "src/other.ts" }];
     mockCreateEmbeddings = (texts: string[]) => { order.push("embed"); return Promise.resolve(texts.map(() => [0.1])); };
-    mockDeleteRepoFileChunks = mock(() => { order.push("delete"); return Promise.resolve(); });
-    mockUpsertChunks = mock(() => { order.push("upsert"); return Promise.resolve(); });
+    const list = mockListChunkIds;
+    mockListChunkIds = mock((owner: unknown, paths: string[]) => { order.push("capture"); return list(owner, paths); });
+    const upsert = mockUpsertChunks;
+    mockUpsertChunks = mock(((points: never) => { order.push("upsert"); return (upsert as unknown as (p: never) => Promise<void>)(points); }) as (...args: never[]) => Promise<void>);
+    const del = mockDeleteChunkPoints;
+    mockDeleteChunkPoints = mock((owner: unknown, ids: string[]) => { order.push("delete"); return del(owner, ids); });
 
     await incrementalIndex(indexOwner, "owner/repo", "main", 12345, [{ filename: "src/index.ts", status: "modified" }], "github");
 
-    expect(order).toEqual(["embed", "upsert", "delete"]);
-    const written = (mockUpsertChunks.mock.calls[0] as [{ id: string }[]])[0].map((point) => point.id);
-    expect(mockDeleteRepoFileChunks.mock.calls[0][2]).toEqual(written);
+    expect(order).toEqual(["embed", "capture", "upsert", "delete"]);
+    expect(mockDeleteChunkPoints.mock.calls[0][1]).toEqual(["old-1"]);
+    expect(store.filter((chunk) => chunk.filePath === "src/index.ts").length).toBeGreaterThan(0);
+    expect(store.some((chunk) => chunk.id === "old-1")).toBe(false);
+    expect(store.some((chunk) => chunk.id === "other")).toBe(true);
+  });
+
+  it("leaves every update's chunks in place when two merges overlap on the same file", async () => {
+    store = [{ id: "old-1", filePath: "src/index.ts" }];
+    // Both updates capture before either writes, and both write before either deletes: the worst interleaving.
+    const barrier = (parties: number) => {
+      let arrived = 0;
+      let release!: () => void;
+      const open = new Promise<void>((resolve) => { release = resolve; });
+      return async () => { if (++arrived === parties) release(); await open; };
+    };
+    const captured = barrier(2);
+    const written = barrier(2);
+    const list = mockListChunkIds;
+    mockListChunkIds = mock(async (owner: unknown, paths: string[]) => {
+      const ids = await list(owner, paths);
+      await captured();
+      return ids;
+    });
+    const upsert = mockUpsertChunks;
+    mockUpsertChunks = mock((async (points: never) => {
+      await (upsert as unknown as (p: never) => Promise<void>)(points);
+      await written();
+    }) as (...args: never[]) => Promise<void>);
+
+    const merge = () => incrementalIndex(indexOwner, "owner/repo", "main", 12345, [{ filename: "src/index.ts", status: "modified" }], "github");
+    await Promise.all([merge(), merge()]);
+
+    const remaining = store.filter((chunk) => chunk.filePath === "src/index.ts");
+    expect(remaining.some((chunk) => chunk.id === "old-1")).toBe(false);
+    const eachWrote = (mockUpsertChunks.mock.calls as unknown as [{ id: string }[]][]).map(([points]) => points.map((point) => point.id));
+    expect(eachWrote).toHaveLength(2);
+    for (const ids of eachWrote) for (const id of ids) expect(remaining.map((chunk) => chunk.id)).toContain(id);
   });
 
   it("keeps the old chunks of a file whose fetch failed", async () => {
@@ -163,7 +222,7 @@ describe("incrementalIndex", () => {
       "github",
     );
 
-    expect(mockDeleteRepoFileChunks.mock.calls[0][1]).toEqual(["src/utils.ts"]);
+    expect(mockListChunkIds.mock.calls[0][1]).toEqual(["src/utils.ts"]);
   });
 
   it("handles removed files without fetching content", async () => {
@@ -179,8 +238,8 @@ describe("incrementalIndex", () => {
     );
 
     // Should delete chunks for removed file
-    expect(mockDeleteRepoFileChunks).toHaveBeenCalledTimes(1);
-    const deleteArgs = mockDeleteRepoFileChunks.mock.calls[0];
+    expect(mockListChunkIds).toHaveBeenCalledTimes(1);
+    const deleteArgs = mockListChunkIds.mock.calls[0];
     expect(deleteArgs[1]).toEqual(["src/old-file.ts"]);
 
     // Should NOT upsert anything (removed file = no new content)
@@ -207,7 +266,7 @@ describe("incrementalIndex", () => {
     );
 
     // All changed paths should be in the delete call
-    const deleteArgs = mockDeleteRepoFileChunks.mock.calls[0];
+    const deleteArgs = mockListChunkIds.mock.calls[0];
     const deletedPaths = deleteArgs[1] as string[];
     expect(deletedPaths).toContain("src/index.ts");
     expect(deletedPaths).toContain("src/deleted.ts");
@@ -247,7 +306,7 @@ describe("incrementalIndex", () => {
       "github",
     );
 
-    expect(mockDeleteRepoFileChunks).not.toHaveBeenCalled();
+    expect(mockListChunkIds).not.toHaveBeenCalled();
     expect(mockUpsertChunks).not.toHaveBeenCalled();
     expect(result.updatedFiles).toBe(0);
     expect(result.removedFiles).toBe(0);

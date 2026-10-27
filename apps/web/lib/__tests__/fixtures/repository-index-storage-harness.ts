@@ -46,7 +46,8 @@ export async function exerciseStorageRace(scenario: string, repo: Repository) {
       if (operation === "upsert") for (const point of body.points as Point[]) stored.set(point.id, point);
       else {
         deleteCalls++;
-        for (const [id, point] of stored) if (matches(point, body.filter)) stored.delete(id);
+        if (body.points) for (const id of body.points as string[]) stored.delete(id);
+        else for (const [id, point] of stored) if (matches(point, body.filter)) stored.delete(id);
       }
       if (paused) applied.resolve();
       return reply({ operation_id: 1, status: "completed" });
@@ -98,7 +99,7 @@ export async function exerciseStorageRace(scenario: string, repo: Repository) {
     const { indexRepository, incrementalIndex } = await import("@/lib/indexer");
     const { runRepositoryIndex } = await import("@/lib/repository-index-completion");
     const { prepareRepoForLocalIndex, claimLocalIndexBatch, indexLocalBatch, recordLocalIndexProgress, markLocalIndexFailed } = await import("@/lib/index-local");
-    const { deleteRepoFileChunks, upsertChunks, getRepoChunks, searchSimilarChunks, searchCodeChunksAcrossRepos, getQdrantClient, ensureCollection } = await import("@/lib/qdrant");
+    const { listRepoFileChunkIds, deleteChunkPoints, upsertChunks, getRepoChunks, searchSimilarChunks, searchCodeChunksAcrossRepos, getQdrantClient, ensureCollection } = await import("@/lib/qdrant");
     const { buildRepoGraph } = await import("@/lib/repo-graph");
     const snapshot = () => prisma.repository.findUniqueOrThrow({ where: { id: repo.id } });
     const claim = async () => {
@@ -312,7 +313,8 @@ export async function exerciseStorageRace(scenario: string, repo: Repository) {
     await applied.promise;
     const stale = await observed;
     assert.match(String(stale.error), timeout ? /timeout|abort/i : /no longer current|cancelled or replaced/);
-    await assert.rejects(() => deleteRepoFileChunks(owner, ["file0.ts"]), /no longer current/);
+    await assert.rejects(() => listRepoFileChunkIds(owner, ["file0.ts"]), /no longer current/);
+    await assert.rejects(() => deleteChunkPoints(owner, ["any"]), /no longer current/);
     const visible = await searchSimilarChunks(repo.id, [1], 200);
     assert.equal(visible.length, 101);
     assert.ok(visible.every(point => point.text.includes("replacement")), "Late remote mutations must not corrupt the active replacement");

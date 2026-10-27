@@ -9,7 +9,7 @@ import * as bitbucketLib from "@/lib/bitbucket";
 import * as gitlabLib from "@/lib/gitlab";
 import * as forgejoLib from "@/lib/forgejo";
 import { ForgejoResponseTooLargeError } from "@/lib/forgejo-http";
-import { ensureCollection, upsertChunks, deleteRepoFileChunks, scrollActiveChunkVectors } from "@/lib/qdrant";
+import { ensureCollection, upsertChunks, listRepoFileChunkIds, deleteChunkPoints, scrollActiveChunkVectors } from "@/lib/qdrant";
 import { getEmbedConfig, getEmbeddingKey } from "@/lib/embed-config";
 import { SupersededIndexError, requestSignal, throttledHeartbeat, waitWhileAlive } from "@/lib/index-liveness";
 import { generateSparseVectors } from "@/lib/sparse-vector";
@@ -702,24 +702,25 @@ export async function incrementalIndex(
     .filter((f) => shouldIndex(f.filename, undefined, ig))
     .map((f) => f.filename);
 
-  // New points are written before the old ones are deleted, so a failure at any step leaves the
-  // previous chunks (or at worst duplicates), never a hole. A path whose fetch failed keeps its old chunks.
+  // The old points are captured before anything is written, then the new ones are written, then exactly
+  // the captured points are deleted. A failure at any step leaves the previous chunks, and overlapping
+  // updates of the same file leave at worst duplicates, never a hole. A path whose fetch failed keeps its old chunks.
   const fetchFailed = new Set<string>();
   let collectionReady = false;
   const ensureOnce = async () => {
     if (!collectionReady) await ensureCollection();
     collectionReady = true;
   };
-  const deleteOldChunks = async (keepIds: string[] = []) => {
+  const captureOldChunks = async () => {
     const stalePaths = [...new Set([...removed, ...addedOrModified])].filter((path) => !fetchFailed.has(path));
-    if (stalePaths.length === 0) return;
+    if (stalePaths.length === 0) return [];
     await ensureOnce();
-    await deleteRepoFileChunks(owner, stalePaths, keepIds);
+    return listRepoFileChunkIds(owner, stalePaths);
   };
 
   // 1. Fetch and chunk only added/modified files
   if (addedOrModified.length === 0) {
-    await deleteOldChunks();
+    await deleteChunkPoints(owner, await captureOldChunks());
     return { updatedFiles: 0, removedFiles: removed.length, newVectors: 0 };
   }
 
@@ -784,7 +785,7 @@ export async function incrementalIndex(
   }
 
   if (allChunks.length === 0) {
-    await deleteOldChunks();
+    await deleteChunkPoints(owner, await captureOldChunks());
     return { updatedFiles: addedOrModified.length, removedFiles: removed.length, newVectors: 0 };
   }
 
@@ -821,8 +822,9 @@ export async function incrementalIndex(
 
   // 3. Write the new chunks, then drop the old ones of the same files
   await ensureOnce();
+  const oldPointIds = await captureOldChunks();
   await upsertChunks(points, owner);
-  await deleteOldChunks(points.map((point) => point.id));
+  await deleteChunkPoints(owner, oldPointIds);
 
   return { updatedFiles: addedOrModified.length, removedFiles: removed.length, newVectors: points.length };
 }
