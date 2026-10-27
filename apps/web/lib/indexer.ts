@@ -701,15 +701,19 @@ export async function incrementalIndex(
     .filter((f) => shouldIndex(f.filename, undefined, ig))
     .map((f) => f.filename);
 
-  // 1. Delete chunks for all changed files (removed + modified + added that had old version)
-  const allChangedPaths = [...new Set([...removed, ...addedOrModified])];
-  if (allChangedPaths.length > 0) {
+  // Old chunks are replaced only after every new vector exists, so a failed fetch or
+  // embedding leaves the previous index intact. A path whose fetch failed keeps its old chunks.
+  const fetchFailed = new Set<string>();
+  const replaceChunks = async () => {
+    const stalePaths = [...new Set([...removed, ...addedOrModified])].filter((path) => !fetchFailed.has(path));
+    if (stalePaths.length === 0) return;
     await ensureCollection();
-    await deleteRepoFileChunks(owner, allChangedPaths);
-  }
+    await deleteRepoFileChunks(owner, stalePaths);
+  };
 
-  // 2. Fetch and chunk only added/modified files
+  // 1. Fetch and chunk only added/modified files
   if (addedOrModified.length === 0) {
+    await replaceChunks();
     return { updatedFiles: 0, removedFiles: removed.length, newVectors: 0 };
   }
 
@@ -730,6 +734,7 @@ export async function incrementalIndex(
           allChunks.push({ text: chunk.text, filePath, startLine: chunk.startLine, endLine: chunk.endLine });
         }
       } catch {
+        fetchFailed.add(filePath);
         console.warn(`[indexer:incremental] Failed to fetch ${filePath}, skipping`);
       }
     }
@@ -748,6 +753,7 @@ export async function incrementalIndex(
           allChunks.push({ text: chunk.text, filePath, startLine: chunk.startLine, endLine: chunk.endLine });
         }
       } catch {
+        fetchFailed.add(filePath);
         console.warn(`[indexer:incremental] Failed to fetch ${filePath}, skipping`);
       }
     }
@@ -765,16 +771,18 @@ export async function incrementalIndex(
           allChunks.push({ text: chunk.text, filePath, startLine: chunk.startLine, endLine: chunk.endLine });
         }
       } catch {
+        fetchFailed.add(filePath);
         console.warn(`[indexer:incremental] Failed to fetch ${filePath}, skipping`);
       }
     }
   }
 
   if (allChunks.length === 0) {
+    await replaceChunks();
     return { updatedFiles: addedOrModified.length, removedFiles: removed.length, newVectors: 0 };
   }
 
-  // 3. Generate embeddings & upsert
+  // 2. Generate embeddings
   const texts = allChunks.map((c) => c.text);
   const { createEmbeddings } = await import("@/lib/embeddings");
   const vectors: number[][] = [];
@@ -805,6 +813,8 @@ export async function incrementalIndex(
     },
   }));
 
+  // 3. Swap the old chunks for the new ones
+  await replaceChunks();
   await upsertChunks(points, owner);
 
   return { updatedFiles: addedOrModified.length, removedFiles: removed.length, newVectors: points.length };

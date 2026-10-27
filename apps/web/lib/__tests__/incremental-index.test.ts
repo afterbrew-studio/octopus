@@ -17,9 +17,9 @@ mock.module("@/lib/qdrant", () => ({
   scrollActiveChunkVectors: async function* () {},
 }));
 
+let mockCreateEmbeddings = (texts: string[]) => Promise.resolve(texts.map(() => new Array(3072).fill(0.1)));
 mock.module("@/lib/embeddings", () => ({
-  createEmbeddings: (texts: string[]) =>
-    Promise.resolve(texts.map(() => new Array(3072).fill(0.1))),
+  createEmbeddings: (texts: string[]) => mockCreateEmbeddings(texts),
 }));
 
 mock.module("@/lib/sparse-vector", () => ({
@@ -63,6 +63,7 @@ const indexOwner = { repoId: "repo-1", activeIndexGeneration: null };
 
 describe("incrementalIndex", () => {
   beforeEach(() => {
+    mockCreateEmbeddings = (texts: string[]) => Promise.resolve(texts.map(() => new Array(3072).fill(0.1)));
     mockDeleteRepoFileChunks = mock(() => Promise.resolve());
     mockEnsureCollection = mock(() => Promise.resolve());
     mockUpsertChunks = mock(() => Promise.resolve());
@@ -110,6 +111,45 @@ describe("incrementalIndex", () => {
     expect(result.updatedFiles).toBe(2);
     expect(result.removedFiles).toBe(0);
     expect(result.newVectors).toBeGreaterThan(0);
+  });
+
+  it("keeps the old chunks when embedding fails", async () => {
+    mockCreateEmbeddings = () => Promise.reject(new Error("Embedding service unavailable"));
+
+    await expect(incrementalIndex(
+      indexOwner, "owner/repo", "main", 12345,
+      [{ filename: "src/index.ts", status: "modified" }, { filename: "src/old.ts", status: "removed" }],
+      "github",
+    )).rejects.toThrow("Embedding service unavailable");
+
+    expect(mockDeleteRepoFileChunks).not.toHaveBeenCalled();
+    expect(mockUpsertChunks).not.toHaveBeenCalled();
+  });
+
+  it("deletes the old chunks only after the new vectors exist", async () => {
+    const order: string[] = [];
+    mockCreateEmbeddings = (texts: string[]) => { order.push("embed"); return Promise.resolve(texts.map(() => [0.1])); };
+    mockDeleteRepoFileChunks = mock(() => { order.push("delete"); return Promise.resolve(); });
+    mockUpsertChunks = mock(() => { order.push("upsert"); return Promise.resolve(); });
+
+    await incrementalIndex(indexOwner, "owner/repo", "main", 12345, [{ filename: "src/index.ts", status: "modified" }], "github");
+
+    expect(order).toEqual(["embed", "delete", "upsert"]);
+  });
+
+  it("keeps the old chunks of a file whose fetch failed", async () => {
+    mockGhGetFileContent = mock((_installationId: number, _owner: string, _repo: string, _branch: string, filePath: string) => {
+      if (filePath === "src/broken.ts") return Promise.reject(new Error("503"));
+      return Promise.resolve("export const x = 1;\n");
+    });
+
+    await incrementalIndex(
+      indexOwner, "owner/repo", "main", 12345,
+      [{ filename: "src/broken.ts", status: "modified" }, { filename: "src/utils.ts", status: "modified" }],
+      "github",
+    );
+
+    expect(mockDeleteRepoFileChunks.mock.calls[0][1]).toEqual(["src/utils.ts"]);
   });
 
   it("handles removed files without fetching content", async () => {
